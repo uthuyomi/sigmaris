@@ -19,6 +19,7 @@ type AppShellProps = PropsWithChildren<{
   description: string;
   badge?: string;
   actions?: ReactNode;
+  fitViewport?: boolean;
 }>;
 
 const navIconByPath = {
@@ -33,6 +34,7 @@ export function AppShell({
   description,
   badge,
   actions,
+  fitViewport = false,
   children,
 }: AppShellProps) {
   const pathname = usePathname();
@@ -44,8 +46,18 @@ export function AppShell({
   ];
 
   return (
-    <main className="min-h-screen bg-[radial-gradient(circle_at_top_left,_rgba(244,162,97,0.22),_transparent_28%),linear-gradient(180deg,_#f8f5ee_0%,_#efe6d3_52%,_#e7dcc5_100%)] text-stone-900">
-      <div className="mx-auto flex min-h-screen w-full max-w-[1500px] flex-col px-4 pb-24 pt-4 sm:px-6 lg:px-8">
+    <main
+      className={cn(
+        "min-h-screen bg-[radial-gradient(circle_at_top_left,_rgba(244,162,97,0.22),_transparent_28%),linear-gradient(180deg,_#f8f5ee_0%,_#efe6d3_52%,_#e7dcc5_100%)] text-stone-900",
+        fitViewport && "h-[100dvh] overflow-hidden",
+      )}
+    >
+      <div
+        className={cn(
+          "mx-auto flex min-h-screen w-full max-w-[1500px] flex-col px-4 pb-24 pt-4 sm:px-6 lg:px-8 lg:pb-8",
+          fitViewport && "h-full min-h-0 overflow-hidden pb-4",
+        )}
+      >
         <header className="mb-4 rounded-[30px] border border-stone-900/10 bg-white/78 px-4 py-4 shadow-[0_20px_60px_-40px_rgba(41,37,36,0.55)] backdrop-blur">
           <div className="flex flex-col gap-4 xl:flex-row xl:items-center xl:justify-between">
             <div className="flex items-start gap-4">
@@ -103,7 +115,9 @@ export function AppShell({
           </div>
         </header>
 
-        <section className="flex-1">{children}</section>
+        <section className={cn("flex-1 min-h-0", fitViewport && "overflow-hidden")}>
+          {children}
+        </section>
 
         <nav className="fixed bottom-4 left-1/2 z-20 flex w-[min(94vw,20rem)] -translate-x-1/2 items-center justify-between rounded-full border border-stone-900/10 bg-white/92 px-4 py-3 shadow-[0_25px_70px_-35px_rgba(28,25,23,0.7)] backdrop-blur lg:hidden">
           {navItems.map((item) => {

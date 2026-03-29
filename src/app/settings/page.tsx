@@ -1,6 +1,7 @@
 import { AppShell } from "@/components/app-shell";
 import { GoogleCalendarSyncPanel } from "@/components/google-calendar-sync-panel";
 import { LanguagePreferencePanel } from "@/components/language-preference-panel";
+import { SavedLocationsPanel } from "@/components/saved-locations-panel";
 import { hasGoogleCalendarWriteConfig } from "@/lib/google/calendar";
 import { hasGoogleMapsConfig } from "@/lib/google/maps";
 import { hasGoogleSheetsReadConfig } from "@/lib/google/sheets";
@@ -11,18 +12,6 @@ import {
 } from "@/lib/profile-settings";
 import { requireUser } from "@/lib/supabase/auth";
 import { hasSupabaseConfig } from "@/lib/supabase/client";
-
-const envLabels = [
-  "NEXT_PUBLIC_SUPABASE_URL",
-  "NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY",
-  "GOOGLE_CLIENT_ID",
-  "GOOGLE_CLIENT_SECRET",
-  "GOOGLE_REDIRECT_URI",
-  "GOOGLE_CALENDAR_ID",
-  "GOOGLE_MAPS_API_KEY",
-  "HOME_ADDRESS",
-  "NEXT_PUBLIC_HOME_ADDRESS",
-];
 
 type SettingsPageProps = {
   searchParams?: Promise<{
@@ -62,14 +51,16 @@ export default async function SettingsPage({ searchParams }: SettingsPageProps) 
           calendarReady={calendarReady}
         />
 
+        <SavedLocationsPanel />
+
         <section className="rounded-[30px] border border-stone-900/10 bg-white/85 p-5 shadow-[0_30px_90px_-55px_rgba(41,37,36,0.75)] backdrop-blur">
           <p className="text-xs uppercase tracking-[0.3em] text-stone-500">{dict.settings.integrations}</p>
           <div className="mt-4 grid gap-3 sm:grid-cols-2">
             {[
-              { name: "Supabase", ready: supabaseReady },
-              { name: "Sheets", ready: sheetsReady },
-              { name: "Calendar", ready: calendarReady },
-              { name: "Maps", ready: mapsReady },
+              { name: "Supabase Authentication", ready: supabaseReady },
+              { name: "Google Sheets API", ready: sheetsReady },
+              { name: "Google Calendar API", ready: calendarReady },
+              { name: "Google Maps Routes API", ready: mapsReady },
             ].map((item) => (
               <div
                 key={item.name}
@@ -87,17 +78,6 @@ export default async function SettingsPage({ searchParams }: SettingsPageProps) 
               {resolved.authError}
             </p>
           ) : null}
-        </section>
-
-        <section className="rounded-[30px] border border-stone-900/10 bg-stone-900 p-5 text-stone-50">
-          <p className="text-xs uppercase tracking-[0.3em] text-stone-400">{dict.settings.environment}</p>
-          <ul className="mt-4 grid gap-2 text-sm leading-7 text-stone-300">
-            {envLabels.map((label) => (
-              <li key={label} className="rounded-2xl border border-white/10 px-3 py-2">
-                {label}
-              </li>
-            ))}
-          </ul>
         </section>
       </div>
     </AppShell>

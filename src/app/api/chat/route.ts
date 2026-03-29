@@ -181,7 +181,7 @@ const planRouteTool = tool({
     arrivalTimeIso: z.string().optional().describe("公共交通では到着希望時刻"),
     departureTimeIso: z.string().optional().describe("車や徒歩では出発時刻"),
   }),
-  execute: async ({ origin, destination, travelMode, arrivalTimeIso, departureTimeIso }) => {
+  execute: async ({ origin, destination, travelMode, arrivalTimeIso }) => {
     try {
       const plan =
         travelMode === "transit"
@@ -193,7 +193,7 @@ const planRouteTool = tool({
           : await getSimpleRoutePlan({
               origin,
               destination,
-              departureTimeIso: departureTimeIso ?? new Date().toISOString(),
+              arrivalTimeIso: arrivalTimeIso ?? new Date().toISOString(),
               mode: travelMode,
             });
 

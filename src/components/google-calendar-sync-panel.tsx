@@ -88,7 +88,6 @@ export function GoogleCalendarSyncPanel({
             <ArrowUpDownIcon className="size-5" />
           </div>
           <h2 className="mt-4 text-lg font-semibold text-stone-900">{dict.settings.syncTitle}</h2>
-          <p className="mt-2 text-sm leading-7 text-stone-600">{dict.settings.syncBody}</p>
         </div>
 
         <button

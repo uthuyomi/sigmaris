@@ -20,6 +20,7 @@ export default async function CalendarPage({ searchParams }: CalendarPageProps) 
   const monthForQuery =
     selectedMonth ??
     new Intl.DateTimeFormat("sv-SE", {
+      timeZone: "Asia/Tokyo",
       year: "numeric",
       month: "2-digit",
     }).format(new Date());

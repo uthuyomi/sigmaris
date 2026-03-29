@@ -3,6 +3,13 @@ import { CalendarIcon, ChevronLeftIcon, ChevronRightIcon } from "lucide-react";
 import { getDictionary, type AppLocale } from "@/lib/i18n";
 import { minutesToLabel, type EventItem } from "@/lib/mock-schedule";
 
+const toLocalIsoDate = (date: Date) => {
+  const year = date.getFullYear();
+  const month = `${date.getMonth() + 1}`.padStart(2, "0");
+  const day = `${date.getDate()}`.padStart(2, "0");
+  return `${year}-${month}-${day}`;
+};
+
 const parseMonth = (value?: string) => {
   if (!value || !/^\d{4}-\d{2}$/.test(value)) {
     return new Date();
@@ -35,10 +42,10 @@ const buildCalendarDays = (monthDate: Date) => {
     date.setDate(startDate.getDate() + index);
 
     return {
-      key: `${date.toISOString()}-${index}`,
+      key: `${toLocalIsoDate(date)}-${index}`,
       day: date.getDate(),
       inMonth: date.getMonth() === monthDate.getMonth(),
-      iso: date.toISOString().slice(0, 10),
+      iso: toLocalIsoDate(date),
     };
   });
 };

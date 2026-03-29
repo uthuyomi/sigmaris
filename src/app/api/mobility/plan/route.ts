@@ -11,7 +11,6 @@ const requestSchema = z.object({
   origin: z.string().min(1),
   destination: z.string().min(1),
   arrivalTimeIso: z.string(),
-  departureTimeIso: z.string(),
   travelMode: z.enum(["transit", "driving", "walking"]),
 });
 
@@ -35,7 +34,7 @@ export async function POST(req: Request) {
       : await getSimpleRoutePlan({
           origin: input.origin,
           destination: input.destination,
-          departureTimeIso: input.departureTimeIso,
+          arrivalTimeIso: input.arrivalTimeIso,
           mode: input.travelMode,
         });
 
