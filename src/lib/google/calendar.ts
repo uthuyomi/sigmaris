@@ -12,6 +12,44 @@ export type CalendarWriteEvent = {
 
 export const hasGoogleCalendarWriteConfig = () => hasGoogleOAuthConfig();
 
+const createCalendarClient = async () => {
+  const tokens = await readGoogleProviderTokens();
+  const auth = createGoogleOAuthClient(tokens);
+  return google.calendar({ version: "v3", auth });
+};
+
+export const listGoogleCalendarEvents = async (input: {
+  calendarId?: string;
+  timeMin?: string;
+  timeMax?: string;
+  maxResults?: number;
+  query?: string;
+}) => {
+  const calendar = await createCalendarClient();
+  const calendarId = input.calendarId ?? process.env.GOOGLE_CALENDAR_ID ?? "primary";
+
+  const result = await calendar.events.list({
+    calendarId,
+    timeMin: input.timeMin,
+    timeMax: input.timeMax,
+    maxResults: input.maxResults ?? 10,
+    q: input.query,
+    singleEvents: true,
+    orderBy: "startTime",
+  });
+
+  return (result.data.items ?? []).map((event) => ({
+    id: event.id,
+    summary: event.summary,
+    description: event.description,
+    location: event.location,
+    htmlLink: event.htmlLink,
+    status: event.status,
+    start: event.start?.dateTime ?? event.start?.date,
+    end: event.end?.dateTime ?? event.end?.date,
+  }));
+};
+
 export const createGoogleCalendarEvents = async (
   events: CalendarWriteEvent[],
   calendarId = process.env.GOOGLE_CALENDAR_ID ?? "primary",
@@ -20,10 +58,7 @@ export const createGoogleCalendarEvents = async (
     return [];
   }
 
-  const tokens = await readGoogleProviderTokens();
-  const auth = createGoogleOAuthClient(tokens);
-  const calendar = google.calendar({ version: "v3", auth });
-
+  const calendar = await createCalendarClient();
   const created = [];
 
   for (const event of events) {

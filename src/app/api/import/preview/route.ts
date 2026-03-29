@@ -48,13 +48,13 @@ export async function POST(req: Request) {
     }
   } catch (error) {
     return NextResponse.json(
-      { error: error instanceof Error ? error.message : "取り込みに失敗しました。" },
+      { error: error instanceof Error ? error.message : "取り込み処理に失敗しました。" },
       { status: 400 },
     );
   }
 
   return NextResponse.json(
-    { error: "sheetUrl または image を渡してください。" },
+    { error: "sheetUrl または image を指定してください。" },
     { status: 400 },
   );
 }

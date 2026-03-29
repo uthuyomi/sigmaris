@@ -1,3 +1,4 @@
+import { ComposerAttachments, UserMessageAttachments } from "@/components/attachment";
 import { MarkdownText } from "@/components/markdown-text";
 import {
   ComposerPrimitive,
@@ -5,20 +6,20 @@ import {
   ThreadPrimitive,
   useAuiState,
 } from "@assistant-ui/react";
-import { ArrowUpIcon, SquareIcon } from "lucide-react";
+import { ArrowUpIcon, PlusIcon, SquareIcon } from "lucide-react";
 import type { FC } from "react";
 
 export const Thread: FC = () => {
   return (
     <ThreadPrimitive.Root className="flex h-full min-h-0 flex-col bg-transparent">
-      <ThreadPrimitive.Viewport className="flex min-h-0 flex-1 flex-col overflow-y-auto px-4 pt-4">
+      <ThreadPrimitive.Viewport className="flex min-h-0 flex-1 flex-col overflow-y-auto px-4 pt-6 sm:px-6">
         <ThreadWelcome />
 
         <ThreadPrimitive.Messages>
           {() => <ThreadMessage />}
         </ThreadPrimitive.Messages>
 
-        <div className="mt-auto pb-4">
+        <div className="mt-auto pb-4 pt-6">
           <Composer />
         </div>
       </ThreadPrimitive.Viewport>
@@ -31,10 +32,10 @@ const ThreadWelcome: FC = () => {
   if (!isEmpty) return null;
 
   return (
-    <div className="mx-auto my-auto flex w-full max-w-2xl grow flex-col justify-center px-2">
-      <h1 className="text-2xl font-semibold text-stone-50">今日はどう組む？</h1>
-      <p className="mt-2 text-lg leading-8 text-stone-400">
-        時間帯つきで予定を整理するよ。必要なら 5 分刻みまで詰められる。
+    <div className="mx-auto my-auto flex w-full max-w-3xl grow flex-col justify-center px-2 text-center">
+      <h1 className="text-3xl font-semibold text-stone-50">今日はどう調整する？</h1>
+      <p className="mt-3 text-base leading-8 text-stone-400">
+        予定の相談、画像の読み取り、シート URL の確認、Google カレンダー反映までこのチャットで進められるよ。
       </p>
     </div>
   );
@@ -44,7 +45,7 @@ const ThreadMessage: FC = () => {
   const role = useAuiState((s) => s.message.role);
 
   return (
-    <MessagePrimitive.Root className="mx-auto w-full max-w-2xl py-3" data-role={role}>
+    <MessagePrimitive.Root className="mx-auto w-full max-w-3xl py-3" data-role={role}>
       {role === "user" ? <UserMessage /> : <AssistantMessage />}
     </MessagePrimitive.Root>
   );
@@ -52,7 +53,7 @@ const ThreadMessage: FC = () => {
 
 const AssistantMessage: FC = () => {
   return (
-    <div className="rounded-[24px] rounded-bl-md bg-white/10 px-4 py-3 text-sm leading-7 text-stone-100 shadow-[0_20px_45px_-35px_rgba(0,0,0,0.9)]">
+    <div className="max-w-[92%] rounded-[26px] rounded-bl-md bg-white/10 px-4 py-3 text-sm leading-7 text-stone-100 shadow-[0_20px_45px_-35px_rgba(0,0,0,0.9)]">
       <MessagePrimitive.Parts>
         {({ part }) => {
           if (part.type === "text") return <MarkdownText />;
@@ -65,8 +66,11 @@ const AssistantMessage: FC = () => {
 
 const UserMessage: FC = () => {
   return (
-    <div className="ml-auto max-w-[88%] rounded-[24px] rounded-br-md bg-[#f4a261] px-4 py-3 text-sm leading-7 text-stone-950">
-      <MessagePrimitive.Parts />
+    <div className="ml-auto flex max-w-[88%] flex-col gap-2">
+      <MessagePrimitive.Attachments components={{ Attachment: UserMessageAttachments }} />
+      <div className="ml-auto rounded-[24px] rounded-br-md bg-[#f4a261] px-4 py-3 text-sm leading-7 text-stone-950">
+        <MessagePrimitive.Parts />
+      </div>
     </div>
   );
 };
@@ -75,22 +79,35 @@ const Composer: FC = () => {
   const isRunning = useAuiState((s) => s.thread.isRunning);
 
   return (
-    <ComposerPrimitive.Root className="mx-auto w-full max-w-2xl">
-      <div className="rounded-[28px] border border-white/12 bg-white/8 p-3 text-stone-50 shadow-[0_20px_45px_-35px_rgba(0,0,0,0.55)]">
-        <ComposerPrimitive.Input
-          placeholder="明日の午後を少し詰めたい、みたいに話しかけてね"
-          className="min-h-10 w-full resize-none bg-transparent px-2 py-2 text-sm outline-none placeholder:text-stone-400"
-          rows={1}
-          aria-label="Message input"
+    <ComposerPrimitive.Root className="mx-auto w-full max-w-3xl">
+      <div className="rounded-[30px] border border-white/12 bg-[#2b2522]/95 p-3 text-stone-50 shadow-[0_20px_45px_-35px_rgba(0,0,0,0.55)]">
+        <ComposerPrimitive.Attachments
+          components={{
+            Attachment: ComposerAttachments,
+          }}
         />
-        <div className="mt-3 flex items-center justify-between">
-          <p className="text-xs text-stone-400">候補を出してからタイムラインで微調整</p>
+
+        <div className="mt-2 flex items-end gap-2">
+          <ComposerPrimitive.AddAttachment
+            multiple
+            className="inline-flex size-11 shrink-0 items-center justify-center rounded-full border border-white/10 bg-white/6 text-stone-200 transition hover:bg-white/12"
+          >
+            <PlusIcon className="size-5" />
+          </ComposerPrimitive.AddAttachment>
+
+          <ComposerPrimitive.Input
+            placeholder="メッセージを書く。画像やシート URL もここから扱える"
+            className="min-h-11 w-full resize-none bg-transparent px-2 py-2 text-sm outline-none placeholder:text-stone-400"
+            rows={1}
+            aria-label="Message input"
+          />
+
           {isRunning ? (
-            <ComposerPrimitive.Cancel className="inline-flex size-10 items-center justify-center rounded-full bg-[#e76f51] text-white transition hover:bg-[#d95f42]">
+            <ComposerPrimitive.Cancel className="inline-flex size-11 shrink-0 items-center justify-center rounded-full bg-[#e76f51] text-white transition hover:bg-[#d95f42]">
               <SquareIcon className="size-4 fill-current" />
             </ComposerPrimitive.Cancel>
           ) : (
-            <ComposerPrimitive.Send className="inline-flex size-10 items-center justify-center rounded-full bg-[#e76f51] text-white transition hover:bg-[#d95f42]">
+            <ComposerPrimitive.Send className="inline-flex size-11 shrink-0 items-center justify-center rounded-full bg-[#e76f51] text-white transition hover:bg-[#d95f42]">
               <ArrowUpIcon className="size-4" />
             </ComposerPrimitive.Send>
           )}

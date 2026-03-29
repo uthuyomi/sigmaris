@@ -5,8 +5,8 @@ export const importCandidateSchema = z.object({
   date: z.string().describe("YYYY-MM-DD"),
   startTime: z.string().describe("HH:mm"),
   endTime: z.string().describe("HH:mm"),
-  description: z.string().optional(),
-  confidence: z.number().min(0).max(1).optional(),
+  description: z.string().nullable(),
+  confidence: z.number().min(0).max(1).nullable(),
 });
 
 export const importPreviewSchema = z.object({

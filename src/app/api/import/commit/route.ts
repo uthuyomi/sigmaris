@@ -18,7 +18,7 @@ export async function POST(req: Request) {
       ok: true,
       target: parsed.target,
       createdCount: parsed.candidates.length,
-      note: "自前カレンダー保存は次段階。今は Google Calendar を優先している。",
+      note: "自前カレンダー保存は次段階。いまは Google Calendar 連携を優先している。",
     });
   }
 
@@ -28,7 +28,7 @@ export async function POST(req: Request) {
         title: candidate.title,
         start: toIsoDateTime(candidate.date, candidate.startTime),
         end: toIsoDateTime(candidate.date, candidate.endTime),
-        description: candidate.description,
+        description: candidate.description ?? undefined,
       })),
     );
 

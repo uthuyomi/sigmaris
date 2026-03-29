@@ -1,14 +1,27 @@
 import { zodTextFormat } from "openai/helpers/zod";
 import { getOpenAIClient } from "@/lib/openai/client";
-import { importPreviewSchema } from "@/lib/import/schema";
+import { importPreviewSchema, type ImportPreview } from "@/lib/import/schema";
 
 const promptBase = [
-  "あなたは勤務表や出勤情報を予定候補へ変換する抽出エンジンです。",
-  "必ず日本時間を前提に解釈してください。",
-  "出力は schedule_import_preview スキーマに従ってください。",
-  "分からない項目は推測しすぎず、summary に曖昧さを書いてください。",
-  "候補は開始時刻と終了時刻を HH:mm 形式で返してください。",
+  "あなたは勤務表や予定表の画像・表データを、予定候補へ構造化する抽出エンジンです。",
+  "読み取れた内容だけを使い、推測しすぎないでください。",
+  "出力は schedule_import_preview スキーマに厳密に従ってください。",
+  "summary には抽出できた件数や注意点を短く書いてください。",
+  "candidates には date を YYYY-MM-DD、startTime と endTime を HH:mm で入れてください。",
+  "日付や時間が曖昧な項目は candidates に含めず、summary で不足情報を説明してください。",
+  "タイトルが明確でなければ title は 勤務 を使ってください。",
 ].join("\n");
+
+const ensureParsedOutput = (
+  parsed: ImportPreview | null | undefined,
+  fallbackMessage: string,
+): ImportPreview => {
+  if (!parsed) {
+    throw new Error(fallbackMessage);
+  }
+
+  return parsed;
+};
 
 export const extractScheduleFromSheetRows = async (input: {
   sheetTitle: string;
@@ -30,7 +43,7 @@ export const extractScheduleFromSheetRows = async (input: {
             type: "input_text",
             text: [
               `シート名: ${input.sheetTitle}`,
-              "以下の表データから勤務情報を抽出してください。",
+              "以下の表データから勤務や予定の候補を抽出してください。",
               JSON.stringify(input.rows),
             ].join("\n\n"),
           },
@@ -42,7 +55,10 @@ export const extractScheduleFromSheetRows = async (input: {
     },
   });
 
-  return response.output_parsed;
+  return ensureParsedOutput(
+    response.output_parsed,
+    "シートの解析結果を構造化できませんでした。",
+  );
 };
 
 export const extractScheduleFromImage = async (input: {
@@ -64,12 +80,12 @@ export const extractScheduleFromImage = async (input: {
         content: [
           {
             type: "input_text",
-            text: `この画像${input.filename ? ` (${input.filename})` : ""}から勤務情報を抽出してください。`,
+            text: `この画像${input.filename ? ` (${input.filename})` : ""}から勤務や予定の候補を抽出してください。`,
           },
           {
             type: "input_image",
             image_url: `data:${input.mimeType};base64,${input.base64Data}`,
-            detail: "auto",
+            detail: "high",
           },
         ],
       },
@@ -79,5 +95,8 @@ export const extractScheduleFromImage = async (input: {
     },
   });
 
-  return response.output_parsed;
+  return ensureParsedOutput(
+    response.output_parsed,
+    "画像の解析結果を構造化できませんでした。",
+  );
 };
