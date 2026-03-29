@@ -1,5 +1,7 @@
+import { FileSpreadsheetIcon, Globe2Icon, ImageIcon } from "lucide-react";
 import { redirect } from "next/navigation";
 import { AuthControls } from "@/components/auth-controls";
+import { defaultLocale, getDictionary } from "@/lib/i18n";
 import { getCurrentUser } from "@/lib/supabase/auth";
 
 type LoginPageProps = {
@@ -12,6 +14,8 @@ export default async function LoginPage({ searchParams }: LoginPageProps) {
   const user = await getCurrentUser();
   const params = searchParams ? await searchParams : undefined;
   const next = params?.next && params.next.startsWith("/") ? params.next : "/app";
+  const locale = defaultLocale;
+  const dict = getDictionary(locale);
 
   if (user) {
     redirect(next);
@@ -23,25 +27,33 @@ export default async function LoginPage({ searchParams }: LoginPageProps) {
         <section className="grid gap-6 lg:grid-cols-[1fr_380px]">
           <div className="rounded-[36px] border border-stone-900/10 bg-white/75 p-7 shadow-[0_30px_90px_-55px_rgba(41,37,36,0.75)] backdrop-blur sm:p-9">
             <p className="text-xs uppercase tracking-[0.3em] text-stone-500">Login</p>
-            <h1 className="mt-3 text-4xl font-semibold tracking-tight">Google でログイン</h1>
+            <h1 className="mt-3 text-4xl font-semibold tracking-tight">{dict.auth.signIn}</h1>
             <p className="mt-5 max-w-2xl text-sm leading-8 text-stone-600 sm:text-base">
-              初回ログイン時に、Google Calendar と Google Sheets の利用許可をまとめて取る。
-              ログインが通れば、そのまま既存のアプリ画面へ入れるよ。
+              Google Calendar、Sheets、Maps とつないで、そのまま既存の予定操作へ入る。
             </p>
 
             <div className="mt-8">
-              <AuthControls redirectPath={next} mode="hero" />
+              <AuthControls redirectPath={next} locale={locale} mode="hero" />
             </div>
           </div>
 
           <aside className="rounded-[36px] border border-stone-900/10 bg-stone-900 p-7 text-stone-50 shadow-[0_30px_90px_-50px_rgba(28,25,23,0.9)] sm:p-9">
-            <p className="text-xs uppercase tracking-[0.3em] text-stone-400">Permission</p>
-            <ul className="mt-4 space-y-3 text-sm leading-7 text-stone-300">
-              <li>Google ログイン</li>
-              <li>Google Calendar へのアクセス</li>
-              <li>Google Sheets 読み取り</li>
-              <li>位置情報は必要時だけブラウザで別許可</li>
-            </ul>
+            <p className="text-xs uppercase tracking-[0.3em] text-stone-400">Ready</p>
+            <div className="mt-4 space-y-3">
+              {[
+                { icon: Globe2Icon, label: "Google" },
+                { icon: FileSpreadsheetIcon, label: "Sheets" },
+                { icon: ImageIcon, label: "Image import" },
+              ].map((item) => (
+                <div
+                  key={item.label}
+                  className="flex items-center gap-3 rounded-[22px] border border-white/10 px-4 py-3"
+                >
+                  <item.icon className="size-4 text-stone-300" />
+                  <span className="text-sm text-stone-200">{item.label}</span>
+                </div>
+              ))}
+            </div>
           </aside>
         </section>
       </div>

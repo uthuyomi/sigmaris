@@ -1,24 +1,78 @@
+import { type UIMessage } from "ai";
+import { redirect } from "next/navigation";
 import { Assistant } from "@/app/assistant";
 import { AppShell } from "@/components/app-shell";
+import { ChatThreadSidebar } from "@/components/chat-thread-sidebar";
+import {
+  createChatThread,
+  getChatThread,
+  listChatMessages,
+  listChatThreads,
+} from "@/lib/chat-threads";
+import { getDictionary } from "@/lib/i18n";
+import { readUserLocale } from "@/lib/profile-settings";
 import { requireUser } from "@/lib/supabase/auth";
 
-export default async function ChatPage() {
-  await requireUser("/chat");
+type ChatPageProps = {
+  searchParams?: Promise<{
+    thread?: string;
+  }>;
+};
+
+export default async function ChatPage({ searchParams }: ChatPageProps) {
+  const user = await requireUser("/chat");
+  const locale = await readUserLocale(user.id);
+  const dict = getDictionary(locale);
+  const params = searchParams ? await searchParams : undefined;
+  const requestedThreadId = params?.thread;
+
+  let threads = await listChatThreads(user.id);
+  if (!threads.length) {
+    const created = await createChatThread(user.id);
+    redirect(`/chat?thread=${created.id}`);
+  }
+
+  let selectedThreadId = requestedThreadId ?? threads[0]?.id;
+  const selectedThread = selectedThreadId ? await getChatThread(user.id, selectedThreadId) : null;
+
+  if (!selectedThread) {
+    selectedThreadId = threads[0]?.id;
+    if (!selectedThreadId) {
+      const created = await createChatThread(user.id);
+      redirect(`/chat?thread=${created.id}`);
+    }
+
+    redirect(`/chat?thread=${selectedThreadId}`);
+  }
+
+  threads = await listChatThreads(user.id);
+  const initialMessages = (await listChatMessages(user.id, selectedThread.id)) as UIMessage[];
 
   return (
     <AppShell
-      title="チャットで予定調整"
-      description="会話を主役にして、画像やファイルの取り込みも同じ入力欄から進める。"
-      badge="OpenAI 連携"
+      locale={locale}
+      title={dict.shell.chatTitle}
+      description={dict.shell.chatDescription}
+      badge={dict.shell.chatBadge}
     >
-      <section className="min-h-[calc(100vh-13rem)] overflow-hidden rounded-[32px] border border-stone-900/10 bg-[linear-gradient(180deg,_rgba(35,31,32,0.98),_rgba(54,48,42,0.94))] shadow-[0_30px_90px_-50px_rgba(28,25,23,0.9)]">
-        <div className="border-b border-white/10 px-5 py-5 text-stone-50 sm:px-6">
-          <p className="text-xs uppercase tracking-[0.3em] text-stone-400">Assistant</p>
-          <h2 className="mt-1 text-lg font-semibold">予定調整チャット</h2>
-        </div>
-        <div className="h-[calc(100vh-18rem)] min-h-[38rem]">
-          <Assistant />
-        </div>
+      <section className="grid min-h-[calc(100vh-13rem)] gap-4 lg:grid-cols-[280px_minmax(0,1fr)]">
+        <ChatThreadSidebar
+          locale={locale}
+          threads={threads}
+          activeThreadId={selectedThread.id}
+        />
+
+        <section className="overflow-hidden rounded-[32px] border border-stone-900/10 bg-[linear-gradient(180deg,_rgba(35,31,32,0.98),_rgba(54,48,42,0.94))] shadow-[0_30px_90px_-50px_rgba(28,25,23,0.9)]">
+          <div className="border-b border-white/10 px-5 py-5 text-stone-50 sm:px-6">
+            <p className="text-xs uppercase tracking-[0.3em] text-stone-400">
+              {dict.chat.assistant}
+            </p>
+            <h2 className="mt-2 text-lg font-semibold">{selectedThread.title}</h2>
+          </div>
+          <div className="h-[calc(100vh-18rem)] min-h-[38rem]">
+            <Assistant threadId={selectedThread.id} initialMessages={initialMessages} locale={locale} />
+          </div>
+        </section>
       </section>
     </AppShell>
   );

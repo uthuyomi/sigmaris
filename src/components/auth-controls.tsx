@@ -1,7 +1,9 @@
 "use client";
 
 import { createClient, hasSupabaseConfig } from "@/lib/supabase/client";
+import { getDictionary, type AppLocale } from "@/lib/i18n";
 import type { User } from "@supabase/supabase-js";
+import { LogInIcon, LogOutIcon } from "lucide-react";
 import { useEffect, useState } from "react";
 
 const googleScopes = [
@@ -14,13 +16,16 @@ const googleScopes = [
 
 type AuthControlsProps = {
   redirectPath?: string;
+  locale: AppLocale;
   mode?: "compact" | "hero";
 };
 
 export function AuthControls({
   redirectPath,
+  locale,
   mode = "compact",
 }: AuthControlsProps) {
+  const dict = getDictionary(locale);
   const [user, setUser] = useState<User | null>(null);
   const [loading, setLoading] = useState(false);
   const [available, setAvailable] = useState(false);
@@ -44,9 +49,7 @@ export function AuthControls({
       setUser(session?.user ?? null);
     });
 
-    return () => {
-      subscription.unsubscribe();
-    };
+    return () => subscription.unsubscribe();
   }, []);
 
   const nextPath =
@@ -78,11 +81,9 @@ export function AuthControls({
         },
       });
 
-      if (error) {
-        throw error;
-      }
-    } catch (error) {
-      setError(error instanceof Error ? error.message : "Google 接続に失敗しました。");
+      if (error) throw error;
+    } catch (nextError) {
+      setError(nextError instanceof Error ? nextError.message : dict.auth.signInError);
       setLoading(false);
     }
   };
@@ -96,12 +97,10 @@ export function AuthControls({
 
       const supabase = createClient();
       await supabase.auth.signOut();
-      await fetch("/auth/signout", {
-        method: "POST",
-      });
+      await fetch("/auth/signout", { method: "POST" });
       window.location.assign("/");
-    } catch (error) {
-      setError(error instanceof Error ? error.message : "ログアウトに失敗しました。");
+    } catch (nextError) {
+      setError(nextError instanceof Error ? nextError.message : dict.auth.signOutError);
       setLoading(false);
     }
   };
@@ -109,7 +108,7 @@ export function AuthControls({
   if (!available) {
     return (
       <div className="rounded-full border border-stone-900/10 bg-white px-4 py-2 text-sm text-stone-500">
-        Supabase 未設定
+        {dict.auth.unavailable}
       </div>
     );
   }
@@ -119,15 +118,16 @@ export function AuthControls({
       <div className="flex flex-col items-start gap-2">
         <div className="flex flex-wrap items-center gap-2">
           <div className="rounded-full border border-stone-900/10 bg-white px-4 py-2 text-sm text-stone-700">
-            {user.email ?? "Google ログイン中"}
+            {user.email ?? dict.auth.signedInAs}
           </div>
           <button
             type="button"
             onClick={signOut}
             disabled={loading}
-            className="rounded-full bg-stone-900 px-4 py-2 text-sm font-medium text-stone-50 disabled:opacity-50"
+            className="inline-flex items-center gap-2 rounded-full bg-stone-900 px-4 py-2 text-sm font-medium text-stone-50 disabled:opacity-50"
           >
-            ログアウト
+            <LogOutIcon className="size-4" />
+            {dict.auth.signOut}
           </button>
         </div>
         {error ? <p className="text-xs text-red-600">{error}</p> : null}
@@ -135,19 +135,16 @@ export function AuthControls({
     );
   }
 
+  const buttonClass =
+    mode === "hero"
+      ? "inline-flex items-center gap-2 rounded-full bg-stone-900 px-6 py-3 text-base font-semibold text-stone-50 disabled:opacity-50"
+      : "inline-flex items-center gap-2 rounded-full bg-stone-900 px-4 py-2 text-sm font-medium text-stone-50 disabled:opacity-50";
+
   return (
     <div className="flex flex-col items-start gap-2">
-      <button
-        type="button"
-        onClick={signInWithGoogle}
-        disabled={loading}
-        className={
-          mode === "hero"
-            ? "rounded-full bg-stone-900 px-6 py-3 text-base font-semibold text-stone-50 disabled:opacity-50"
-            : "rounded-full bg-stone-900 px-4 py-2 text-sm font-medium text-stone-50 disabled:opacity-50"
-        }
-      >
-        {loading ? "接続中..." : "Google でログイン"}
+      <button type="button" onClick={signInWithGoogle} disabled={loading} className={buttonClass}>
+        <LogInIcon className="size-4" />
+        {loading ? dict.auth.signingIn : dict.auth.signIn}
       </button>
       {error ? <p className="text-xs text-red-600">{error}</p> : null}
     </div>

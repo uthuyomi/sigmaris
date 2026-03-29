@@ -10,13 +10,17 @@ import {
   type UIMessage,
 } from "ai";
 import { z } from "zod";
+import { getChatThread, replaceChatMessages } from "@/lib/chat-threads";
 import {
   createGoogleCalendarEvents,
+  deleteGoogleCalendarEvents,
+  deleteGoogleCalendarEventsInRange,
   listGoogleCalendarEvents,
 } from "@/lib/google/calendar";
 import { getSimpleRoutePlan, getTransitRoutePlan } from "@/lib/google/maps";
 import { readGoogleSheetPreview } from "@/lib/google/sheets";
 import { extractScheduleFromImage } from "@/lib/import/extract";
+import { createClient } from "@/lib/supabase/server";
 
 const listCalendarEventsTool = tool({
   description:
@@ -25,7 +29,7 @@ const listCalendarEventsTool = tool({
     calendarId: z.string().optional(),
     timeMin: z.string().optional().describe("ISO 8601 datetime"),
     timeMax: z.string().optional().describe("ISO 8601 datetime"),
-    maxResults: z.number().int().min(1).max(50).optional(),
+    maxResults: z.number().int().min(1).max(250).optional(),
     query: z.string().optional(),
   }),
   execute: async (input) => {
@@ -78,6 +82,62 @@ const createCalendarEventsTool = tool({
           error instanceof Error
             ? error.message
             : "Google Calendar への登録に失敗しました。",
+      };
+    }
+  },
+});
+
+const deleteCalendarEventsTool = tool({
+  description:
+    "Google Calendar から既存予定を削除する。削除対象を確認したあとでだけ実行する。",
+  inputSchema: z.object({
+    calendarId: z.string().optional(),
+    eventIds: z.array(z.string()).min(1),
+  }),
+  execute: async ({ calendarId, eventIds }) => {
+    try {
+      const deleted = await deleteGoogleCalendarEvents(eventIds, calendarId);
+      return {
+        ok: true,
+        deletedCount: deleted.length,
+        deleted,
+      };
+    } catch (error) {
+      return {
+        ok: false,
+        reason:
+          error instanceof Error
+            ? error.message
+            : "Google Calendar 既存予定の削除に失敗しました。",
+      };
+    }
+  },
+});
+
+const deleteCalendarEventsInRangeTool = tool({
+  description:
+    "Google Calendar から指定期間の予定をまとめて削除する。月単位の入れ替えや再登録の前に使う。",
+  inputSchema: z.object({
+    calendarId: z.string().optional(),
+    timeMin: z.string().describe("ISO 8601 datetime"),
+    timeMax: z.string().describe("ISO 8601 datetime"),
+    query: z.string().optional().describe("タイトルなどで絞り込む検索語"),
+    maxResults: z.number().int().min(1).max(250).optional(),
+  }),
+  execute: async (input) => {
+    try {
+      const deleted = await deleteGoogleCalendarEventsInRange(input);
+      return {
+        ok: true,
+        ...deleted,
+      };
+    } catch (error) {
+      return {
+        ok: false,
+        reason:
+          error instanceof Error
+            ? error.message
+            : "Google Calendar 指定期間削除に失敗しました。",
       };
     }
   },
@@ -205,13 +265,12 @@ const extractLatestImageContexts = async (messages: UIMessage[]) => {
   return contexts;
 };
 
-const buildAttachmentContext = async (messages: UIMessage[]) => {
+const buildAttachmentFacts = async (messages: UIMessage[]) => {
   const imageContexts = await extractLatestImageContexts(messages);
   if (!imageContexts.length) return "";
 
   return [
-    "最新のユーザーメッセージには画像添付が含まれている。",
-    "以下は画像から抽出した予定候補の要約。これを前提に会話し、画像が未着とは言わないこと。",
+    "以下は最新メッセージに添付された画像から抽出した事実です。",
     ...imageContexts.map((context, index) => {
       if ("error" in context) {
         return `画像${index + 1} (${context.filename}): 解析失敗 - ${context.error}`;
@@ -226,46 +285,11 @@ const buildAttachmentContext = async (messages: UIMessage[]) => {
   ].join("\n\n");
 };
 
-const sanitizeMessagesForModel = (
-  messages: UIMessage[],
-  attachmentContext: string,
-): UIMessage[] => {
-  let injected = false;
-
-  return messages.map((message) => {
-    if (message.role !== "user") {
-      return {
-        ...message,
-        parts: message.parts.filter((part) => part.type !== "file"),
-      };
-    }
-
-    const hasFile = message.parts.some((part) => part.type === "file");
-    const filteredParts = message.parts.filter((part) => part.type !== "file");
-
-    if (!hasFile || !attachmentContext || injected) {
-      return {
-        ...message,
-        parts: filteredParts,
-      };
-    }
-
-    injected = true;
-
-    return {
-      ...message,
-      parts: [
-        {
-          type: "text",
-          text: [
-            "添付画像の解析結果を受け取りました。以下を前提に回答してください。",
-            attachmentContext,
-          ].join("\n\n"),
-        },
-        ...filteredParts,
-      ],
-    };
-  });
+const sanitizeMessagesForModel = (messages: UIMessage[]): UIMessage[] => {
+  return messages.map((message) => ({
+    ...message,
+    parts: message.parts.filter((part) => part.type !== "file"),
+  }));
 };
 
 export async function POST(req: Request) {
@@ -286,11 +310,55 @@ export async function POST(req: Request) {
     messages,
     system,
     tools,
+    threadId,
   }: {
     messages: UIMessage[];
     system?: string;
     tools?: Record<string, { description?: string; parameters: JSONSchema7 }>;
+    threadId?: string;
   } = await req.json();
+
+  const supabase = await createClient();
+  const {
+    data: { user },
+  } = await supabase.auth.getUser();
+
+  if (!user) {
+    return new Response(
+      JSON.stringify({
+        error: "認証が必要です。",
+      }),
+      {
+        status: 401,
+        headers: { "Content-Type": "application/json" },
+      },
+    );
+  }
+
+  if (!threadId) {
+    return new Response(
+      JSON.stringify({
+        error: "threadId が必要です。",
+      }),
+      {
+        status: 400,
+        headers: { "Content-Type": "application/json" },
+      },
+    );
+  }
+
+  const thread = await getChatThread(user.id, threadId);
+  if (!thread) {
+    return new Response(
+      JSON.stringify({
+        error: "指定されたスレッドが見つかりません。",
+      }),
+      {
+        status: 404,
+        headers: { "Content-Type": "application/json" },
+      },
+    );
+  }
 
   const latestUserMessage = [...messages].reverse().find((message) => message.role === "user");
   const latestFileCount =
@@ -301,13 +369,13 @@ export async function POST(req: Request) {
     latestParts: latestUserMessage?.parts.map((part) => part.type) ?? [],
   });
 
-  const attachmentContext = await buildAttachmentContext(messages);
-  console.log("[chat] attachmentContext", {
-    hasAttachmentContext: attachmentContext.length > 0,
-    preview: attachmentContext.slice(0, 300),
+  const attachmentFacts = await buildAttachmentFacts(messages);
+  console.log("[chat] attachmentFacts", {
+    hasAttachmentFacts: attachmentFacts.length > 0,
+    preview: attachmentFacts.slice(0, 300),
   });
 
-  const messagesForModel = sanitizeMessagesForModel(messages, attachmentContext);
+  const messagesForModel = sanitizeMessagesForModel(messages);
 
   const result = streamText({
     model: openai(process.env.OPENAI_MODEL ?? "gpt-5-nano"),
@@ -316,27 +384,37 @@ export async function POST(req: Request) {
       ...frontendTools(tools ?? {}),
       list_google_calendar_events: listCalendarEventsTool,
       create_google_calendar_events: createCalendarEventsTool,
+      delete_google_calendar_events: deleteCalendarEventsTool,
+      delete_google_calendar_events_in_range: deleteCalendarEventsInRangeTool,
       read_google_sheet: readGoogleSheetTool,
       plan_google_route: planRouteTool,
     },
-    stopWhen: stepCountIs(6),
+    stopWhen: stepCountIs(8),
     system: [
       system,
       [
         "あなたは ShiftPilotAI の予定調整アシスタントです。",
         "日本語で簡潔に話してください。",
+        "ユーザーの本文に沿って処理してください。余計な前提を足しすぎないでください。",
         "時刻の相談では開始時刻と終了時刻を明示してください。",
         "予定は 24 時間のタイムライン前提で扱ってください。",
         "Google Calendar へ登録する前に、登録対象の内容を要約して確認してください。",
+        "Google Calendar の削除は追加より危険です。削除件数、対象期間、対象タイトルを要約して、ユーザーの明示確認があるときだけ削除してください。",
+        "月単位の入れ替えでは、必要なら list_google_calendar_events で確認し、delete_google_calendar_events_in_range で古い予定を消してから create_google_calendar_events を使ってください。",
         "Google Sheets の URL が渡されたら、必要に応じて read_google_sheet を使って表を確認してください。",
         "移動時間や到着可否が話題になったら、必要に応じて plan_google_route を使って出発時刻と所要時間を確認してください。",
-        "画像解析結果が渡されているときは、それを前提に回答し、画像が見えていないとは言わないでください。",
-        "画像から抽出した候補があるときは、その候補を整理して確認し、ユーザーが明示的に指示したあとでだけ登録してください。",
+        "添付画像の抽出結果があるときは参考情報として使ってください。抽出に失敗した場合は失敗したとだけ伝えてください。",
       ].join("\n"),
+      attachmentFacts,
     ]
       .filter(Boolean)
       .join("\n\n"),
   });
 
-  return result.toUIMessageStreamResponse();
+  return result.toUIMessageStreamResponse({
+    originalMessages: messagesForModel,
+    onFinish: async ({ messages: responseMessages }) => {
+      await replaceChatMessages(user.id, threadId, responseMessages);
+    },
+  });
 }

@@ -1,5 +1,6 @@
 import { ComposerAttachments, UserMessageAttachments } from "@/components/attachment";
 import { MarkdownText } from "@/components/markdown-text";
+import { getDictionary, type AppLocale } from "@/lib/i18n";
 import {
   ComposerPrimitive,
   MessagePrimitive,
@@ -9,39 +10,44 @@ import {
 import { ArrowUpIcon, PlusIcon, SquareIcon } from "lucide-react";
 import type { FC } from "react";
 
-export const Thread: FC = () => {
+type ThreadProps = {
+  locale: AppLocale;
+};
+
+export const Thread: FC<ThreadProps> = ({ locale }) => {
+  const dict = getDictionary(locale);
+
   return (
     <ThreadPrimitive.Root className="flex h-full min-h-0 flex-col bg-transparent">
       <ThreadPrimitive.Viewport className="flex min-h-0 flex-1 flex-col overflow-y-auto px-4 pt-6 sm:px-6">
-        <ThreadWelcome />
+        <ThreadWelcome locale={locale} />
 
         <ThreadPrimitive.Messages>
-          {() => <ThreadMessage />}
+          {() => <ThreadMessage locale={locale} />}
         </ThreadPrimitive.Messages>
 
         <div className="mt-auto pb-4 pt-6">
-          <Composer />
+          <Composer placeholder={dict.chat.inputPlaceholder} />
         </div>
       </ThreadPrimitive.Viewport>
     </ThreadPrimitive.Root>
   );
 };
 
-const ThreadWelcome: FC = () => {
+const ThreadWelcome: FC<ThreadProps> = ({ locale }) => {
+  const dict = getDictionary(locale);
   const isEmpty = useAuiState((s) => s.thread.isEmpty);
   if (!isEmpty) return null;
 
   return (
     <div className="mx-auto my-auto flex w-full max-w-3xl grow flex-col justify-center px-2 text-center">
-      <h1 className="text-3xl font-semibold text-stone-50">今日はどう調整する？</h1>
-      <p className="mt-3 text-base leading-8 text-stone-400">
-        予定の相談、画像の読み取り、シート URL の確認、Google カレンダー反映までこのチャットで進められるよ。
-      </p>
+      <h1 className="text-3xl font-semibold text-stone-50">{dict.chat.welcomeTitle}</h1>
+      <p className="mt-3 text-base leading-8 text-stone-400">{dict.chat.welcomeBody}</p>
     </div>
   );
 };
 
-const ThreadMessage: FC = () => {
+const ThreadMessage: FC<ThreadProps> = () => {
   const role = useAuiState((s) => s.message.role);
 
   return (
@@ -75,7 +81,7 @@ const UserMessage: FC = () => {
   );
 };
 
-const Composer: FC = () => {
+const Composer: FC<{ placeholder: string }> = ({ placeholder }) => {
   const isRunning = useAuiState((s) => s.thread.isRunning);
 
   return (
@@ -96,7 +102,7 @@ const Composer: FC = () => {
           </ComposerPrimitive.AddAttachment>
 
           <ComposerPrimitive.Input
-            placeholder="メッセージを書く。画像やシート URL もここから扱える"
+            placeholder={placeholder}
             className="min-h-11 w-full resize-none bg-transparent px-2 py-2 text-sm outline-none placeholder:text-stone-400"
             rows={1}
             aria-label="Message input"

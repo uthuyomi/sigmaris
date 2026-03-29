@@ -22,7 +22,7 @@ const ibmPlexMono = IBM_Plex_Mono({
 
 export const metadata: Metadata = {
   title: "ShiftPilotAI",
-  description: "チャット中心で予定を組み、時間と移動まで調整するスケジューラー",
+  description: "チャットから予定、移動、Google 連携まで扱うスケジューラー",
 };
 
 export default function RootLayout({

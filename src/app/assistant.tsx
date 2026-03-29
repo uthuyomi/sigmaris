@@ -2,16 +2,15 @@
 
 import type { AppendMessage } from "@assistant-ui/core";
 import { AssistantRuntimeProvider } from "@assistant-ui/react";
-import {
-  AssistantChatTransport,
-  useChatRuntime,
-} from "@assistant-ui/react-ai-sdk";
+import { useAISDKRuntime, AssistantChatTransport } from "@assistant-ui/react-ai-sdk";
+import { useChat } from "@ai-sdk/react";
 import {
   lastAssistantMessageIsCompleteWithToolCalls,
   type CreateUIMessage,
   type UIMessage,
 } from "ai";
 import { Thread } from "@/components/thread";
+import type { AppLocale } from "@/lib/i18n";
 
 const toCreateMessage = <UI_MESSAGE extends UIMessage = UIMessage>(
   message: AppendMessage,
@@ -25,16 +24,6 @@ const toCreateMessage = <UI_MESSAGE extends UIMessage = UIMessage>(
       })),
     ) ?? []),
   ];
-
-  const hasText = inputParts.some((part) => part.type === "text" && part.text.trim().length > 0);
-  const hasFile = inputParts.some((part) => part.type === "image" || part.type === "file");
-
-  if (!hasText && hasFile) {
-    inputParts.unshift({
-      type: "text",
-      text: "添付ファイルを確認して、予定候補を整理してください。",
-    });
-  }
 
   const parts: UIMessage["parts"] = inputParts.map((part) => {
     switch (part.type) {
@@ -69,19 +58,33 @@ const toCreateMessage = <UI_MESSAGE extends UIMessage = UIMessage>(
   } as CreateUIMessage<UI_MESSAGE>;
 };
 
-export const Assistant = () => {
-  const runtime = useChatRuntime({
-    sendAutomaticallyWhen: lastAssistantMessageIsCompleteWithToolCalls,
-    toCreateMessage,
+type AssistantProps = {
+  threadId: string;
+  initialMessages: UIMessage[];
+  locale: AppLocale;
+};
+
+export const Assistant = ({ threadId, initialMessages, locale }: AssistantProps) => {
+  const chat = useChat({
+    id: threadId,
+    messages: initialMessages,
     transport: new AssistantChatTransport({
       api: "/api/chat",
+      body: {
+        threadId,
+      },
     }),
+    sendAutomaticallyWhen: lastAssistantMessageIsCompleteWithToolCalls,
+  });
+
+  const runtime = useAISDKRuntime(chat, {
+    toCreateMessage,
   });
 
   return (
     <AssistantRuntimeProvider runtime={runtime}>
       <div className="h-full min-h-0">
-        <Thread />
+        <Thread locale={locale} />
       </div>
     </AssistantRuntimeProvider>
   );

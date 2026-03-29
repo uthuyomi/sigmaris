@@ -10,6 +10,17 @@ export type CalendarWriteEvent = {
   location?: string;
 };
 
+export type CalendarListedEvent = {
+  id: string | null | undefined;
+  summary: string | null | undefined;
+  description: string | null | undefined;
+  location: string | null | undefined;
+  htmlLink: string | null | undefined;
+  status: string | null | undefined;
+  start: string | null | undefined;
+  end: string | null | undefined;
+};
+
 export const hasGoogleCalendarWriteConfig = () => hasGoogleOAuthConfig();
 
 const createCalendarClient = async () => {
@@ -38,7 +49,7 @@ export const listGoogleCalendarEvents = async (input: {
     orderBy: "startTime",
   });
 
-  return (result.data.items ?? []).map((event) => ({
+  return (result.data.items ?? []).map<CalendarListedEvent>((event) => ({
     id: event.id,
     summary: event.summary,
     description: event.description,
@@ -89,4 +100,57 @@ export const createGoogleCalendarEvents = async (
   }
 
   return created;
+};
+
+export const deleteGoogleCalendarEvents = async (
+  eventIds: string[],
+  calendarId = process.env.GOOGLE_CALENDAR_ID ?? "primary",
+) => {
+  if (!eventIds.length) {
+    return [];
+  }
+
+  const calendar = await createCalendarClient();
+  const deleted = [];
+
+  for (const eventId of eventIds) {
+    await calendar.events.delete({
+      calendarId,
+      eventId,
+    });
+
+    deleted.push({ id: eventId });
+  }
+
+  return deleted;
+};
+
+export const deleteGoogleCalendarEventsInRange = async (input: {
+  calendarId?: string;
+  timeMin: string;
+  timeMax: string;
+  query?: string;
+  maxResults?: number;
+}) => {
+  const calendarId = input.calendarId ?? process.env.GOOGLE_CALENDAR_ID ?? "primary";
+  const events = await listGoogleCalendarEvents({
+    calendarId,
+    timeMin: input.timeMin,
+    timeMax: input.timeMax,
+    query: input.query,
+    maxResults: input.maxResults ?? 250,
+  });
+
+  const deletable = events.filter((event) => event.id && event.status !== "cancelled");
+  const deleted = await deleteGoogleCalendarEvents(
+    deletable.map((event) => event.id as string),
+    calendarId,
+  );
+
+  return {
+    matchedCount: events.length,
+    deletedCount: deleted.length,
+    deletedIds: deleted.map((event) => event.id),
+    deletedEvents: deletable,
+  };
 };

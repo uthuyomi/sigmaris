@@ -3,9 +3,9 @@
 import Link from "next/link";
 import { useMemo, useState } from "react";
 import { MobilityPanel } from "@/components/mobility-panel";
+import { getDictionary, type AppLocale } from "@/lib/i18n";
 import {
   formatJapaneseDate,
-  getEventsByDate,
   grainOptions,
   minutesToLabel,
   toneClassMap,
@@ -14,12 +14,17 @@ import {
 } from "@/lib/mock-schedule";
 
 type TimelineBoardProps = {
+  locale: AppLocale;
   selectedDate?: string;
+  events: EventItem[];
 };
 
 export function TimelineBoard({
+  locale,
   selectedDate = "2026-03-27",
+  events,
 }: TimelineBoardProps) {
+  const dict = getDictionary(locale);
   const [activeGrain, setActiveGrain] = useState<Grain>(10);
 
   const slots = useMemo(() => {
@@ -29,25 +34,18 @@ export function TimelineBoard({
 
   const pixelsPerMinute = activeGrain <= 10 ? 1.6 : activeGrain <= 15 ? 1.25 : 0.95;
   const timelineHeight = 24 * 60 * pixelsPerMinute;
-  const selectedEvents = getEventsByDate(selectedDate);
-  const focusEvent: EventItem | undefined =
-    selectedEvents.find((event) => event.location) ?? selectedEvents[0];
+  const focusEvent: EventItem | undefined = events.find((event) => event.location) ?? events[0];
   const dateLabel = formatJapaneseDate(selectedDate);
 
   return (
-    <div className="flex min-h-[42rem] flex-col overflow-hidden rounded-[32px] border border-stone-900/10 bg-white/75 shadow-[0_30px_90px_-55px_rgba(41,37,36,0.75)] backdrop-blur">
+    <div className="flex min-h-[42rem] flex-col overflow-hidden rounded-[32px] border border-stone-900/10 bg-white/80 shadow-[0_30px_90px_-55px_rgba(41,37,36,0.75)] backdrop-blur">
       <div className="border-b border-stone-900/10 px-5 py-5">
         <div className="flex flex-col gap-4 xl:flex-row xl:items-end xl:justify-between">
           <div>
             <p className="text-xs font-medium uppercase tracking-[0.3em] text-stone-500">
-              Timeline
+              {dict.timeline.selectedDay}
             </p>
-            <h2 className="mt-1 text-lg font-semibold text-stone-900">
-              1日の流れを 24 時間で調整
-            </h2>
-            <p className="mt-2 text-sm text-stone-600">
-              カレンダーで日付を選んでから、その日の予定だけに集中して細かく詰める。
-            </p>
+            <h2 className="mt-1 text-xl font-semibold text-stone-900">{dateLabel}</h2>
           </div>
 
           <div className="flex flex-wrap gap-2">
@@ -56,13 +54,14 @@ export function TimelineBoard({
                 key={grain}
                 type="button"
                 onClick={() => setActiveGrain(grain)}
+                aria-label={`${grain}`}
                 className={`rounded-full px-4 py-2 text-sm font-medium transition ${
                   activeGrain === grain
                     ? "bg-stone-900 text-stone-50 shadow-[0_16px_35px_-24px_rgba(28,25,23,0.9)]"
                     : "bg-stone-900/5 text-stone-700 hover:bg-stone-900/10"
                 }`}
               >
-                {grain === 60 ? "1時間" : `${grain}分`}
+                {grain === 60 ? "1h" : `${grain}m`}
               </button>
             ))}
           </div>
@@ -71,19 +70,14 @@ export function TimelineBoard({
 
       <div className="grid gap-4 border-b border-stone-900/10 px-5 py-4 md:grid-cols-[1.3fr_0.9fr]">
         <div className="rounded-[24px] bg-stone-900 px-4 py-4 text-stone-50">
-          <p className="text-xs uppercase tracking-[0.3em] text-stone-400">Selected day</p>
+          <p className="text-xs uppercase tracking-[0.3em] text-stone-400">{dict.timeline.title}</p>
           <p className="mt-2 text-lg font-semibold">{dateLabel}</p>
-          <p className="mt-2 text-sm leading-7 text-stone-200">
-            デフォルトは 10 分刻み。細かく詰めたいときだけ 5 分へ寄せる。
-          </p>
+          <p className="mt-2 text-sm leading-7 text-stone-200">{dict.timeline.refine}</p>
         </div>
         <div className="rounded-[24px] border border-stone-900/10 bg-stone-50 px-4 py-4">
-          <p className="text-xs uppercase tracking-[0.3em] text-stone-500">Selected grain</p>
+          <p className="text-xs uppercase tracking-[0.3em] text-stone-500">{dict.timeline.selectedGrain}</p>
           <p className="mt-2 text-3xl font-semibold tracking-tight text-stone-900">
-            {activeGrain === 60 ? "1時間" : `${activeGrain}分`}
-          </p>
-          <p className="mt-2 text-sm leading-6 text-stone-600">
-            スナップと並びの密度をここで切り替える。
+            {activeGrain === 60 ? "1h" : `${activeGrain}m`}
           </p>
         </div>
       </div>
@@ -94,13 +88,13 @@ export function TimelineBoard({
             <div className="flex items-center justify-between border-b border-stone-900/8 px-4 py-3">
               <div>
                 <p className="text-sm font-semibold text-stone-900">{dateLabel}</p>
-                <p className="text-xs text-stone-500">カレンダーから選んだ日のタイムライン</p>
+                <p className="text-xs text-stone-500">{events.length}</p>
               </div>
               <Link
                 href="/calendar"
                 className="rounded-full border border-stone-900/10 bg-white px-3 py-2 text-xs font-medium text-stone-700 transition hover:bg-stone-50"
               >
-                カレンダーへ戻る
+                {dict.common.backToCalendar}
               </Link>
             </div>
 
@@ -132,7 +126,7 @@ export function TimelineBoard({
                 })}
 
                 <div className="absolute inset-y-0 left-[72px] right-0">
-                  {selectedEvents.map((event) => {
+                  {events.map((event) => {
                     const top = event.startMinutes * pixelsPerMinute;
                     const height = Math.max(
                       (event.endMinutes - event.startMinutes) * pixelsPerMinute,
@@ -149,20 +143,21 @@ export function TimelineBoard({
                           <div>
                             <p className="text-sm font-semibold leading-6">{event.title}</p>
                             <p className="mt-1 text-xs font-medium uppercase tracking-[0.18em] opacity-70">
-                              {minutesToLabel(event.startMinutes)} -{" "}
-                              {minutesToLabel(event.endMinutes)}
+                              {minutesToLabel(event.startMinutes)} - {minutesToLabel(event.endMinutes)}
                             </p>
                             {event.location ? (
                               <p className="mt-2 text-xs font-medium opacity-70">
-                                場所: {event.location}
+                                {dict.timeline.place}: {event.location}
                               </p>
                             ) : null}
                           </div>
                           <div className="rounded-full bg-white/50 px-2 py-1 text-[10px] font-semibold uppercase tracking-[0.18em]">
-                            Snap
+                            {event.sourceType === "calendar_sync"
+                              ? dict.timeline.sourceSync
+                              : dict.timeline.sourceApp}
                           </div>
                         </div>
-                        <p className="mt-3 text-sm leading-6 opacity-85">{event.detail}</p>
+                        <p className="mt-3 line-clamp-3 text-sm leading-6 opacity-85">{event.detail}</p>
                       </article>
                     );
                   })}
@@ -173,42 +168,35 @@ export function TimelineBoard({
 
           <aside className="flex flex-col gap-4">
             <section className="rounded-[28px] border border-stone-900/10 bg-stone-50 p-4">
-              <p className="text-xs uppercase tracking-[0.3em] text-stone-500">Quick edit</p>
-              <h3 className="mt-2 text-base font-semibold text-stone-900">選択中の枠を調整</h3>
+              <p className="text-xs uppercase tracking-[0.3em] text-stone-500">{dict.timeline.quickEdit}</p>
               <div className="mt-4 space-y-3">
                 <label className="block">
                   <span className="mb-2 block text-xs font-medium uppercase tracking-[0.18em] text-stone-500">
-                    開始
+                    {dict.timeline.start}
                   </span>
                   <div className="rounded-2xl border border-stone-900/10 bg-white px-4 py-3 text-sm text-stone-900">
-                    16:20
+                    {focusEvent ? minutesToLabel(focusEvent.startMinutes) : "--:--"}
                   </div>
                 </label>
                 <label className="block">
                   <span className="mb-2 block text-xs font-medium uppercase tracking-[0.18em] text-stone-500">
-                    終了
+                    {dict.timeline.end}
                   </span>
                   <div className="rounded-2xl border border-stone-900/10 bg-white px-4 py-3 text-sm text-stone-900">
-                    16:50
+                    {focusEvent ? minutesToLabel(focusEvent.endMinutes) : "--:--"}
                   </div>
                 </label>
               </div>
-              <button
-                type="button"
-                className="mt-4 w-full rounded-full bg-stone-900 px-4 py-3 text-sm font-semibold text-stone-50 transition hover:bg-stone-800"
-              >
-                この時間で調整
-              </button>
             </section>
 
-            <MobilityPanel selectedEvent={focusEvent} />
+            <MobilityPanel locale={locale} selectedEvent={focusEvent} />
 
             <section className="rounded-[28px] border border-stone-900/10 bg-[linear-gradient(180deg,_rgba(231,111,81,0.12),_rgba(255,255,255,0.92))] p-4">
-              <p className="text-xs uppercase tracking-[0.3em] text-stone-500">Human logic</p>
+              <p className="text-xs uppercase tracking-[0.3em] text-stone-500">{dict.timeline.humanLogic}</p>
               <ul className="mt-3 space-y-3 text-sm leading-6 text-stone-700">
-                <li>まず日付はカレンダーで決める。</li>
-                <li>時間の調整はタイムラインに集中させる。</li>
-                <li>移動がある日は、推奨出発時刻まで含めて考える。</li>
+                {dict.timeline.logicItems.map((item) => (
+                  <li key={item}>{item}</li>
+                ))}
               </ul>
             </section>
           </aside>

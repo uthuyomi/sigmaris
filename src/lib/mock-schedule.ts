@@ -9,67 +9,43 @@ export type EventItem = {
   detail: string;
   date: string;
   location?: string;
+  externalEventId?: string;
+  sourceType?: "manual" | "chat" | "sheet" | "image" | "calendar_sync";
 };
 
 export const grainOptions: Grain[] = [5, 10, 15, 30, 60];
 
 export const scheduleEvents: EventItem[] = [
   {
-    id: "e1",
-    title: "朝の確認と連絡整理",
+    id: "sample-1",
+    title: "Morning sync",
     startMinutes: 8 * 60 + 30,
     endMinutes: 9 * 60 + 10,
     tone: "mint",
-    detail: "Slack / メール / 本日の優先順位",
+    detail: "Chat and review the day",
     date: "2026-03-27",
+    sourceType: "manual",
   },
   {
-    id: "e2",
-    title: "集中作業ブロック",
+    id: "sample-2",
+    title: "UI review",
     startMinutes: 10 * 60,
     endMinutes: 12 * 60 + 10,
     tone: "sky",
-    detail: "UI 実装とタイムライン調整",
+    detail: "Check layout and timeline",
     date: "2026-03-27",
+    sourceType: "chat",
   },
   {
-    id: "e3",
-    title: "相談枠",
+    id: "sample-3",
+    title: "Travel plan",
     startMinutes: 16 * 60 + 20,
     endMinutes: 16 * 60 + 50,
     tone: "amber",
-    detail: "進捗確認 / 次の調整",
+    detail: "Verify departure timing",
     date: "2026-03-27",
-    location: "渋谷スクランブルスクエア",
-  },
-  {
-    id: "e4",
-    title: "夜の整理",
-    startMinutes: 21 * 60,
-    endMinutes: 21 * 60 + 45,
-    tone: "mint",
-    detail: "明日の仮配置を作る",
-    date: "2026-03-27",
-  },
-  {
-    id: "e5",
-    title: "移動込みの訪問",
-    startMinutes: 13 * 60,
-    endMinutes: 14 * 60 + 20,
-    tone: "amber",
-    detail: "現地確認と戻り時間込み",
-    date: "2026-03-29",
-    location: "東京ビッグサイト",
-  },
-  {
-    id: "e6",
-    title: "月初レビュー",
-    startMinutes: 11 * 60,
-    endMinutes: 12 * 60,
-    tone: "sky",
-    detail: "来月分の予定整理",
-    date: "2026-03-31",
-    location: "品川駅",
+    location: "Tokyo Station",
+    sourceType: "manual",
   },
 ];
 

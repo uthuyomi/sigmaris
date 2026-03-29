@@ -1,10 +1,12 @@
 "use client";
 
+import { getDictionary, type AppLocale } from "@/lib/i18n";
 import type { EventItem } from "@/lib/mock-schedule";
 import { toIsoDateTime } from "@/lib/mock-schedule";
 import { useState } from "react";
 
 type MobilityPanelProps = {
+  locale: AppLocale;
   selectedEvent?: EventItem;
 };
 
@@ -28,7 +30,8 @@ type PlanResponse = {
   };
 };
 
-export function MobilityPanel({ selectedEvent }: MobilityPanelProps) {
+export function MobilityPanel({ locale, selectedEvent }: MobilityPanelProps) {
+  const dict = getDictionary(locale);
   const [travelMode, setTravelMode] = useState<"transit" | "driving" | "walking">(
     "transit",
   );
@@ -41,7 +44,7 @@ export function MobilityPanel({ selectedEvent }: MobilityPanelProps) {
   const resolveCurrentLocation = () =>
     new Promise<string>((resolve, reject) => {
       if (!navigator.geolocation) {
-        reject(new Error("現在地取得に対応していないブラウザです。"));
+        reject(new Error("Geolocation unavailable"));
         return;
       }
 
@@ -49,13 +52,13 @@ export function MobilityPanel({ selectedEvent }: MobilityPanelProps) {
         (position) => {
           resolve(`${position.coords.latitude},${position.coords.longitude}`);
         },
-        () => reject(new Error("現在地を取得できませんでした。")),
+        () => reject(new Error("Geolocation denied")),
       );
     });
 
   const fetchPlan = async () => {
     if (!selectedEvent?.location) {
-      setStatus("場所付きの予定を選ぶと移動計画を出せるよ。");
+      setStatus("No location");
       return;
     }
 
@@ -83,14 +86,12 @@ export function MobilityPanel({ selectedEvent }: MobilityPanelProps) {
 
       const data = await response.json();
       if (!response.ok) {
-        throw new Error(data.error ?? "移動計画を取得できませんでした。");
+        throw new Error(data.error ?? "Route planning failed");
       }
 
       setPlan(data.plan);
     } catch (error) {
-      setStatus(
-        error instanceof Error ? error.message : "移動計画を取得できませんでした。",
-      );
+      setStatus(error instanceof Error ? error.message : "Route planning failed");
     } finally {
       setLoading(false);
     }
@@ -98,18 +99,10 @@ export function MobilityPanel({ selectedEvent }: MobilityPanelProps) {
 
   return (
     <section className="rounded-[28px] border border-stone-900/10 bg-white p-4">
-      <p className="text-xs uppercase tracking-[0.3em] text-stone-500">Mobility</p>
-      <h3 className="mt-2 text-base font-semibold text-stone-900">移動込みで調整</h3>
-
-      {selectedEvent?.location ? (
-        <p className="mt-2 text-sm leading-7 text-stone-600">
-          行き先: {selectedEvent.location}
-        </p>
-      ) : (
-        <p className="mt-2 text-sm leading-7 text-stone-600">
-          場所付きの予定を選ぶと、ここで移動時間を計算できる。
-        </p>
-      )}
+      <p className="text-xs uppercase tracking-[0.3em] text-stone-500">Route</p>
+      <h3 className="mt-2 text-base font-semibold text-stone-900">
+        {selectedEvent?.location ?? dict.common.unavailable}
+      </h3>
 
       <div className="mt-4 space-y-3">
         <div className="flex flex-wrap gap-2">
@@ -124,7 +117,7 @@ export function MobilityPanel({ selectedEvent }: MobilityPanelProps) {
                   : "bg-stone-100 text-stone-700"
               }`}
             >
-              {value === "home" ? "自宅" : value === "current" ? "現在地" : "手入力"}
+              {value === "home" ? "Home" : value === "current" ? "GPS" : "Edit"}
             </button>
           ))}
         </div>
@@ -133,7 +126,7 @@ export function MobilityPanel({ selectedEvent }: MobilityPanelProps) {
           <input
             value={origin}
             onChange={(event) => setOrigin(event.target.value)}
-            placeholder={originType === "home" ? "自宅の住所" : "出発地"}
+            placeholder={originType === "home" ? "Home" : "Origin"}
             className="w-full rounded-2xl border border-stone-900/10 bg-stone-50 px-4 py-3 text-sm outline-none"
           />
         ) : null}
@@ -150,11 +143,7 @@ export function MobilityPanel({ selectedEvent }: MobilityPanelProps) {
                   : "bg-stone-100 text-stone-700"
               }`}
             >
-              {value === "transit"
-                ? "電車・バス"
-                : value === "driving"
-                  ? "車"
-                  : "徒歩"}
+              {value === "transit" ? "Train" : value === "driving" ? "Car" : "Walk"}
             </button>
           ))}
         </div>
@@ -165,18 +154,17 @@ export function MobilityPanel({ selectedEvent }: MobilityPanelProps) {
           onClick={fetchPlan}
           className="w-full rounded-full bg-stone-900 px-4 py-3 text-sm font-semibold text-stone-50 transition hover:bg-stone-800 disabled:opacity-50"
         >
-          {loading ? "計算中..." : "移動計画を出す"}
+          {loading ? dict.common.loading : dict.common.syncNow}
         </button>
       </div>
 
       {plan ? (
         <div className="mt-4 rounded-[24px] border border-stone-900/10 bg-stone-50 p-4">
           <p className="text-sm font-semibold text-stone-900">
-            推奨出発: {plan.recommendedDepartureTime ?? "計算結果なし"}
+            {plan.recommendedDepartureTime ?? "--:--"}
           </p>
           <p className="mt-1 text-sm text-stone-600">
-            到着見込み: {plan.estimatedArrivalTime ?? "-"} / 所要時間:{" "}
-            {plan.durationText ?? "-"}
+            {plan.estimatedArrivalTime ?? "-"} / {plan.durationText ?? "-"}
           </p>
           <div className="mt-3 space-y-2">
             {plan.steps.slice(0, 4).map((step, index) => (
