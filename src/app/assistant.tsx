@@ -1,0 +1,26 @@
+"use client";
+
+import { AssistantRuntimeProvider } from "@assistant-ui/react";
+import {
+  useChatRuntime,
+  AssistantChatTransport,
+} from "@assistant-ui/react-ai-sdk";
+import { lastAssistantMessageIsCompleteWithToolCalls } from "ai";
+import { Thread } from "@/components/thread";
+
+export const Assistant = () => {
+  const runtime = useChatRuntime({
+    sendAutomaticallyWhen: lastAssistantMessageIsCompleteWithToolCalls,
+    transport: new AssistantChatTransport({
+      api: "/api/chat",
+    }),
+  });
+
+  return (
+    <AssistantRuntimeProvider runtime={runtime}>
+      <div className="h-full min-h-0">
+        <Thread />
+      </div>
+    </AssistantRuntimeProvider>
+  );
+};

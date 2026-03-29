@@ -1,48 +1,72 @@
 # ShiftPilotAI
 
-ShiftPilotAI の開発用ドキュメント入口です。
+ShiftPilotAI は、チャットで予定を組みながら、カレンダー、タイムライン、外部連携をまとめて扱うための実験用アプリだよ。  
+Markdown のままでも読めるし、あとで Notion に移しやすい構成でドキュメントを整理している。
 
-このリポジトリでは、実装だけでなく、判断理由や仕様メモも `docs/` 配下に残す前提で運用します。  
-将来的に Notion へ移行することを想定し、Markdown の段階からページ分割しやすい構成にしています。
+## ドキュメント入口
+- [docs/README.md](/d:/souce/ShiftPilotAI/docs/README.md)
+- [docs/project-overview.md](/d:/souce/ShiftPilotAI/docs/project-overview.md)
+- [docs/requirements/README.md](/d:/souce/ShiftPilotAI/docs/requirements/README.md)
+- [docs/design/README.md](/d:/souce/ShiftPilotAI/docs/design/README.md)
+- [docs/decisions/README.md](/d:/souce/ShiftPilotAI/docs/decisions/README.md)
+- [docs/operations/README.md](/d:/souce/ShiftPilotAI/docs/operations/README.md)
 
-## ドキュメント構成
-
-- [docs/README.md](/d:/souce/ShiftPilotAI/docs/README.md): ドキュメント全体の目次と運用ルール
-- [docs/project-overview.md](/d:/souce/ShiftPilotAI/docs/project-overview.md): プロジェクト概要
-- [docs/requirements/README.md](/d:/souce/ShiftPilotAI/docs/requirements/README.md): 要件・仕様の整理
-- [docs/design/README.md](/d:/souce/ShiftPilotAI/docs/design/README.md): 設計メモ
-- [docs/decisions/README.md](/d:/souce/ShiftPilotAI/docs/decisions/README.md): 意思決定記録
-- [docs/operations/README.md](/d:/souce/ShiftPilotAI/docs/operations/README.md): 運用ログ・作業記録
-
-## 開発環境
-
-- フレームワーク: `Next.js 16`
+## 現在の構成
+- フレームワーク: `Next.js`
 - 言語: `TypeScript`
-- スタイル: `Tailwind CSS`
+- UI: `Tailwind CSS`
+- チャット: `assistant-ui`
+- AI 連携: `OpenAI`
+- 認証: `Supabase Auth + Google OAuth`
+- 外部連携: `Google Sheets` `Google Calendar` `Google Maps`
 
 ## 開発コマンド
-
 - 開発サーバー: `npm run dev`
 - Lint: `npm run lint`
 - 本番ビルド: `npm run build`
 
-## 運用方針
+## 必要な環境変数
+- `OPENAI_API_KEY`
+- `OPENAI_MODEL`
+- `OPENAI_IMPORT_MODEL`
+- `NEXT_PUBLIC_SUPABASE_URL`
+- `NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY`
+- `GOOGLE_CLIENT_ID`
+- `GOOGLE_CLIENT_SECRET`
+- `GOOGLE_REDIRECT_URI`
+- `GOOGLE_CALENDAR_ID`
+- `GOOGLE_MAPS_API_KEY`
+- `HOME_ADDRESS`
+- `NEXT_PUBLIC_HOME_ADDRESS`
 
-- 新しい実装や仕様変更を始める前に、必要なら要件か設計メモを追加する
-- 実装後は、変更内容だけでなく理由と未解決事項も残す
-- 継続タスクは運用ログや意思決定記録に残し、次回判断の材料にする
-- 1トピック1ファイルを基本にして、あとで Notion の1ページに移し替えやすくする
+## こちらで用意したもの
+- Supabase SSR 用のクライアントと `proxy.ts`
+- `/auth/callback` と `/auth/signout`
+- Google OAuth ログイン UI
+- Google の provider token を使う Calendar / Sheets 連携の土台
 
-## Notion へ移行するときの想定
+## こちらで用意してほしいもの
+1. Supabase プロジェクト
+2. Supabase の `Google` プロバイダ設定
+3. Google Cloud の OAuth クライアント
+4. `.env.local` への環境変数設定
 
-Markdown のファイル構成を、そのまま Notion の親子ページ構成に対応させます。
+## 準備メモ
+1. Supabase Dashboard で `Authentication -> Providers -> Google` を有効にする。
+2. Google Cloud Console で OAuth クライアントを作り、Supabase が案内するコールバック URL を登録する。
+3. Supabase 側の Redirect URL に `http://localhost:3000/auth/callback` を追加する。
+4. `.env.local` に `.env.example` の値を入れる。
+5. 開発中は `http://localhost:3000` で Google ログインを試す。
 
-- `README.md`: リポジトリ入口ページ
-- `docs/README.md`: ドキュメントホーム
-- `docs/project-overview.md`: プロジェクト概要ページ
-- `docs/requirements/`: 要件ページ群
-- `docs/design/`: 設計ページ群
-- `docs/decisions/`: 判断履歴ページ群
-- `docs/operations/`: 進行ログページ群
+## 実装メモ
+- カレンダーで日付を選び、その日のタイムラインで時間を詰める構成。
+- 予定粒度は `5 / 10 / 15 / 30 / 60分` を切り替え可能。
+- チャット起点で Google Sheets URL と画像ファイルを取り込み、予定候補へ変換する。
+- Google Calendar への登録と、Google Maps を使った移動計画の表示に対応している。
 
-仕組み的には、最初から粒度を揃えておくのがミソだね。あとで Notion に移しても迷子になりにくいってわけさ。
+## ドキュメント運用
+- 決定事項は `docs/decisions/`
+- 設計意図は `docs/design/`
+- 作業の流れは `docs/operations/`
+
+Notion へ移すときも、この単位のままページを分ければ持ち運びしやすいってわけさ。

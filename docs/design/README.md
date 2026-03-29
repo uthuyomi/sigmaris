@@ -18,8 +18,13 @@
 ## 現在の記録
 
 - `chat-ui-and-design-system.md`: チャット中心 UI とデザインシステム方針
+- `chat-implementation.md`: チャット実装メモ
+- `google-integration-implementation.md`: Google 連携実装メモ
+- `import-pipeline.md`: 外部情報取り込みパイプライン
+- `mobility-planning.md`: 移動計画パイプライン
 - `timeline-interaction-spec.md`: 標準的で使いやすいタイムライン UI 操作仕様
 - `initial-ui-implementation.md`: 初期 UI 実装メモ
+- `page-structure.md`: ページ分割後の画面構成メモ
 
 ## Notion での扱い
 

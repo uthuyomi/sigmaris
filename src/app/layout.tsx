@@ -1,9 +1,13 @@
-import type { Metadata } from "next";
-import { IBM_Plex_Mono, Space_Grotesk, Geist } from "next/font/google";
-import "./globals.css";
+import { TooltipProvider } from "@/components/ui/tooltip";
 import { cn } from "@/lib/utils";
+import type { Metadata } from "next";
+import { Geist, IBM_Plex_Mono, Space_Grotesk } from "next/font/google";
+import "./globals.css";
 
-const geist = Geist({subsets:['latin'],variable:'--font-sans'});
+const geist = Geist({
+  subsets: ["latin"],
+  variable: "--font-sans",
+});
 
 const spaceGrotesk = Space_Grotesk({
   variable: "--font-space-grotesk",
@@ -18,7 +22,7 @@ const ibmPlexMono = IBM_Plex_Mono({
 
 export const metadata: Metadata = {
   title: "ShiftPilotAI",
-  description: "チャット中心で1日の予定を時間帯ベースで組み立てるスケジューラー",
+  description: "チャット中心で予定を組み、時間と移動まで調整するスケジューラー",
 };
 
 export default function RootLayout({
@@ -29,9 +33,18 @@ export default function RootLayout({
   return (
     <html
       lang="ja"
-      className={cn("h-full", "antialiased", spaceGrotesk.variable, ibmPlexMono.variable, "font-sans", geist.variable)}
+      className={cn(
+        "h-full",
+        "antialiased",
+        spaceGrotesk.variable,
+        ibmPlexMono.variable,
+        "font-sans",
+        geist.variable,
+      )}
     >
-      <body className="min-h-full flex flex-col">{children}</body>
+      <body className="flex min-h-full flex-col">
+        <TooltipProvider>{children}</TooltipProvider>
+      </body>
     </html>
   );
 }

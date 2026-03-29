@@ -23,6 +23,12 @@
 - `2026-03-27-scheduling-granularity.md`: 予定編集の時間粒度方針
 - `2026-03-27-standard-timeline-ui.md`: 標準的で使いやすいタイムライン UI 方針
 - `2026-03-27-no-wireframe-ui-first.md`: ワイヤーフレームを省略して UI 先行で進める方針
+- `2026-03-27-chat-ui-stack.md`: チャット UI 実装スタック方針
+- `2026-03-27-split-views-and-calendar.md`: 画面分割とカレンダー表示の採用
+- `2026-03-27-calendar-first-timeline.md`: カレンダー起点でタイムラインへ降りる方針
+- `2026-03-27-calendar-integrations.md`: 外部カレンダー連携方針
+- `2026-03-28-external-ingestion-and-ai-import.md`: 外部情報取り込みと AI 予定変換方針
+- `2026-03-28-mobility-and-transit-planning.md`: 移動時間と交通機関を考慮した予定計画方針
 
 ## 推奨フォーマット
 
