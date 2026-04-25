@@ -31,9 +31,10 @@
 
 - `GOOGLE_CLIENT_ID`
 - `GOOGLE_CLIENT_SECRET`
-- `GOOGLE_REFRESH_TOKEN`
 - `GOOGLE_REDIRECT_URI`
 - `GOOGLE_CALENDAR_ID`
+
+`GOOGLE_REFRESH_TOKEN` のような共有 refresh token fallback は使わない。Google 操作はログイン済みユーザーの provider token に限定する。
 
 ## 現時点でできること
 

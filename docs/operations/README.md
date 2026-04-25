@@ -1,25 +1,18 @@
-# 運用ログ
+# Operations
 
-このカテゴリでは、日々の作業メモ、引き継ぎ事項、未解決タスクを管理します。
+ここには、日々の作業ログ、実装履歴、あとから振り返るための補助メモを置く。
 
-## 置く内容
+## 日別ログ
 
-- その日に何を進めたか
-- どこで詰まったか
-- 次に何をやるべきか
-- 実装後に残った注意点
+- [2026-03-27-work-log.md](/d:/souce/ShiftPilotAI/docs/operations/2026-03-27-work-log.md)
+- [2026-03-29-work-log.md](/d:/souce/ShiftPilotAI/docs/operations/2026-03-29-work-log.md)
+- [2026-03-31-comprehensive-log.md](/d:/souce/ShiftPilotAI/docs/operations/2026-03-31-comprehensive-log.md)
+- [2026-03-31-documentation-audit.md](/d:/souce/ShiftPilotAI/docs/operations/2026-03-31-documentation-audit.md)
+- [2026-04-01-route-ranking-and-travel-block.md](/d:/souce/ShiftPilotAI/docs/operations/2026-04-01-route-ranking-and-travel-block.md)
+- [2026-04-01-arrival-lead-minutes-setting.md](/d:/souce/ShiftPilotAI/docs/operations/2026-04-01-arrival-lead-minutes-setting.md)
 
-## ファイル作成の例
+## 使い方
 
-- `2026-03-27-work-log.md`
-- `handover-notes.md`
-- `open-issues.md`
-
-## 現在の記録
-
-- `2026-03-27-work-log.md`: 初期ドキュメント整備と技術選定の記録
-
-## Notion での扱い
-
-時系列で並べるだけでも使えます。  
-継続案件が増えたら、ステータス管理用のDBに分けてもいい構成です。
+- 大きな方向転換や構成変更は `decisions/` にも残す
+- 実際に何を追加・修正したかは `operations/` に残す
+- 後で handover する時は `comprehensive-log` を起点に見る

@@ -1,0 +1,86 @@
+
+> shiftpilotai@0.1.0 dev
+> next dev --hostname 127.0.0.1 --port 3000
+
+▲ Next.js 16.2.1 (Turbopack)
+- Local:         http://127.0.0.1:3000
+- Network:       http://127.0.0.1:3000
+- Environments: .env.local
+✓ Ready in 533ms
+Creating turbopack project { dir: 'C:\\ShiftPilotAI\\frontend', testMode: true }
+
+ GET / 200 in 631ms (next.js: 371ms, application-code: 260ms)
+ GET /login 200 in 76ms (next.js: 41ms, application-code: 35ms)
+ GET /auth/callback?code=854d0bab-ad46-4ccc-99ec-94cae8469f73&next=%2Fapp 307 in 767ms (next.js: 98ms, application-code: 668ms)
+ GET /app 307 in 311ms (next.js: 38ms, application-code: 272ms)
+ GET /calendar 200 in 1721ms (next.js: 35ms, application-code: 1686ms)
+ GET /sw.js 404 in 51ms (next.js: 23ms, application-code: 28ms)
+ GET /chat 200 in 1219ms (next.js: 29ms, application-code: 1190ms)
+ POST /api/chat/threads 200 in 748ms (next.js: 287ms, application-code: 460ms)
+ GET /chat?thread=f9f8cc19-ed4a-45ea-909e-49dcdeaf4c44 200 in 839ms (next.js: 5ms, application-code: 834ms)
+ GET /chat?thread=f9f8cc19-ed4a-45ea-909e-49dcdeaf4c44 200 in 1076ms (next.js: 4ms, application-code: 1072ms)
+ GET /settings 200 in 1980ms (next.js: 581ms, application-code: 1399ms)
+ GET /api/settings/locations 200 in 368ms (next.js: 64ms, application-code: 304ms)
+ GET /api/settings/locations 200 in 328ms (next.js: 4ms, application-code: 325ms)
+ POST /api/settings/language 200 in 658ms (next.js: 119ms, application-code: 539ms)
+ GET /settings 200 in 1017ms (next.js: 4ms, application-code: 1013ms)
+✓ Compiled in 180ms
+ GET /settings 200 in 681ms (next.js: 412ms, application-code: 268ms)
+ GET /settings 200 in 135ms (next.js: 2ms, application-code: 132ms)
+ GET /settings 200 in 125ms (next.js: 3ms, application-code: 122ms)
+ GET /settings 200 in 62ms (next.js: 3ms, application-code: 58ms)
+✓ Finished filesystem cache database compaction in 18.1s
+ GET / 307 in 1347ms (next.js: 5ms, application-code: 1342ms)
+ GET /app 307 in 239ms (next.js: 4ms, application-code: 235ms)
+ GET /calendar 200 in 1760ms (next.js: 128ms, application-code: 1632ms)
+ GET /sw.js 404 in 33ms (next.js: 5ms, application-code: 28ms)
+ GET /settings 200 in 1383ms (next.js: 5ms, application-code: 1378ms)
+ GET /api/settings/locations 200 in 570ms (next.js: 1612µs, application-code: 568ms)
+ GET /api/settings/locations 200 in 730ms (next.js: 134ms, application-code: 596ms)
+ POST /api/settings/language 200 in 567ms (next.js: 74ms, application-code: 493ms)
+ GET /settings 200 in 954ms (next.js: 3ms, application-code: 951ms)
+ GET /chat 200 in 1053ms (next.js: 102ms, application-code: 951ms)
+ GET /calendar 200 in 853ms (next.js: 1959µs, application-code: 851ms)
+ GET /settings 200 in 667ms (next.js: 2ms, application-code: 665ms)
+ GET /api/settings/locations 200 in 339ms (next.js: 9ms, application-code: 331ms)
+ GET /api/settings/locations 200 in 343ms (next.js: 4ms, application-code: 339ms)
+✓ Compiled in 778ms
+ GET /settings 200 in 1435ms (next.js: 889ms, application-code: 545ms)
+ GET /settings 200 in 143ms (next.js: 4ms, application-code: 139ms)
+ GET /settings 200 in 66ms (next.js: 3ms, application-code: 63ms)
+✓ Compiled in 267ms
+ GET /settings 200 in 1211ms (next.js: 657ms, application-code: 554ms)
+ GET /settings 200 in 130ms (next.js: 2ms, application-code: 128ms)
+ GET /settings 200 in 127ms (next.js: 2ms, application-code: 125ms)
+ GET /settings 200 in 191ms (next.js: 3ms, application-code: 187ms)
+ GET /settings 200 in 130ms (next.js: 4ms, application-code: 126ms)
+ GET /settings 200 in 66ms (next.js: 3ms, application-code: 63ms)
+✓ Compiled in 42ms
+ GET /settings 200 in 80ms (next.js: 5ms, application-code: 75ms)
+ POST /auth/signout 200 in 201ms (next.js: 170ms, application-code: 31ms)
+ GET / 200 in 383ms (next.js: 145ms, application-code: 238ms)
+ GET /sw.js 404 in 52ms (next.js: 18ms, application-code: 34ms)
+✓ Compiled in 135ms
+ GET / 200 in 206ms (next.js: 105ms, application-code: 101ms)
+ GET / 200 in 35ms (next.js: 3ms, application-code: 32ms)
+ GET / 200 in 30ms (next.js: 3ms, application-code: 27ms)
+✓ Compiled in 67ms
+ GET / 200 in 160ms (next.js: 99ms, application-code: 61ms)
+ GET /sw.js 404 in 102ms (next.js: 13ms, application-code: 89ms)
+✓ Compiled in 38ms
+ GET / 200 in 44ms (next.js: 4ms, application-code: 40ms)
+ GET /sw.js 404 in 30ms (next.js: 4ms, application-code: 26ms)
+✓ Compiled in 321ms
+ GET / 200 in 202ms (next.js: 124ms, application-code: 78ms)
+ GET / 200 in 32ms (next.js: 2ms, application-code: 30ms)
+ GET / 200 in 64ms (next.js: 1913µs, application-code: 62ms)
+ GET / 200 in 39ms (next.js: 9ms, application-code: 31ms)
+✓ Finished filesystem cache database compaction in 12.8s
+ GET /sw.js 404 in 110ms (next.js: 13ms, application-code: 97ms)
+ GET / 200 in 177ms (next.js: 102ms, application-code: 75ms)
+ GET /sw.js 404 in 40ms (next.js: 4ms, application-code: 36ms)
+ GET / 200 in 366ms (next.js: 3ms, application-code: 363ms)
+ GET /sw.js 404 in 26ms (next.js: 3ms, application-code: 23ms)
+ GET /sw.js 404 in 30ms (next.js: 5ms, application-code: 25ms)
+✓ Compiled in 1020ms
+[?25h

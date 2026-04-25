@@ -5,14 +5,18 @@
 - 自宅、現在地、任意の出発地からの移動時間を予定調整に組み込む。
 
 ## 現在の実装
-- `src/components/mobility-panel.tsx`
+- `frontend/src/components/mobility-panel.tsx`
   - タイムラインで選ばれた予定の場所を使って移動計画を出す。
-  - 出発地は `自宅 / 現在地 / 手入力` を切り替えられる。
-  - 移動手段は `電車・バス / 車 / 徒歩` を切り替えられる。
-- `src/app/api/mobility/plan/route.ts`
-  - UI からの入力を受けて Google Maps API へ中継する。
-- `src/lib/google/maps.ts`
-  - Google Directions API から経路を取得し、UI 向けの `RoutePlan` に整形する。
+  - 出発地は `自宅 / 現在地 / 保存地点 / 手入力` を切り替えられる。
+  - 移動手段は `電車 / バス / 自転車 / 自家用車 / 徒歩` を切り替えられる。
+  - 公共交通では複数候補を価格順で一覧表示して、候補を選んで保存できる。
+- `frontend/src/app/api/mobility/schedule/route.ts`
+  - backend の route 候補を受けて、travel block の preview と保存を行う。
+- `backend/app/routes/mobility.py`
+  - UI と chat の両方から使う mobility API を提供する。
+- `backend/app/services/google_maps.py`
+  - Google Geocoding / Places Nearby Search / Directions を組み合わせて route を構築する。
+  - 公共交通候補を前倒しで探索し、運賃、徒歩量、乗換回数、出発時刻で整列する。
 
 ## 入出力
 
@@ -28,6 +32,11 @@
 - 所要時間
 - 経路ステップ
 - 路線名と発着時刻
+- 運賃
+- 徒歩距離 / 徒歩時間
+- 乗換回数
+- 経路要約
+- 価格順の候補一覧
 
 ## UI 方針
 - カレンダーで日付を決めたあと、タイムライン画面でその日の予定と移動をまとめて確認する。
@@ -38,9 +47,10 @@
 - 現在は Google Directions API を利用している。
 - 公共交通の精度やリアルタイム性は地域とデータ提供状況に依存する。
 - 遅延や運休まで強く扱うなら、別のリアルタイム交通情報ソースを後で足す余地がある。
+- Google 側が運賃を返さない route では、価格比較の精度は落ちる。
+- AI から travel block を保存する時は、対象 event と route 候補が特定できている必要がある。
 
 ## 次の候補
-- Places API を使った場所補完
-- ユーザー単位の自宅、職場、よく使う拠点の保存
-- 予定作成時に推奨出発時刻を自動で提示
-- Google Calendar 登録時に移動メモをイベント本文へ残す
+- リアルタイム遅延や運休情報の反映
+- route 候補のカード UI を chat 内にも出す
+- travel block の再計算と再同期

@@ -1,32 +1,37 @@
-# 設計ドキュメント
+# Design Docs
 
-このカテゴリでは、構成設計、画面設計、データ設計、実装方針のメモを管理します。
+ここには、画面設計、配線方針、責務分離、データの流れみたいな実装設計を置く。
 
-## 置く内容
+## 最初に読むページ
 
-- アーキテクチャの方針
-- データ構造や API 設計
-- 実装前に残しておきたい技術的な整理
-- 要件をどう実現するかの案
+- [system-architecture.md](/d:/souce/ShiftPilotAI/docs/design/system-architecture.md)
+- [frontend-architecture.md](/d:/souce/ShiftPilotAI/docs/design/frontend-architecture.md)
+- [backend-api-architecture.md](/d:/souce/ShiftPilotAI/docs/design/backend-api-architecture.md)
+- [backend-chat-stream.md](/d:/souce/ShiftPilotAI/docs/design/backend-chat-stream.md)
+- [backend-endpoint-catalog.md](/d:/souce/ShiftPilotAI/docs/design/backend-endpoint-catalog.md)
 
-## ファイル作成の例
+## UI / 画面
 
-- `architecture-overview.md`
-- `database-schema.md`
-- `api-design.md`
+- [chat-ui-and-design-system.md](/d:/souce/ShiftPilotAI/docs/design/chat-ui-and-design-system.md)
+- [chat-implementation.md](/d:/souce/ShiftPilotAI/docs/design/chat-implementation.md)
+- [page-structure.md](/d:/souce/ShiftPilotAI/docs/design/page-structure.md)
+- [initial-ui-implementation.md](/d:/souce/ShiftPilotAI/docs/design/initial-ui-implementation.md)
+- [timeline-interaction-spec.md](/d:/souce/ShiftPilotAI/docs/design/timeline-interaction-spec.md)
+- [icon-first-multilingual-ui.md](/d:/souce/ShiftPilotAI/docs/design/icon-first-multilingual-ui.md)
+- [login-and-entry-flow.md](/d:/souce/ShiftPilotAI/docs/design/login-and-entry-flow.md)
 
-## 現在の記録
+## データ / 認証 / backend
 
-- `chat-ui-and-design-system.md`: チャット中心 UI とデザインシステム方針
-- `chat-implementation.md`: チャット実装メモ
-- `google-integration-implementation.md`: Google 連携実装メモ
-- `import-pipeline.md`: 外部情報取り込みパイプライン
-- `mobility-planning.md`: 移動計画パイプライン
-- `timeline-interaction-spec.md`: 標準的で使いやすいタイムライン UI 操作仕様
-- `initial-ui-implementation.md`: 初期 UI 実装メモ
-- `page-structure.md`: ページ分割後の画面構成メモ
+- [supabase-schema.md](/d:/souce/ShiftPilotAI/docs/design/supabase-schema.md)
+- [supabase-migration-map.md](/d:/souce/ShiftPilotAI/docs/design/supabase-migration-map.md)
+- [supabase-google-auth.md](/d:/souce/ShiftPilotAI/docs/design/supabase-google-auth.md)
+- [settings-and-preferences.md](/d:/souce/ShiftPilotAI/docs/design/settings-and-preferences.md)
+- [chat-thread-persistence.md](/d:/souce/ShiftPilotAI/docs/design/chat-thread-persistence.md)
 
-## Notion での扱い
+## Google / import / mobility
 
-設計は更新頻度が高いので、1テーマ1ページで切ると見通しが良くなります。  
-仕組み的には、要件と混ぜないのが保守しやすいポイントだね。
+- [google-integration-implementation.md](/d:/souce/ShiftPilotAI/docs/design/google-integration-implementation.md)
+- [chat-google-tools.md](/d:/souce/ShiftPilotAI/docs/design/chat-google-tools.md)
+- [import-pipeline.md](/d:/souce/ShiftPilotAI/docs/design/import-pipeline.md)
+- [mobility-planning.md](/d:/souce/ShiftPilotAI/docs/design/mobility-planning.md)
+- [travel-block-scheduling.md](/d:/souce/ShiftPilotAI/docs/design/travel-block-scheduling.md)

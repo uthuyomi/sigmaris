@@ -24,13 +24,14 @@
 ## Google provider token の扱い
 - `src/lib/google/provider-tokens.ts` で provider token と refresh token を Cookie に保存する。
 - Google Sheets と Google Calendar のヘルパーは、まずこの Cookie の token を使う。
-- token がない場合だけ環境変数の `GOOGLE_REFRESH_TOKEN` を fallback として使う。
+- token がない場合はエラーにする。共有の `GOOGLE_REFRESH_TOKEN` fallback は使わない。
 
 ## 必要な外部設定
 - Supabase プロジェクト
 - Supabase の Google Provider 有効化
 - Google Cloud OAuth クライアント
 - Redirect URL の登録
+- ユーザーごとの Google provider token
 
 ## 次の候補
 - ユーザープロフィールを Supabase DB 側へ保存
