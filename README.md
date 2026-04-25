@@ -1,51 +1,144 @@
 # ShiftPilotAI
 
-ShiftPilotAI は、チャット起点で予定を組み、カレンダー、タイムライン、Google 連携まで扱う予定調整アプリだよ。  
-いまは責務分離のため、`frontend/` に Next.js、`backend/` に FastAPI を置く構成へ切り替えてある。
+ShiftPilotAI は、チャットを起点に日々の予定を構築し、移動時間や外部サービス連携まで含めて「現実的に間に合うスケジュール」を自動生成する予定調整アプリです。
 
-## 構成
-- `frontend/`: Next.js / TypeScript / Tailwind / assistant-ui
-- `backend/`: FastAPI / Python API 土台
-- `supabase/`: migration と DB 関連
-- `docs/`: 設計、判断、作業ログ
+ユーザーはイベントを個別に入力するのではなく、やりたいことや目的を自然言語で伝えるだけで、生活全体を逆算したスケジュールを構築できます。
 
-## フロントエンド
-```powershell
+---
+
+## ✨ 主な機能
+
+* チャットベースでの予定作成（自然言語入力）
+* テキスト・画像・スプレッドシートからの予定抽出
+* 移動時間の自動計算（車 / 自転車 / 徒歩 / 公共交通）
+* Google カレンダー連携
+* タイムラインベースのスケジュール管理
+* バックエンド主導のAI処理（解析・API連携・統合制御）
+
+---
+
+## 🏗 アーキテクチャ
+
+本プロジェクトは責務分離を前提に、フロントエンドとバックエンドを分離した構成になっています。
+
+```
+ShiftPilotAI/
+├── frontend/   # UI / ユーザー操作
+├── backend/    # AI処理 / 外部連携
+├── supabase/   # DB / マイグレーション
+├── docs/       # 設計・意思決定・ログ
+```
+
+### フロントエンド
+
+* Next.js
+* TypeScript
+* Tailwind CSS
+* assistant-ui
+
+役割：
+
+* UI描画
+* チャットインターフェース
+* 認証トークンの橋渡し（Supabase / Google）
+
+### バックエンド
+
+* FastAPI
+* Python
+
+役割：
+
+* AI処理
+* 外部API連携（Google API / 移動計算など）
+* データ統合・オーケストレーション
+
+---
+
+## 🚀 セットアップ
+
+### フロントエンド
+
+```bash
 cd frontend
+npm install
 npm run dev
 ```
 
-よく使うコマンド:
-- `npm run dev`
-- `npm run lint`
-- `npm run build`
+主なコマンド：
 
-## バックエンド
-```powershell
+* `npm run dev` : 開発サーバー起動
+* `npm run build` : 本番ビルド
+* `npm run lint` : Lint実行
+
+---
+
+### バックエンド
+
+```bash
 cd backend
 python -m pip install -e .
 python -m uvicorn app.main:app --reload --port 8000
 ```
 
-バックエンドは今、次を受ける。
-- `/health`
-- `/api/health`
-- `/api/mobility/plan`
-- `/api/import/preview`
+---
 
-frontend の `mobility` と `import preview` は、この backend を使う形に切り替えてある。
-さらに chat の中でも、画像解析と公共交通候補探索は backend を使う形に寄せてある。
-加えて chat の `Google Calendar` と `Google Sheets` の実 API 呼び出しも backend に寄せてある。frontend は provider token を持って backend へ渡す薄い層になってきている。
-さらに chat の app-side データとして、イベント検索、ホーム文脈取得、スレッド存在確認、メッセージ保存も backend に寄せてある。frontend は Supabase JWT と Google provider token の橋渡しを行う。
+## 🔌 API エンドポイント
 
-## 環境変数
-- Next.js 用の `.env.local` は `frontend/.env.local`
-- Python 用の `.env` は今後 `backend/.env` を置く想定
-- `frontend/.env.local` では `BACKEND_API_BASE_URL` を使うと、フロントから叩く backend の URL を固定できる
+現在利用可能なAPI：
 
-## ドキュメント
-- [docs/README.md](/d:/souce/ShiftPilotAI/docs/README.md)
-- [docs/project-overview.md](/d:/souce/ShiftPilotAI/docs/project-overview.md)
-- [docs/design/README.md](/d:/souce/ShiftPilotAI/docs/design/README.md)
-- [docs/decisions/README.md](/d:/souce/ShiftPilotAI/docs/decisions/README.md)
-- [docs/operations/README.md](/d:/souce/ShiftPilotAI/docs/operations/README.md)
+* `GET /health`
+* `GET /api/health`
+* `POST /api/mobility/plan`
+* `POST /api/import/preview`
+
+---
+
+## 🔐 環境変数
+
+### フロントエンド（frontend/.env.local）
+
+```
+BACKEND_API_BASE_URL=http://localhost:8000
+```
+
+### バックエンド（backend/.env）
+
+外部サービス連携に応じて設定予定
+
+---
+
+## 📄 ドキュメント
+
+詳細な設計・判断ログは `docs/` ディレクトリにまとめています。
+
+* project-overview.md
+* design/
+* decisions/
+* operations/
+
+---
+
+## 🧠 設計思想
+
+ShiftPilotAI は次の考え方をベースに設計されています。
+
+> 「予定を入力する」のではなく「間に合うように生活を構築する」
+
+単なるカレンダー入力ツールではなく、移動・余裕時間・現実的な制約まで含めてスケジュールを構成することを目的としています。
+
+---
+
+## 📌 開発状況
+
+* 基本アーキテクチャ：実装済み
+* バックエンドAPI：一部実装済み
+* チャット統合：開発中
+* Google連携：一部実装済み
+
+---
+
+## 👤 Author
+
+Kaisei Yasuzaki
+Frontend Engineer / AI Application Developer
