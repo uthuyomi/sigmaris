@@ -4,6 +4,8 @@ import { google } from "googleapis";
 import { createGoogleOAuthClient, hasGoogleOAuthConfig } from "@/lib/google/oauth";
 import { readGoogleProviderTokens } from "@/lib/google/provider-tokens";
 
+const MAX_SHEET_PREVIEW_ROWS = 100;
+
 export const hasGoogleSheetsReadConfig = () => hasGoogleOAuthConfig();
 
 export const extractSpreadsheetId = (url: string) => {
@@ -34,7 +36,7 @@ export const readGoogleSheetPreview = async (url: string) => {
 
   const values = await sheets.spreadsheets.values.get({
     spreadsheetId,
-    range: `${firstSheetTitle}!A1:Z50`,
+    range: `${firstSheetTitle}!A1:Z${MAX_SHEET_PREVIEW_ROWS}`,
   });
 
   return {

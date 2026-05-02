@@ -88,6 +88,7 @@ export function ImportEntryPanel() {
         body: JSON.stringify({
           target: "google-calendar",
           candidates: preview.extracted.candidates,
+          sourceType: preview.sourceType,
         }),
       });
       const data = await res.json();

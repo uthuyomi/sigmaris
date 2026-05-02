@@ -6,6 +6,9 @@ import { defaultLocale, normalizeLocale, type AppLocale } from "@/lib/i18n";
 export const supportedAiTones = ["default", "friendly", "concise", "direct"] as const;
 export type AiTone = (typeof supportedAiTones)[number];
 const defaultAiTone: AiTone = "default";
+export const supportedAppThemes = ["light", "dark"] as const;
+export type AppTheme = (typeof supportedAppThemes)[number];
+export const defaultAppTheme: AppTheme = "light";
 export const supportedPreferredTravelModes = ["bicycle", "car", "walk"] as const;
 export type PreferredTravelMode = (typeof supportedPreferredTravelModes)[number];
 const defaultPreferredTravelMode: PreferredTravelMode = "car";
@@ -26,6 +29,15 @@ const isMissingAiToneColumnError = (error: { code?: string; message?: string } |
     error.code === "42703" ||
     error.message?.includes("column profiles.ai_tone does not exist") ||
     error.message?.includes("column \"ai_tone\" does not exist")
+  );
+};
+
+const isMissingAppThemeColumnError = (error: { code?: string; message?: string } | null) => {
+  if (!error) return false;
+  return (
+    error.code === "42703" ||
+    error.message?.includes("column profiles.app_theme does not exist") ||
+    error.message?.includes('column "app_theme" does not exist')
   );
 };
 
@@ -54,6 +66,11 @@ const isMissingArrivalLeadMinutesColumnError = (
 export const normalizeAiTone = (value?: string | null): AiTone => {
   if (!value) return defaultAiTone;
   return supportedAiTones.find((tone) => tone === value) ?? defaultAiTone;
+};
+
+export const normalizeAppTheme = (value?: string | null): AppTheme => {
+  if (!value) return defaultAppTheme;
+  return supportedAppThemes.find((theme) => theme === value) ?? defaultAppTheme;
 };
 
 export const normalizePreferredTravelMode = (value?: string | null): PreferredTravelMode => {
@@ -96,6 +113,20 @@ export const readAiTone = async (userId: string): Promise<AiTone> => {
   }
 
   return normalizeAiTone(data?.ai_tone ?? defaultAiTone);
+};
+
+export const readAppTheme = async (userId: string): Promise<AppTheme> => {
+  const supabase = await createClient();
+  const { data, error } = await supabase.from("profiles").select("app_theme").eq("id", userId).single();
+
+  if (error) {
+    if (isMissingAppThemeColumnError(error)) {
+      return defaultAppTheme;
+    }
+    throw new Error(error.message);
+  }
+
+  return normalizeAppTheme(data?.app_theme ?? defaultAppTheme);
 };
 
 export const readPreferredTravelMode = async (userId: string): Promise<PreferredTravelMode> => {
@@ -175,6 +206,21 @@ export const updateAiTone = async (userId: string, aiTone: string) => {
   if (error) {
     if (isMissingAiToneColumnError(error)) {
       throw new Error("profiles.ai_tone column is missing. Apply the ai tone migration first.");
+    }
+    throw new Error(error.message);
+  }
+};
+
+export const updateAppTheme = async (userId: string, appTheme: string) => {
+  const supabase = await createClient();
+  const { error } = await supabase
+    .from("profiles")
+    .update({ app_theme: normalizeAppTheme(appTheme) })
+    .eq("id", userId);
+
+  if (error) {
+    if (isMissingAppThemeColumnError(error)) {
+      throw new Error("profiles.app_theme column is missing. Apply the app theme migration first.");
     }
     throw new Error(error.message);
   }

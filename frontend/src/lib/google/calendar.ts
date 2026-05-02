@@ -37,6 +37,7 @@ export const listGoogleCalendarEvents = async (input: {
   timeMax?: string;
   maxResults?: number;
   query?: string;
+  showDeleted?: boolean;
 }) => {
   const calendar = await createCalendarClient();
   const calendarId = input.calendarId ?? process.env.GOOGLE_CALENDAR_ID ?? "primary";
@@ -49,6 +50,7 @@ export const listGoogleCalendarEvents = async (input: {
     q: input.query,
     singleEvents: true,
     orderBy: "startTime",
+    showDeleted: input.showDeleted,
   });
 
   return (result.data.items ?? []).map<CalendarListedEvent>((event) => ({

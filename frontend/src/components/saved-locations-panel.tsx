@@ -93,9 +93,9 @@ export function SavedLocationsPanel() {
   };
 
   return (
-    <section className="rounded-[30px] border border-stone-900/10 bg-white/85 p-5 shadow-[0_30px_90px_-55px_rgba(41,37,36,0.75)] backdrop-blur">
+    <section className="rounded-2xl border border-stone-900/10 bg-white p-5 shadow-sm dark:border-white/10 dark:bg-[#2f2f2f]">
       <div className="flex items-start gap-3">
-        <div className="inline-flex size-11 items-center justify-center rounded-2xl bg-stone-900 text-stone-50">
+        <div className="inline-flex size-11 items-center justify-center rounded-xl bg-stone-900 text-stone-50 dark:bg-white dark:text-stone-950">
           <HomeIcon className="size-5" />
         </div>
         <div>
@@ -112,13 +112,13 @@ export function SavedLocationsPanel() {
           value={homeAddress}
           onChange={(event) => setHomeAddress(event.target.value)}
           placeholder="自宅住所"
-          className="w-full rounded-2xl border border-stone-900/10 bg-stone-50 px-4 py-3 text-sm outline-none"
+          className="w-full rounded-2xl border border-stone-900/10 bg-stone-50 px-4 py-3 text-sm outline-none dark:border-white/10 dark:bg-white/6 dark:text-stone-100"
         />
         <button
           type="button"
           onClick={saveHome}
           disabled={isPending}
-          className="inline-flex size-10 items-center justify-center rounded-full bg-stone-900 text-stone-50 disabled:opacity-60"
+          className="inline-flex size-10 items-center justify-center rounded-full bg-stone-900 text-stone-50 disabled:opacity-60 dark:bg-white dark:text-stone-950"
           aria-label="自宅を保存"
         >
           <SaveIcon className="size-4" />
@@ -133,19 +133,19 @@ export function SavedLocationsPanel() {
           value={label}
           onChange={(event) => setLabel(event.target.value)}
           placeholder="地点名"
-          className="rounded-2xl border border-stone-900/10 bg-stone-50 px-4 py-3 text-sm outline-none"
+          className="rounded-2xl border border-stone-900/10 bg-stone-50 px-4 py-3 text-sm outline-none dark:border-white/10 dark:bg-white/6 dark:text-stone-100"
         />
         <input
           value={address}
           onChange={(event) => setAddress(event.target.value)}
           placeholder="住所"
-          className="rounded-2xl border border-stone-900/10 bg-stone-50 px-4 py-3 text-sm outline-none"
+          className="rounded-2xl border border-stone-900/10 bg-stone-50 px-4 py-3 text-sm outline-none dark:border-white/10 dark:bg-white/6 dark:text-stone-100"
         />
         <button
           type="button"
           onClick={addLocation}
           disabled={isPending}
-          className="inline-flex size-12 items-center justify-center rounded-full bg-stone-900 text-stone-50 disabled:opacity-60"
+          className="inline-flex size-12 items-center justify-center rounded-full bg-stone-900 text-stone-50 disabled:opacity-60 dark:bg-white dark:text-stone-950"
           aria-label="地点を追加"
         >
           <MapPinPlusIcon className="size-4" />
@@ -156,7 +156,7 @@ export function SavedLocationsPanel() {
         {locations.map((location) => (
           <div
             key={location.id}
-            className="flex items-center justify-between rounded-[22px] border border-stone-900/10 bg-stone-50 px-4 py-3"
+            className="flex items-center justify-between rounded-2xl border border-stone-900/10 bg-stone-50 px-4 py-3 dark:border-white/10 dark:bg-white/6"
           >
             <div>
               <p className="text-sm font-semibold text-stone-900">{location.label}</p>
@@ -165,7 +165,7 @@ export function SavedLocationsPanel() {
             <button
               type="button"
               onClick={() => removeLocation(location.id)}
-              className="inline-flex size-9 items-center justify-center rounded-full bg-stone-900/5 text-stone-700"
+              className="inline-flex size-9 items-center justify-center rounded-full bg-stone-900/5 text-stone-700 dark:bg-white/8 dark:text-stone-300"
               aria-label="地点を削除"
             >
               <Trash2Icon className="size-4" />

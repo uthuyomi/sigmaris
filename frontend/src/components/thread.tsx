@@ -10,9 +10,10 @@ import {
   MessagePrimitive,
   ThreadPrimitive,
   useAuiState,
+  useComposerRuntime,
 } from "@assistant-ui/react";
-import { ArrowDownIcon, ArrowUpIcon, PlusIcon, SquareIcon } from "lucide-react";
-import { type FC, useEffect, useRef, useState } from "react";
+import { ArrowDownIcon, ArrowUpIcon, FileTextIcon, PlusIcon, SquareIcon } from "lucide-react";
+import { type FC, useCallback, useEffect, useRef, useState } from "react";
 
 type ThreadProps = {
   locale: AppLocale;
@@ -21,6 +22,7 @@ type ThreadProps = {
 export const Thread: FC<ThreadProps> = ({ locale }) => {
   const dict = getDictionary(locale);
   const viewportRef = useRef<HTMLDivElement | null>(null);
+  const showScrollButtonRef = useRef(false);
   const [showScrollButton, setShowScrollButton] = useState(false);
   const messages = useAuiState((s) => s.thread.messages);
   const isRunning = useAuiState((s) => s.thread.isRunning);
@@ -37,23 +39,35 @@ export const Thread: FC<ThreadProps> = ({ locale }) => {
     }
     return "";
   })();
+  const messageScrollKey = messages
+    .map((message, index) => {
+      const textLength = message.parts
+        .filter((part) => part.type === "text")
+        .reduce((total, part) => total + part.text.length, 0);
+      return `${message.id ?? index}:${message.role}:${message.parts.length}:${textLength}`;
+    })
+    .join("|");
 
   const showPendingStatus = isRunning && latestAssistantText.trim().length === 0;
 
-  const updateScrollState = () => {
+  const updateScrollState = useCallback(() => {
     const viewport = viewportRef.current;
     if (!viewport) return;
 
     const distanceFromBottom =
       viewport.scrollHeight - viewport.scrollTop - viewport.clientHeight;
-    setShowScrollButton(distanceFromBottom > 120);
-  };
+    const shouldShow = distanceFromBottom > 120;
+    if (showScrollButtonRef.current === shouldShow) return;
 
-  const scrollToBottom = (behavior: ScrollBehavior = "smooth") => {
+    showScrollButtonRef.current = shouldShow;
+    setShowScrollButton(shouldShow);
+  }, []);
+
+  const scrollToBottom = useCallback((behavior: ScrollBehavior = "smooth") => {
     const viewport = viewportRef.current;
     if (!viewport) return;
     viewport.scrollTo({ top: viewport.scrollHeight, behavior });
-  };
+  }, []);
 
   useEffect(() => {
     const viewport = viewportRef.current;
@@ -66,7 +80,7 @@ export const Thread: FC<ThreadProps> = ({ locale }) => {
     return () => {
       viewport.removeEventListener("scroll", handleScroll);
     };
-  }, []);
+  }, [updateScrollState]);
 
   useEffect(() => {
     const viewport = viewportRef.current;
@@ -83,7 +97,7 @@ export const Thread: FC<ThreadProps> = ({ locale }) => {
     } else {
       updateScrollState();
     }
-  }, [messages]);
+  }, [messageScrollKey, scrollToBottom, updateScrollState]);
 
   useEffect(() => {
     if (!showPendingStatus) {
@@ -103,11 +117,11 @@ export const Thread: FC<ThreadProps> = ({ locale }) => {
   }, [showPendingStatus]);
 
   return (
-    <ThreadPrimitive.Root className="flex h-full min-h-0 flex-col bg-transparent">
+    <ThreadPrimitive.Root className="flex h-full min-h-0 flex-col bg-white dark:bg-[#212121]">
       <div className="relative flex-1 min-h-0">
         <ThreadPrimitive.Viewport
           ref={viewportRef}
-          className="h-full overflow-y-auto px-4 pt-6 pb-44 sm:px-6 sm:pb-48"
+          className="h-full overflow-y-auto px-3 pt-5 pb-44 sm:px-6 sm:pb-48"
         >
           <ThreadWelcome locale={locale} />
 
@@ -120,7 +134,7 @@ export const Thread: FC<ThreadProps> = ({ locale }) => {
           <button
             type="button"
             onClick={() => scrollToBottom()}
-            className="absolute bottom-36 right-6 z-20 inline-flex size-11 items-center justify-center rounded-full border border-white/10 bg-stone-900/90 text-stone-50 shadow-[0_18px_35px_-20px_rgba(0,0,0,0.85)] transition hover:bg-stone-800"
+            className="absolute bottom-36 right-4 z-20 inline-flex size-10 items-center justify-center rounded-full border border-stone-900/10 bg-white text-stone-900 shadow-[0_18px_35px_-24px_rgba(0,0,0,0.55)] transition hover:bg-stone-100 dark:border-white/10 dark:bg-[#2f2f2f] dark:text-white dark:hover:bg-[#3a3a3a] sm:right-6"
             aria-label="下へ移動"
           >
             <ArrowDownIcon className="size-5" />
@@ -129,14 +143,14 @@ export const Thread: FC<ThreadProps> = ({ locale }) => {
 
         {showPendingStatus ? (
           <div className="pointer-events-none absolute inset-x-0 bottom-32 z-20 flex justify-center px-4 sm:px-6">
-            <div className="rounded-full border border-white/10 bg-stone-900/88 px-4 py-2 text-xs tracking-wide text-stone-200 shadow-[0_20px_45px_-35px_rgba(0,0,0,0.9)] backdrop-blur">
+            <div className="rounded-full border border-stone-900/10 bg-white/95 px-4 py-2 text-xs tracking-wide text-stone-600 shadow-[0_20px_45px_-35px_rgba(0,0,0,0.6)] backdrop-blur dark:border-white/10 dark:bg-[#2f2f2f]/95 dark:text-stone-300">
               {getPendingStatusLabel(statusStep)}
             </div>
           </div>
         ) : null}
 
-        <div className="pointer-events-none absolute inset-x-0 bottom-0 z-10 px-4 pb-5 pt-10 sm:px-6 sm:pb-6">
-          <div className="pointer-events-none absolute inset-x-0 bottom-0 h-28 bg-[linear-gradient(180deg,rgba(43,37,34,0),rgba(43,37,34,0.84)_45%,rgba(43,37,34,0.98)_100%)]" />
+        <div className="pointer-events-none absolute inset-x-0 bottom-0 z-10 px-3 pb-4 pt-10 sm:px-6 sm:pb-6">
+          <div className="pointer-events-none absolute inset-x-0 bottom-0 h-28 bg-[linear-gradient(180deg,rgba(255,255,255,0),rgba(255,255,255,0.92)_48%,rgba(255,255,255,1)_100%)] dark:bg-[linear-gradient(180deg,rgba(33,33,33,0),rgba(33,33,33,0.92)_48%,rgba(33,33,33,1)_100%)]" />
           <div className="pointer-events-auto relative">
             <Composer placeholder={dict.chat.inputPlaceholder} />
           </div>
@@ -153,8 +167,8 @@ const ThreadWelcome: FC<ThreadProps> = ({ locale }) => {
 
   return (
     <div className="mx-auto my-auto flex min-h-full w-full max-w-3xl flex-col justify-center px-2 pb-24 text-center">
-      <h1 className="text-3xl font-semibold text-stone-50">{dict.chat.welcomeTitle}</h1>
-      <p className="mt-3 text-base leading-8 text-stone-400">{dict.chat.welcomeBody}</p>
+      <h1 className="text-2xl font-semibold text-stone-950 dark:text-stone-50 sm:text-3xl">{dict.chat.welcomeTitle}</h1>
+      <p className="mt-3 text-sm leading-7 text-stone-500 dark:text-stone-400 sm:text-base sm:leading-8">{dict.chat.welcomeBody}</p>
     </div>
   );
 };
@@ -163,7 +177,7 @@ const ThreadMessage: FC = () => {
   const role = useAuiState((s) => s.message.role);
 
   return (
-    <MessagePrimitive.Root className="mx-auto w-full max-w-3xl py-3" data-role={role}>
+    <MessagePrimitive.Root className="mx-auto w-full max-w-3xl py-2 sm:py-3" data-role={role}>
       {role === "user" ? <UserMessage /> : <AssistantMessage />}
     </MessagePrimitive.Root>
   );
@@ -174,7 +188,7 @@ const AssistantMessage: FC = () => {
     text.replace(/^確認中\.\.\.\s*/u, "").replace(/^確認中…\s*/u, "");
 
   return (
-    <div className="max-w-[92%] rounded-[26px] rounded-bl-md bg-white/10 px-4 py-3 text-sm leading-7 text-stone-100 shadow-[0_20px_45px_-35px_rgba(0,0,0,0.9)]">
+    <div className="w-full px-1 py-2 text-sm leading-7 text-stone-900 dark:text-stone-100 sm:px-3">
       <MessagePrimitive.Parts>
         {({ part }) => {
           if (part.type === "text") {
@@ -197,9 +211,9 @@ const getPendingStatusLabel = (step: number) => {
 
 const UserMessage: FC = () => {
   return (
-    <div className="ml-auto flex max-w-[88%] flex-col gap-2">
+    <div className="ml-auto flex max-w-[92%] flex-col gap-2 sm:max-w-[78%]">
       <MessagePrimitive.Attachments components={{ Attachment: UserMessageAttachments }} />
-      <div className="ml-auto rounded-[24px] rounded-br-md bg-[#f4a261] px-4 py-3 text-sm leading-7 text-stone-950">
+      <div className="ml-auto rounded-[22px] bg-[#f4f4f4] px-4 py-3 text-sm leading-7 text-stone-950 dark:bg-[#2f2f2f] dark:text-stone-100">
         <MessagePrimitive.Parts />
       </div>
     </div>
@@ -208,25 +222,110 @@ const UserMessage: FC = () => {
 
 const Composer: FC<{ placeholder: string }> = ({ placeholder }) => {
   const isRunning = useAuiState((s) => s.thread.isRunning);
+  const latestAssistantMessageKey = useAuiState((s) => {
+    for (let index = s.thread.messages.length - 1; index >= 0; index -= 1) {
+      const message = s.thread.messages[index];
+      if (message.role === "assistant") {
+        return `${message.id ?? index}:${message.parts.length}`;
+      }
+    }
+    return "";
+  });
+  const composer = useComposerRuntime();
+  const composerText = useAuiState((s) => s.composer.text);
+  const inputRef = useRef<HTMLTextAreaElement | null>(null);
+  const latestAssistantMessageKeyRef = useRef(latestAssistantMessageKey);
+  const [selectedTemplateId, setSelectedTemplateId] = useState<PromptTemplateId>(
+    promptTemplates[0].id,
+  );
+  const [showTemplatePreview, setShowTemplatePreview] = useState(false);
+
+  const selectedTemplate =
+    promptTemplates.find((template) => template.id === selectedTemplateId) ?? promptTemplates[0];
+
+  useEffect(() => {
+    if (latestAssistantMessageKeyRef.current === latestAssistantMessageKey) return;
+
+    latestAssistantMessageKeyRef.current = latestAssistantMessageKey;
+    if (latestAssistantMessageKey) {
+      window.setTimeout(() => {
+        setShowTemplatePreview(false);
+      }, 0);
+    }
+  }, [latestAssistantMessageKey]);
+
+  const handleInsertTemplate = () => {
+    const nextText = composerText.trim()
+      ? `${composerText.trimEnd()}\n\n${selectedTemplate.text}`
+      : selectedTemplate.text;
+
+    composer.setText(nextText);
+    setShowTemplatePreview(false);
+    requestAnimationFrame(() => {
+      inputRef.current?.focus();
+    });
+  };
 
   return (
     <ComposerPrimitive.Root className="mx-auto w-full max-w-3xl">
-      <div className="rounded-[30px] border border-white/12 bg-[#2b2522]/95 p-3 text-stone-50 shadow-[0_20px_45px_-35px_rgba(0,0,0,0.55)] backdrop-blur">
+      <div className="rounded-[26px] border border-stone-900/12 bg-white p-2 text-stone-950 shadow-[0_18px_50px_-32px_rgba(0,0,0,0.55)] dark:border-white/12 dark:bg-[#2f2f2f] dark:text-stone-100 sm:p-3">
         <ComposerPrimitive.Attachments
           components={{
             Attachment: ComposerAttachments,
           }}
         />
 
+        <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
+          <label className="sr-only" htmlFor="prompt-template-select">
+            プロンプトテンプレート
+          </label>
+          <select
+            id="prompt-template-select"
+            value={selectedTemplateId}
+            onChange={(event) => {
+              setSelectedTemplateId(event.target.value as PromptTemplateId);
+              setShowTemplatePreview(true);
+            }}
+            onFocus={() => setShowTemplatePreview(true)}
+            className="min-h-10 flex-1 rounded-xl border border-stone-900/10 bg-stone-50 px-3 text-sm text-stone-900 outline-none transition hover:bg-stone-100 focus:border-stone-900/30 dark:border-white/10 dark:bg-white/6 dark:text-stone-100 dark:hover:bg-white/10"
+            aria-describedby={showTemplatePreview ? "prompt-template-preview" : undefined}
+          >
+            {promptTemplates.map((template) => (
+              <option key={template.id} value={template.id} className="bg-white text-stone-900">
+                {template.label}
+              </option>
+            ))}
+          </select>
+          <button
+            type="button"
+            onClick={handleInsertTemplate}
+            className="inline-flex min-h-10 items-center justify-center gap-2 rounded-xl border border-stone-900/10 bg-stone-50 px-4 text-sm font-medium text-stone-800 transition hover:bg-stone-100 focus:outline-none focus:ring-2 focus:ring-stone-900/15 dark:border-white/10 dark:bg-white/6 dark:text-stone-200 dark:hover:bg-white/10"
+            aria-describedby={showTemplatePreview ? "prompt-template-preview" : undefined}
+          >
+            <FileTextIcon className="size-4" />
+            挿入
+          </button>
+        </div>
+
+        {showTemplatePreview ? (
+          <div
+            id="prompt-template-preview"
+            className="mt-2 max-h-28 overflow-y-auto whitespace-pre-wrap rounded-2xl border border-stone-900/10 bg-stone-50 px-3 py-2 text-xs leading-5 text-stone-600 dark:border-white/10 dark:bg-white/6 dark:text-stone-300"
+          >
+            {selectedTemplate.text}
+          </div>
+        ) : null}
+
         <div className="mt-2 flex items-end gap-2">
           <ComposerPrimitive.AddAttachment
             multiple
-            className="inline-flex size-11 shrink-0 items-center justify-center rounded-full border border-white/10 bg-white/6 text-stone-200 transition hover:bg-white/12"
+            className="inline-flex size-10 shrink-0 items-center justify-center rounded-full text-stone-500 transition hover:bg-stone-100 dark:text-stone-400 dark:hover:bg-white/10 sm:size-11"
           >
             <PlusIcon className="size-5" />
           </ComposerPrimitive.AddAttachment>
 
           <ComposerPrimitive.Input
+            ref={inputRef}
             placeholder={placeholder}
             className="min-h-11 w-full resize-none bg-transparent px-2 py-2 text-sm outline-none placeholder:text-stone-400"
             rows={1}
@@ -234,11 +333,11 @@ const Composer: FC<{ placeholder: string }> = ({ placeholder }) => {
           />
 
           {isRunning ? (
-            <ComposerPrimitive.Cancel className="inline-flex size-11 shrink-0 items-center justify-center rounded-full bg-[#e76f51] text-white transition hover:bg-[#d95f42]">
+            <ComposerPrimitive.Cancel className="inline-flex size-10 shrink-0 items-center justify-center rounded-full bg-stone-900 text-white transition hover:bg-stone-700 sm:size-11">
               <SquareIcon className="size-4 fill-current" />
             </ComposerPrimitive.Cancel>
           ) : (
-            <ComposerPrimitive.Send className="inline-flex size-11 shrink-0 items-center justify-center rounded-full bg-[#e76f51] text-white transition hover:bg-[#d95f42]">
+            <ComposerPrimitive.Send className="inline-flex size-10 shrink-0 items-center justify-center rounded-full bg-stone-900 text-white transition hover:bg-stone-700 sm:size-11">
               <ArrowUpIcon className="size-4" />
             </ComposerPrimitive.Send>
           )}
@@ -247,3 +346,58 @@ const Composer: FC<{ placeholder: string }> = ({ placeholder }) => {
     </ComposerPrimitive.Root>
   );
 };
+
+const promptTemplates = [
+  {
+    id: "extract-shift-image",
+    label: "シフト表・画像から予定抽出",
+    text: `添付したシフト表・予定表から予定候補を抽出してください。
+必要ならタイトル、日付、開始時刻、終了時刻、場所、補足を整理してください。
+不明なところは勝手に確定せず、確認項目として出してください。`,
+  },
+  {
+    id: "import-google-sheets",
+    label: "Sheetsから予定取り込み",
+    text: `この Google Sheets から予定候補を読み取ってください。
+
+URL: 【ここに入力: Google Sheets URL】
+
+読み取った内容を、日付・開始時刻・終了時刻・タイトル・場所・補足に整理してください。
+登録前に確認できる一覧で出してください。`,
+  },
+  {
+    id: "create-event-manual",
+    label: "予定を手入力で作成",
+    text: `次の予定をカレンダーに登録したいです。
+
+タイトル: 【ここに入力: 予定名】
+日付: 【ここに入力: 日付】
+開始時刻: 【ここに入力: 開始時刻】
+終了時刻: 【ここに入力: 終了時刻】
+場所: 【ここに入力: 住所または施設名】
+補足: 【ここに入力: メモ】
+
+登録前に内容を確認してください。`,
+  },
+  {
+    id: "check-day-events",
+    label: "今日・明日の予定確認",
+    text: `【ここに入力: 今日 / 明日 / 日付】の予定を確認してください。
+アプリ内の予定と Google Calendar の予定を見て、時間順に整理してください。
+移動が必要そうな予定があれば教えてください。`,
+  },
+  {
+    id: "plan-travel-time",
+    label: "移動時間を計算",
+    text: `次の予定に間に合う移動計画を作ってください。
+
+出発地: 【ここに入力: 自宅 / 現在地 / 保存済み地点名 / 住所】
+目的地: 【ここに入力: 住所または施設名】
+到着したい時刻: 【ここに入力: 日付と時刻】
+移動手段: 【ここに入力: 車 / 自転車 / 徒歩】
+
+出発時刻、所要時間、注意点を出してください。`,
+  },
+] as const;
+
+type PromptTemplateId = (typeof promptTemplates)[number]["id"];

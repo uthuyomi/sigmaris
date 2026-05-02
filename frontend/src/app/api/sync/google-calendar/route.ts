@@ -81,6 +81,7 @@ export async function POST() {
       timeMin,
       timeMax,
       maxResults: 2500,
+      showDeleted: true,
     });
 
     const { data: appEventsData, error: appEventsError } = await supabase
@@ -104,6 +105,8 @@ export async function POST() {
     );
 
     const googleOnlyEvents = googleEvents.filter((event) => event.id && !appEventsByExternalId.has(event.id));
+    const changedGoogleEvents = googleEvents.filter((event) => event.id && appEventsByExternalId.has(event.id));
+    let updatedFromGoogle = 0;
 
     if (googleOnlyEvents.length) {
       const insertPayload = googleOnlyEvents
@@ -138,6 +141,52 @@ export async function POST() {
           throw new Error(insertError.message);
         }
       }
+    }
+
+    for (const googleEvent of changedGoogleEvents) {
+      if (!googleEvent.id) continue;
+      const appEvent = appEventsByExternalId.get(googleEvent.id);
+      if (!appEvent) continue;
+
+      const isCancelled = googleEvent.status === "cancelled";
+      const startsAt = toDateTime(googleEvent.start);
+      const endsAt = toDateTime(googleEvent.end);
+      const nextValues = {
+        title: googleEvent.summary ?? (appEvent.title as string),
+        description: googleEvent.description ?? null,
+        location_text: googleEvent.location ?? null,
+        starts_at: startsAt ?? (appEvent.starts_at as string),
+        ends_at: endsAt ?? (appEvent.ends_at as string),
+        status: isCancelled ? "cancelled" : "confirmed",
+      };
+
+      const changed =
+        appEvent.title !== nextValues.title ||
+        ((appEvent.description as string | null) ?? null) !== nextValues.description ||
+        ((appEvent.location_text as string | null) ?? null) !== nextValues.location_text ||
+        appEvent.starts_at !== nextValues.starts_at ||
+        appEvent.ends_at !== nextValues.ends_at ||
+        appEvent.status !== nextValues.status;
+
+      if (!changed) continue;
+
+      const { error: updateError } = await supabase
+        .from("events")
+        .update({
+          ...nextValues,
+          last_synced_at: new Date().toISOString(),
+          metadata: {
+            provider: "google",
+            htmlLink: googleEvent.htmlLink ?? null,
+          },
+        })
+        .eq("id", appEvent.id);
+
+      if (updateError) {
+        throw new Error(updateError.message);
+      }
+
+      updatedFromGoogle += 1;
     }
 
     const appOnlyEvents = appEvents.filter(
@@ -180,12 +229,13 @@ export async function POST() {
 
     await markGoogleCalendarSyncRun(
       user.id,
-      `ok: imported=${googleOnlyEvents.length}, exported=${createdGoogleEvents.length}`,
+      `ok: imported=${googleOnlyEvents.length}, updated=${updatedFromGoogle}, exported=${createdGoogleEvents.length}`,
     );
 
     return NextResponse.json({
       ok: true,
       importedFromGoogle: googleOnlyEvents.length,
+      updatedFromGoogle,
       exportedToGoogle: createdGoogleEvents.length,
       timeMin,
       timeMax,

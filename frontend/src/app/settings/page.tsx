@@ -7,6 +7,7 @@ import { GoogleCalendarSyncPanel } from "@/components/google-calendar-sync-panel
 import { LanguagePreferencePanel } from "@/components/language-preference-panel";
 import { PreferredTravelModePanel } from "@/components/preferred-travel-mode-panel";
 import { SavedLocationsPanel } from "@/components/saved-locations-panel";
+import { ThemePreferencePanel } from "@/components/theme-preference-panel";
 import { readBackendChatCapabilities } from "@/lib/backend/chat";
 import { hasGoogleCalendarWriteConfig } from "@/lib/google/calendar";
 import { hasGoogleMapsConfig } from "@/lib/google/maps";
@@ -15,6 +16,7 @@ import { readBackendHealth } from "@/lib/backend/health";
 import { getDictionary } from "@/lib/i18n";
 import {
   readAiTone,
+  readAppTheme,
   readArrivalLeadMinutes,
   readGoogleCalendarSyncEnabled,
   readPreferredTravelMode,
@@ -32,6 +34,7 @@ type SettingsPageProps = {
 export default async function SettingsPage({ searchParams }: SettingsPageProps) {
   const user = await requireUser("/settings");
   const locale = await readUserLocale(user.id);
+  const theme = await readAppTheme(user.id);
   const dict = getDictionary(locale);
   const resolved = searchParams ? await searchParams : undefined;
   const sheetsReady = hasGoogleSheetsReadConfig();
@@ -51,8 +54,11 @@ export default async function SettingsPage({ searchParams }: SettingsPageProps) 
       title={dict.shell.settingsTitle}
       description={dict.shell.settingsDescription}
       badge={dict.shell.settingsBadge}
+      theme={theme}
     >
-      <div className="grid gap-4 xl:grid-cols-[1.2fr_1fr]">
+      <div className="settings-page grid gap-4 xl:grid-cols-[1.2fr_1fr]">
+        <ThemePreferencePanel currentTheme={theme} />
+
         <LanguagePreferencePanel
           currentLocale={locale}
           title={dict.settings.language}
@@ -74,8 +80,8 @@ export default async function SettingsPage({ searchParams }: SettingsPageProps) 
 
         <SavedLocationsPanel />
 
-        <section className="rounded-[30px] border border-stone-900/10 bg-white/85 p-5 shadow-[0_30px_90px_-55px_rgba(41,37,36,0.75)] backdrop-blur">
-          <p className="text-xs uppercase tracking-[0.3em] text-stone-500">{dict.settings.integrations}</p>
+        <section className="rounded-2xl border border-stone-900/10 bg-white p-5 shadow-sm dark:border-white/10 dark:bg-[#2f2f2f]">
+          <p className="text-xs uppercase tracking-[0.3em] text-stone-500 dark:text-stone-400">{dict.settings.integrations}</p>
           <div className="mt-4 grid gap-3 sm:grid-cols-2">
             {[
               { name: "ShiftPilotAI Backend API", ready: backendHealth.ready },
@@ -87,7 +93,7 @@ export default async function SettingsPage({ searchParams }: SettingsPageProps) 
             ].map((item) => (
               <div
                 key={item.name}
-                className="rounded-[24px] border border-stone-900/10 bg-stone-50 px-4 py-4"
+                className="rounded-2xl border border-stone-900/10 bg-stone-50 px-4 py-4 dark:border-white/10 dark:bg-white/6"
               >
                 <p className="text-sm font-semibold text-stone-900">{item.name}</p>
                 <p className="mt-2 text-sm text-stone-600">

@@ -2,7 +2,7 @@
 
 import type { EventItem } from "@/lib/mock-schedule";
 import type { EventRow } from "@/lib/event-data/types";
-import { toIsoDateInTimeZone, toMinutesInTimeZone } from "@/lib/event-data/time";
+import { dayOffsetInTimeZone, toIsoDateInTimeZone, toMinutesInTimeZone } from "@/lib/event-data/time";
 
 const toneBySource: Record<EventRow["source_type"], EventItem["tone"]> = {
   manual: "sky",
@@ -19,7 +19,7 @@ const isTravelBlockEvent = (row: EventRow) =>
 
 export const mapEventRowToEventItem = (row: EventRow): EventItem => {
   const startMinutes = toMinutesInTimeZone(row.starts_at);
-  const endMinutes = toMinutesInTimeZone(row.ends_at);
+  const endMinutes = toMinutesInTimeZone(row.ends_at) + dayOffsetInTimeZone(row.starts_at, row.ends_at) * 24 * 60;
   const date = toIsoDateInTimeZone(row.starts_at);
   const isTravelBlock = isTravelBlockEvent(row);
   const displayEndMinutes = isTravelBlock

@@ -34,14 +34,14 @@ export function TimelineBoard({
   const dateLabel = formatJapaneseDate(selectedDate);
 
   return (
-    <div className="flex min-h-[42rem] flex-col overflow-hidden rounded-[32px] border border-stone-900/10 bg-white/80 shadow-[0_30px_90px_-55px_rgba(41,37,36,0.75)] backdrop-blur">
-      <div className="border-b border-stone-900/10 px-5 py-5">
+    <div className="flex min-h-[42rem] flex-col overflow-hidden rounded-2xl border border-stone-900/10 bg-white shadow-sm dark:border-white/10 dark:bg-[#2f2f2f]">
+      <div className="border-b border-stone-900/10 px-5 py-5 dark:border-white/10">
         <div className="flex flex-col gap-4 xl:flex-row xl:items-end xl:justify-between">
           <div>
-            <p className="text-xs font-medium uppercase tracking-[0.3em] text-stone-500">
+            <p className="text-xs font-medium uppercase tracking-[0.3em] text-stone-500 dark:text-stone-400">
               {dict.timeline.selectedDay}
             </p>
-            <h2 className="mt-1 text-xl font-semibold text-stone-900">{dateLabel}</h2>
+            <h2 className="mt-1 text-xl font-semibold text-stone-900 dark:text-stone-50">{dateLabel}</h2>
           </div>
 
           <div className="flex flex-wrap gap-2">
@@ -53,8 +53,8 @@ export function TimelineBoard({
                 aria-label={`${grain}`}
                 className={`rounded-full px-4 py-2 text-sm font-medium transition ${
                   activeGrain === grain
-                    ? "bg-stone-900 text-stone-50 shadow-[0_16px_35px_-24px_rgba(28,25,23,0.9)]"
-                    : "bg-stone-900/5 text-stone-700 hover:bg-stone-900/10"
+                    ? "bg-stone-900 text-stone-50 shadow-[0_16px_35px_-24px_rgba(28,25,23,0.9)] dark:bg-white dark:text-stone-950"
+                    : "bg-stone-900/5 text-stone-700 hover:bg-stone-900/10 dark:bg-white/8 dark:text-stone-300 dark:hover:bg-white/12"
                 }`}
               >
                 {grain === 60 ? "1h" : `${grain}m`}
@@ -64,15 +64,15 @@ export function TimelineBoard({
         </div>
       </div>
 
-      <div className="grid gap-4 border-b border-stone-900/10 px-5 py-4 md:grid-cols-[1.3fr_0.9fr]">
-        <div className="rounded-[24px] bg-stone-900 px-4 py-4 text-stone-50">
+      <div className="grid gap-4 border-b border-stone-900/10 px-5 py-4 dark:border-white/10 md:grid-cols-[1.3fr_0.9fr]">
+        <div className="rounded-2xl bg-stone-900 px-4 py-4 text-stone-50 dark:bg-white/8">
           <p className="text-xs uppercase tracking-[0.3em] text-stone-400">{dict.timeline.title}</p>
           <p className="mt-2 text-lg font-semibold">{dateLabel}</p>
           <p className="mt-2 text-sm leading-7 text-stone-200">{dict.timeline.refine}</p>
         </div>
-        <div className="rounded-[24px] border border-stone-900/10 bg-stone-50 px-4 py-4">
-          <p className="text-xs uppercase tracking-[0.3em] text-stone-500">{dict.timeline.selectedGrain}</p>
-          <p className="mt-2 text-3xl font-semibold tracking-tight text-stone-900">
+        <div className="rounded-2xl border border-stone-900/10 bg-stone-50 px-4 py-4 dark:border-white/10 dark:bg-white/6">
+          <p className="text-xs uppercase tracking-[0.3em] text-stone-500 dark:text-stone-400">{dict.timeline.selectedGrain}</p>
+          <p className="mt-2 text-3xl font-semibold tracking-tight text-stone-900 dark:text-stone-50">
             {activeGrain === 60 ? "1h" : `${activeGrain}m`}
           </p>
         </div>

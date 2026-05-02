@@ -2,9 +2,10 @@
 
 import { AppShell } from "@/components/app-shell";
 import { CalendarBoard } from "@/components/calendar-board";
+import { CalendarLiveSync } from "@/components/calendar-live-sync";
 import { listEventsForMonthForUser } from "@/lib/events";
 import { getDictionary } from "@/lib/i18n";
-import { readUserLocale } from "@/lib/profile-settings";
+import { readAppTheme, readGoogleCalendarSyncEnabled, readUserLocale } from "@/lib/profile-settings";
 import { requireUser } from "@/lib/supabase/auth";
 
 type CalendarPageProps = {
@@ -18,6 +19,8 @@ export default async function CalendarPage({ searchParams }: CalendarPageProps) 
   const selectedMonth = params?.month;
   const user = await requireUser("/calendar");
   const locale = await readUserLocale(user.id);
+  const theme = await readAppTheme(user.id);
+  const googleCalendarSyncEnabled = await readGoogleCalendarSyncEnabled(user.id);
   const dict = getDictionary(locale);
   const monthForQuery =
     selectedMonth ??
@@ -34,7 +37,9 @@ export default async function CalendarPage({ searchParams }: CalendarPageProps) 
       title={dict.shell.calendarTitle}
       description={dict.shell.calendarDescription}
       badge={dict.shell.calendarBadge}
+      theme={theme}
     >
+      <CalendarLiveSync userId={user.id} syncEnabled={googleCalendarSyncEnabled} />
       <CalendarBoard locale={locale} month={monthForQuery} events={events} />
     </AppShell>
   );

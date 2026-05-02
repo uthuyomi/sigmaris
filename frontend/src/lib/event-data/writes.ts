@@ -2,6 +2,32 @@
 
 import { createClient } from "@/lib/supabase/server";
 
+const EVENT_SELECT_COLUMNS =
+  "id,user_id,title,description,location_text,starts_at,ends_at,source_type,external_event_id,status,calendar_connection_id,metadata";
+
+type EventWriteInput = {
+  title: string;
+  description?: string | null;
+  locationText?: string | null;
+  startsAt: string;
+  endsAt: string;
+  sourceType?: "manual" | "chat" | "sheet" | "image" | "calendar_sync";
+  externalEventId?: string | null;
+  calendarConnectionId?: string | null;
+  metadata?: Record<string, unknown>;
+};
+
+const normalizeEventTime = (value: string) => new Date(value).toISOString();
+
+const eventMatchKey = (event: { title: string; starts_at?: string; ends_at?: string; startsAt?: string; endsAt?: string }) =>
+  [
+    event.title.trim(),
+    normalizeEventTime(event.starts_at ?? event.startsAt ?? ""),
+    normalizeEventTime(event.ends_at ?? event.endsAt ?? ""),
+  ].join("\u0000");
+
+const compactRows = <T>(rows: Array<T | null>): T[] => rows.filter((row): row is T => row !== null);
+
 export const createEventForUser = async (input: {
   userId: string;
   title: string;
@@ -33,6 +59,106 @@ export const createEventForUser = async (input: {
       "id,user_id,title,description,location_text,starts_at,ends_at,source_type,external_event_id,status,calendar_connection_id,metadata",
     )
     .single();
+
+  if (error) {
+    throw new Error(error.message);
+  }
+
+  return data;
+};
+
+export const createEventsForUser = async (
+  userId: string,
+  events: EventWriteInput[],
+) => {
+  if (!events.length) return [];
+
+  const supabase = await createClient();
+  const sortedStarts = events.map((event) => event.startsAt).sort();
+  const sortedEnds = events.map((event) => event.endsAt).sort();
+  const { data: existingRows, error: existingError } = await supabase
+    .from("events")
+    .select(EVENT_SELECT_COLUMNS)
+    .eq("user_id", userId)
+    .neq("status", "cancelled")
+    .gte("starts_at", sortedStarts[0])
+    .lte("ends_at", sortedEnds[sortedEnds.length - 1])
+    .limit(1000);
+
+  if (existingError) {
+    throw new Error(existingError.message);
+  }
+
+  const existingByKey = new Map<string, NonNullable<typeof existingRows>[number]>();
+  for (const row of existingRows ?? []) {
+    if (row.starts_at && row.ends_at) {
+      existingByKey.set(eventMatchKey(row), row);
+    }
+  }
+
+  const orderedResults: Array<NonNullable<typeof existingRows>[number] | null> = new Array(events.length).fill(null);
+  const eventsToInsert: Array<{ index: number; event: EventWriteInput }> = [];
+  events.forEach((event, index) => {
+    const existing = existingByKey.get(eventMatchKey(event));
+    if (existing) {
+      orderedResults[index] = existing;
+      return;
+    }
+    eventsToInsert.push({ index, event });
+  });
+
+  if (!eventsToInsert.length) {
+    return compactRows(orderedResults);
+  }
+
+  const { data, error } = await supabase
+    .from("events")
+    .insert(
+      eventsToInsert.map(({ event }) => ({
+        user_id: userId,
+        title: event.title,
+        description: event.description ?? null,
+        location_text: event.locationText ?? null,
+        starts_at: event.startsAt,
+        ends_at: event.endsAt,
+        source_type: event.sourceType ?? "manual",
+        external_event_id: event.externalEventId ?? null,
+        calendar_connection_id: event.calendarConnectionId ?? null,
+        metadata: event.metadata ?? {},
+      })),
+    )
+    .select(EVENT_SELECT_COLUMNS);
+
+  if (error) {
+    throw new Error(error.message);
+  }
+
+  eventsToInsert.forEach(({ index }, createdIndex) => {
+    orderedResults[index] = data?.[createdIndex] ?? null;
+  });
+
+  return compactRows(orderedResults);
+};
+
+export const updateEventExternalLinkForUser = async (input: {
+  eventId: string;
+  externalEventId?: string | null;
+  calendarConnectionId?: string | null;
+  metadata?: Record<string, unknown>;
+}) => {
+  const supabase = await createClient();
+  const { data, error } = await supabase
+    .from("events")
+    .update({
+      external_event_id: input.externalEventId ?? null,
+      calendar_connection_id: input.calendarConnectionId ?? null,
+      metadata: input.metadata ?? {},
+    })
+    .eq("id", input.eventId)
+    .select(
+      "id,user_id,title,description,location_text,starts_at,ends_at,source_type,external_event_id,status,calendar_connection_id,metadata",
+    )
+    .maybeSingle();
 
   if (error) {
     throw new Error(error.message);

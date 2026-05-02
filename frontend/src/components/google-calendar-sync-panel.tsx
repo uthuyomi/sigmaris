@@ -88,14 +88,14 @@ export function GoogleCalendarSyncPanel({
   };
 
   return (
-    <div className="rounded-[30px] border border-stone-900/10 bg-stone-50 p-4">
+    <div className="rounded-2xl border border-stone-900/10 bg-stone-50 p-4 dark:border-white/10 dark:bg-white/6">
       <div className="flex items-start justify-between gap-4">
         <div>
-          <div className="inline-flex size-11 items-center justify-center rounded-2xl bg-stone-900 text-stone-50">
+          <div className="inline-flex size-11 items-center justify-center rounded-xl bg-stone-900 text-stone-50 dark:bg-white dark:text-stone-950">
             <ArrowUpDownIcon className="size-5" />
           </div>
-          <h2 className="mt-4 text-lg font-semibold text-stone-900">{dict.settings.syncTitle}</h2>
-          <p className="mt-2 max-w-md text-sm leading-7 text-stone-600">
+          <h2 className="mt-4 text-lg font-semibold text-stone-900 dark:text-stone-50">{dict.settings.syncTitle}</h2>
+          <p className="mt-2 max-w-md text-sm leading-7 text-stone-600 dark:text-stone-400">
             {dict.settings.syncBody}
           </p>
         </div>
@@ -106,7 +106,7 @@ export function GoogleCalendarSyncPanel({
           disabled={isPending || !calendarReady}
           aria-pressed={enabled}
           className={`relative inline-flex h-9 w-16 shrink-0 items-center rounded-full transition ${
-            enabled ? "bg-stone-900" : "bg-stone-300"
+            enabled ? "bg-stone-900 dark:bg-white" : "bg-stone-300 dark:bg-white/20"
           } ${isPending || !calendarReady ? "opacity-70" : ""}`}
         >
           <span
@@ -118,7 +118,7 @@ export function GoogleCalendarSyncPanel({
       </div>
 
       <div className="mt-4 flex flex-wrap items-center justify-between gap-3 text-sm">
-        <span className={enabled ? "font-medium text-stone-900" : "text-stone-500"}>
+        <span className={enabled ? "font-medium text-stone-900 dark:text-stone-50" : "text-stone-500 dark:text-stone-400"}>
           {!calendarReady
             ? dict.common.unavailable
             : enabled
@@ -130,7 +130,7 @@ export function GoogleCalendarSyncPanel({
           type="button"
           onClick={syncNow}
           disabled={!enabled || isPending || !calendarReady}
-          className="inline-flex size-10 items-center justify-center rounded-full bg-stone-900 text-stone-50 transition hover:bg-stone-800 disabled:cursor-not-allowed disabled:bg-stone-300"
+          className="inline-flex size-10 items-center justify-center rounded-full bg-stone-900 text-stone-50 transition hover:bg-stone-800 disabled:cursor-not-allowed disabled:bg-stone-300 dark:bg-white dark:text-stone-950 dark:hover:bg-stone-200 dark:disabled:bg-white/20 dark:disabled:text-stone-500"
           aria-label={dict.common.syncNow}
         >
           <RefreshCcwIcon className="size-4" />

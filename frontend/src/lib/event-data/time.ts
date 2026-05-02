@@ -36,6 +36,17 @@ export const toIsoDateInTimeZone = (value: string) => {
   return `${parts.year}-${parts.month}-${parts.day}`;
 };
 
+export const dayOffsetInTimeZone = (fromValue: string, toValue: string) => {
+  const fromDate = toIsoDateInTimeZone(fromValue);
+  const toDate = toIsoDateInTimeZone(toValue);
+  const [fromYear, fromMonth, fromDay] = fromDate.split("-").map(Number);
+  const [toYear, toMonth, toDay] = toDate.split("-").map(Number);
+  const fromUtc = Date.UTC(fromYear, fromMonth - 1, fromDay);
+  const toUtc = Date.UTC(toYear, toMonth - 1, toDay);
+
+  return Math.round((toUtc - fromUtc) / 86_400_000);
+};
+
 export const startOfMonthInJst = (month: string) => `${month}-01T00:00:00+09:00`;
 
 export const nextMonthStartInJst = (month: string) => {

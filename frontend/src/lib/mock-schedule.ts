@@ -59,10 +59,13 @@ export const toneClassMap: Record<EventItem["tone"], string> = {
 };
 
 export const minutesToLabel = (value: number) => {
-  const hours = Math.floor(value / 60);
-  const minutes = value % 60;
+  const dayOffset = Math.floor(value / (24 * 60));
+  const minutesInDay = ((value % (24 * 60)) + 24 * 60) % (24 * 60);
+  const hours = Math.floor(minutesInDay / 60);
+  const minutes = minutesInDay % 60;
+  const dayPrefix = dayOffset > 0 ? `+${dayOffset}d ` : "";
 
-  return `${hours.toString().padStart(2, "0")}:${minutes
+  return `${dayPrefix}${hours.toString().padStart(2, "0")}:${minutes
     .toString()
     .padStart(2, "0")}`;
 };

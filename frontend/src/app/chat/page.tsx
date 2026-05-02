@@ -2,9 +2,8 @@
 
 import { type UIMessage } from "ai";
 import { redirect } from "next/navigation";
-import { Assistant } from "@/app/assistant";
 import { AppShell } from "@/components/app-shell";
-import { ChatThreadSidebar } from "@/components/chat-thread-sidebar";
+import { ChatWorkspace } from "@/components/chat-workspace";
 import {
   createChatThread,
   getChatThread,
@@ -12,7 +11,7 @@ import {
   listChatThreads,
 } from "@/lib/chat-threads";
 import { getDictionary } from "@/lib/i18n";
-import { readUserLocale } from "@/lib/profile-settings";
+import { readAppTheme, readUserLocale } from "@/lib/profile-settings";
 import { requireUser } from "@/lib/supabase/auth";
 
 type ChatPageProps = {
@@ -24,6 +23,7 @@ type ChatPageProps = {
 export default async function ChatPage({ searchParams }: ChatPageProps) {
   const user = await requireUser("/chat");
   const locale = await readUserLocale(user.id);
+  const theme = await readAppTheme(user.id);
   const dict = getDictionary(locale);
   const params = searchParams ? await searchParams : undefined;
   const requestedThreadId = params?.thread;
@@ -56,27 +56,17 @@ export default async function ChatPage({ searchParams }: ChatPageProps) {
       title={dict.shell.chatTitle}
       description={dict.shell.chatDescription}
       badge={dict.shell.chatBadge}
+      theme={theme}
       fitViewport
     >
-      <section className="grid h-full min-h-0 gap-4 lg:grid-cols-[280px_minmax(0,1fr)]">
-        <ChatThreadSidebar
-          locale={locale}
-          threads={threads}
-          activeThreadId={selectedThread.id}
-        />
-
-        <section className="flex min-h-0 flex-col overflow-hidden rounded-[32px] border border-stone-900/10 bg-[linear-gradient(180deg,_rgba(35,31,32,0.98),_rgba(54,48,42,0.94))] shadow-[0_30px_90px_-50px_rgba(28,25,23,0.9)]">
-          <div className="border-b border-white/10 px-5 py-5 text-stone-50 sm:px-6">
-            <p className="text-xs uppercase tracking-[0.3em] text-stone-400">
-              {dict.chat.assistant}
-            </p>
-            <h2 className="mt-2 text-lg font-semibold">{selectedThread.title}</h2>
-          </div>
-          <div className="flex-1 min-h-0">
-            <Assistant threadId={selectedThread.id} initialMessages={initialMessages} locale={locale} />
-          </div>
-        </section>
-      </section>
+      <ChatWorkspace
+        locale={locale}
+        threads={threads}
+        activeThreadId={selectedThread.id}
+        activeThreadTitle={selectedThread.title}
+        initialMessages={initialMessages}
+        assistantLabel={dict.chat.assistant}
+      />
     </AppShell>
   );
 }

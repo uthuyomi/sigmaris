@@ -64,9 +64,9 @@ export function AiTonePreferencePanel({ currentTone }: AiTonePreferencePanelProp
   };
 
   return (
-    <section className="rounded-[30px] border border-stone-900/10 bg-white/85 p-5 shadow-[0_30px_90px_-55px_rgba(41,37,36,0.75)] backdrop-blur">
+    <section className="rounded-2xl border border-stone-900/10 bg-white p-5 shadow-sm dark:border-white/10 dark:bg-[#2f2f2f]">
       <div className="flex items-start gap-4">
-        <div className="inline-flex size-11 items-center justify-center rounded-2xl bg-stone-900 text-stone-50">
+        <div className="inline-flex size-11 items-center justify-center rounded-xl bg-stone-900 text-stone-50 dark:bg-white dark:text-stone-950">
           <BotIcon className="size-5" />
         </div>
         <div className="min-w-0 flex-1">
@@ -81,7 +81,7 @@ export function AiTonePreferencePanel({ currentTone }: AiTonePreferencePanelProp
         <button
           type="button"
           onClick={() => setOpen((value) => !value)}
-          className="flex w-full items-center justify-between rounded-[24px] border border-stone-900/10 bg-stone-50 px-4 py-4 text-left transition hover:bg-white"
+          className="flex w-full items-center justify-between rounded-2xl border border-stone-900/10 bg-stone-50 px-4 py-4 text-left transition hover:bg-white dark:border-white/10 dark:bg-white/6 dark:hover:bg-white/10"
           aria-expanded={open}
         >
           <div>
@@ -104,8 +104,8 @@ export function AiTonePreferencePanel({ currentTone }: AiTonePreferencePanelProp
                   disabled={isPending}
                   className={`flex w-full items-center justify-between rounded-[22px] border px-4 py-3 text-left transition ${
                     active
-                      ? "border-stone-900 bg-stone-900 text-stone-50"
-                      : "border-stone-900/10 bg-stone-50 text-stone-900 hover:bg-white"
+                      ? "border-stone-900 bg-stone-900 text-stone-50 dark:border-white/20 dark:bg-white/12 dark:text-white"
+                      : "border-stone-900/10 bg-stone-50 text-stone-900 hover:bg-white dark:border-white/10 dark:bg-white/6 dark:text-stone-100 dark:hover:bg-white/10"
                   }`}
                 >
                   <div>

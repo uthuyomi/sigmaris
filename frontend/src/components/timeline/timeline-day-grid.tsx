@@ -5,7 +5,7 @@
 import Link from "next/link";
 import { useMemo } from "react";
 import { TimelineEventCard } from "@/components/timeline/timeline-event-card";
-import type { EventItem, Grain } from "@/lib/mock-schedule";
+import { minutesToLabel, type EventItem, type Grain } from "@/lib/mock-schedule";
 
 type TimelineDayGridProps = {
   activeGrain: Grain;
@@ -34,24 +34,27 @@ export function TimelineDayGrid({
   sourceSyncLabel,
   onSelectEvent,
 }: TimelineDayGridProps) {
-  const slots = useMemo(() => {
-    const total = (24 * 60) / activeGrain;
-    return Array.from({ length: total }, (_, index) => index * activeGrain);
-  }, [activeGrain]);
-
   const pixelsPerMinute = pixelsPerMinuteForGrain(activeGrain);
-  const timelineHeight = 24 * 60 * pixelsPerMinute;
+  const lastEventEndMinutes = events.reduce(
+    (latest, event) => Math.max(latest, event.endMinutes),
+    24 * 60,
+  );
+  const timelineHeight = lastEventEndMinutes * pixelsPerMinute;
+  const slots = useMemo(() => {
+    const total = Math.ceil(lastEventEndMinutes / activeGrain);
+    return Array.from({ length: total }, (_, index) => index * activeGrain);
+  }, [activeGrain, lastEventEndMinutes]);
 
   return (
-    <div className="overflow-hidden rounded-[28px] border border-stone-900/10 bg-[#fcfbf7]">
-      <div className="flex items-center justify-between border-b border-stone-900/8 px-4 py-3">
+    <div className="overflow-hidden rounded-2xl border border-stone-900/10 bg-[#fcfbf7] dark:border-white/10 dark:bg-[#212121]">
+      <div className="flex items-center justify-between border-b border-stone-900/8 px-4 py-3 dark:border-white/10">
         <div>
-          <p className="text-sm font-semibold text-stone-900">{dateLabel}</p>
-          <p className="text-xs text-stone-500">{events.length}</p>
+          <p className="text-sm font-semibold text-stone-900 dark:text-stone-50">{dateLabel}</p>
+          <p className="text-xs text-stone-500 dark:text-stone-400">{events.length}</p>
         </div>
         <Link
           href="/calendar"
-          className="rounded-full border border-stone-900/10 bg-white px-3 py-2 text-xs font-medium text-stone-700 transition hover:bg-stone-50"
+          className="rounded-full border border-stone-900/10 bg-white px-3 py-2 text-xs font-medium text-stone-700 transition hover:bg-stone-50 dark:border-white/10 dark:bg-white/8 dark:text-stone-200 dark:hover:bg-white/12"
         >
           {backLabel}
         </Link>
@@ -60,7 +63,6 @@ export function TimelineDayGrid({
       <div className="h-[42rem] overflow-y-auto px-3 py-4 sm:px-4">
         <div className="relative" style={{ height: `${timelineHeight}px` }}>
           {slots.map((minute) => {
-            const hour = Math.floor(minute / 60);
             const isHourBoundary = minute % 60 === 0;
             const top = minute * pixelsPerMinute;
 
@@ -70,11 +72,11 @@ export function TimelineDayGrid({
                   <div className="pr-2 text-right">
                     {isHourBoundary ? (
                       <span className="text-xs font-semibold tracking-[0.18em] text-stone-400">
-                        {`${hour.toString().padStart(2, "0")}:00`}
+                        {minutesToLabel(minute)}
                       </span>
                     ) : null}
                   </div>
-                  <div className={`h-px ${isHourBoundary ? "bg-stone-900/14" : "bg-stone-900/6"}`} />
+                  <div className={`h-px ${isHourBoundary ? "bg-stone-900/14 dark:bg-white/14" : "bg-stone-900/6 dark:bg-white/6"}`} />
                 </div>
               </div>
             );

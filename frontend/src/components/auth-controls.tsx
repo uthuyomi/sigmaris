@@ -19,7 +19,7 @@ const googleScopes = [
 type AuthControlsProps = {
   redirectPath?: string;
   locale: AppLocale;
-  mode?: "compact" | "hero";
+  mode?: "compact" | "hero" | "icon";
 };
 
 export function AuthControls({
@@ -108,6 +108,10 @@ export function AuthControls({
   };
 
   if (!available) {
+    if (mode === "icon") {
+      return null;
+    }
+
     return (
       <div className="rounded-full border border-stone-900/10 bg-white px-4 py-2 text-sm text-stone-500">
         {dict.auth.unavailable}
@@ -116,6 +120,24 @@ export function AuthControls({
   }
 
   if (user) {
+    if (mode === "icon") {
+      return (
+        <div className="relative">
+          <button
+            type="button"
+            onClick={signOut}
+            disabled={loading}
+            className="inline-flex size-10 items-center justify-center rounded-xl text-stone-500 transition hover:bg-stone-100 hover:text-stone-950 disabled:opacity-50 dark:text-stone-400 dark:hover:bg-white/10 dark:hover:text-white"
+            aria-label={dict.auth.signOut}
+            title={user.email ?? dict.auth.signOut}
+          >
+            <LogOutIcon className="size-[18px]" />
+          </button>
+          {error ? <p className="absolute right-0 top-11 w-48 rounded-xl border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-700 shadow-sm">{error}</p> : null}
+        </div>
+      );
+    }
+
     return (
       <div className="flex flex-col items-start gap-2">
         <div className="flex flex-wrap items-center gap-2">
@@ -141,6 +163,24 @@ export function AuthControls({
     mode === "hero"
       ? "inline-flex items-center gap-2 rounded-full bg-stone-900 px-6 py-3 text-base font-semibold text-stone-50 disabled:opacity-50"
       : "inline-flex items-center gap-2 rounded-full bg-stone-900 px-4 py-2 text-sm font-medium text-stone-50 disabled:opacity-50";
+
+  if (mode === "icon") {
+    return (
+      <div className="relative">
+        <button
+          type="button"
+          onClick={signInWithGoogle}
+          disabled={loading}
+          className="inline-flex size-10 items-center justify-center rounded-xl text-stone-500 transition hover:bg-stone-100 hover:text-stone-950 disabled:opacity-50 dark:text-stone-400 dark:hover:bg-white/10 dark:hover:text-white"
+          aria-label={loading ? dict.auth.signingIn : dict.auth.signIn}
+          title={loading ? dict.auth.signingIn : dict.auth.signIn}
+        >
+          <LogInIcon className="size-[18px]" />
+        </button>
+        {error ? <p className="absolute right-0 top-11 w-48 rounded-xl border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-700 shadow-sm">{error}</p> : null}
+      </div>
+    );
+  }
 
   return (
     <div className="flex flex-col items-start gap-2">
