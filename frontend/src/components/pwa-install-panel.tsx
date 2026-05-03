@@ -8,6 +8,8 @@ type BeforeInstallPromptEvent = Event & {
   userChoice: Promise<{ outcome: "accepted" | "dismissed"; platform: string }>;
 };
 
+type InstallGuide = "desktop" | "mobile" | null;
+
 const isStandalone = () => {
   const navigatorWithStandalone = window.navigator as Navigator & { standalone?: boolean };
 
@@ -17,15 +19,18 @@ const isStandalone = () => {
   );
 };
 
+const detectAppleMobile = () => /iphone|ipad|ipod/i.test(window.navigator.userAgent);
+
 export function PwaInstallPanel() {
   const [installPrompt, setInstallPrompt] = useState<BeforeInstallPromptEvent | null>(null);
   const [installed, setInstalled] = useState(false);
   const [isAppleMobile, setIsAppleMobile] = useState(false);
+  const [guide, setGuide] = useState<InstallGuide>(null);
 
   useEffect(() => {
     const initializeState = window.setTimeout(() => {
       setInstalled(isStandalone());
-      setIsAppleMobile(/iphone|ipad|ipod/i.test(window.navigator.userAgent));
+      setIsAppleMobile(detectAppleMobile());
     }, 0);
 
     if ("serviceWorker" in navigator) {
@@ -39,6 +44,7 @@ export function PwaInstallPanel() {
     const handleInstalled = () => {
       setInstalled(true);
       setInstallPrompt(null);
+      setGuide(null);
     };
 
     window.addEventListener("beforeinstallprompt", handleBeforeInstallPrompt);
@@ -52,19 +58,27 @@ export function PwaInstallPanel() {
   }, []);
 
   const statusText = useMemo(() => {
-    if (installed) return "インストール済み";
-    if (installPrompt) return "このブラウザでインストールできます";
-    if (isAppleMobile) return "共有メニューからホーム画面に追加できます";
-    return "ブラウザのインストールメニューから追加できます";
+    if (installed) return "インストール済みです。";
+    if (installPrompt) return "このブラウザではボタンからインストールできます。";
+    if (isAppleMobile) return "iPhone / iPad は共有メニューからホーム画面に追加できます。";
+    return "ボタンを押すと、この環境での追加方法を表示します。";
   }, [installPrompt, installed, isAppleMobile]);
 
-  const install = async () => {
-    if (!installPrompt) return;
+  const runInstall = async (nextGuide: Exclude<InstallGuide, null>) => {
+    if (installed) return;
+
+    if (!installPrompt) {
+      setGuide(nextGuide);
+      return;
+    }
 
     await installPrompt.prompt();
     const choice = await installPrompt.userChoice;
     if (choice.outcome === "accepted") {
       setInstalled(true);
+      setGuide(null);
+    } else {
+      setGuide(nextGuide);
     }
     setInstallPrompt(null);
   };
@@ -91,30 +105,44 @@ export function PwaInstallPanel() {
       <div className="mt-4 grid gap-2 sm:grid-cols-2">
         <button
           type="button"
-          onClick={install}
-          disabled={!installPrompt || installed}
+          onClick={() => runInstall("desktop")}
+          disabled={installed}
           className="inline-flex min-h-11 items-center justify-center gap-2 rounded-full bg-stone-900 px-4 text-sm font-semibold text-stone-50 transition hover:bg-stone-700 disabled:cursor-not-allowed disabled:bg-stone-300 disabled:text-stone-500"
         >
           <LaptopIcon className="size-4" />
-          PC版をインストール
+          PC版を追加
         </button>
         <button
           type="button"
-          onClick={install}
-          disabled={!installPrompt || installed}
+          onClick={() => runInstall("mobile")}
+          disabled={installed}
           className="inline-flex min-h-11 items-center justify-center gap-2 rounded-full border border-stone-900/15 bg-white px-4 text-sm font-semibold text-stone-800 transition hover:bg-stone-50 disabled:cursor-not-allowed disabled:border-stone-900/8 disabled:bg-stone-100 disabled:text-stone-400"
         >
           <SmartphoneIcon className="size-4" />
-          スマホ版をインストール
+          スマホ版を追加
         </button>
       </div>
 
-      {installPrompt || installed ? null : (
-        <p className="mt-3 text-xs leading-6 text-stone-500">
-          iPhone / iPad は Safari の共有ボタンから「ホーム画面に追加」を選びます。
-          PC はアドレスバーのインストールボタン、またはブラウザメニューから追加できます。
-        </p>
-      )}
+      {guide ? (
+        <div className="mt-4 rounded-[18px] border border-stone-900/10 bg-stone-50 px-4 py-3 text-xs leading-6 text-stone-600">
+          <p className="font-semibold text-stone-800">
+            {guide === "desktop" ? "PCで追加する方法" : "スマホで追加する方法"}
+          </p>
+          {guide === "desktop" ? (
+            <ul className="mt-2 list-disc space-y-1 pl-4">
+              <li>Chrome / Edge はアドレスバー右側のインストールアイコンを押します。</li>
+              <li>見つからない場合は、ブラウザメニューから「インストール」または「アプリをインストール」を選びます。</li>
+              <li>Firefox など未対応の環境では、ブックマークかホーム画面ショートカットで代用します。</li>
+            </ul>
+          ) : (
+            <ul className="mt-2 list-disc space-y-1 pl-4">
+              <li>iPhone / iPad は Safari の共有ボタンから「ホーム画面に追加」を選びます。</li>
+              <li>Android Chrome はブラウザメニューから「アプリをインストール」または「ホーム画面に追加」を選びます。</li>
+              <li>アプリ起動後は、ログイン状態に応じてログインページまたはチャットへ移動します。</li>
+            </ul>
+          )}
+        </div>
+      ) : null}
     </section>
   );
 }
