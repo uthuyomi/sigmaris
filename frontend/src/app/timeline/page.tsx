@@ -18,10 +18,12 @@ export default async function TimelinePage({ searchParams }: TimelinePageProps) 
   const params = searchParams ? await searchParams : undefined;
   const selectedDate = params?.date ?? "2026-03-27";
   const user = await requireUser(`/timeline?date=${selectedDate}`);
-  const locale = await readUserLocale(user.id);
-  const theme = await readAppTheme(user.id);
+  const [locale, theme, events] = await Promise.all([
+    readUserLocale(user.id),
+    readAppTheme(user.id),
+    listEventsForDateForUser(user.id, selectedDate),
+  ]);
   const dict = getDictionary(locale);
-  const events = await listEventsForDateForUser(user.id, selectedDate);
 
   return (
     <AppShell

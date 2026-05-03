@@ -22,13 +22,16 @@ type ChatPageProps = {
 
 export default async function ChatPage({ searchParams }: ChatPageProps) {
   const user = await requireUser("/chat");
-  const locale = await readUserLocale(user.id);
-  const theme = await readAppTheme(user.id);
-  const dict = getDictionary(locale);
   const params = searchParams ? await searchParams : undefined;
   const requestedThreadId = params?.thread;
 
-  let threads = await listChatThreads(user.id);
+  const [locale, theme, threads] = await Promise.all([
+    readUserLocale(user.id),
+    readAppTheme(user.id),
+    listChatThreads(user.id),
+  ]);
+  const dict = getDictionary(locale);
+
   if (!threads.length) {
     const created = await createChatThread(user.id);
     redirect(`/chat?thread=${created.id}`);
@@ -47,7 +50,6 @@ export default async function ChatPage({ searchParams }: ChatPageProps) {
     redirect(`/chat?thread=${selectedThreadId}`);
   }
 
-  threads = await listChatThreads(user.id);
   const initialMessages = (await listChatMessages(user.id, selectedThread.id)) as UIMessage[];
 
   return (

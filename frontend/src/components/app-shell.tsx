@@ -13,8 +13,8 @@ import {
   Settings2Icon,
 } from "lucide-react";
 import Link from "next/link";
-import { usePathname } from "next/navigation";
-import { useEffect, type PropsWithChildren, type ReactNode } from "react";
+import { usePathname, useRouter } from "next/navigation";
+import { useEffect, useMemo, type PropsWithChildren, type ReactNode } from "react";
 
 type AppShellProps = PropsWithChildren<{
   locale: AppLocale;
@@ -43,18 +43,30 @@ export function AppShell({
   children,
 }: AppShellProps) {
   const pathname = usePathname();
+  const router = useRouter();
   const dict = getDictionary(locale);
-  const navItems = [
-    { href: "/chat", label: dict.nav.chat },
-    { href: "/calendar", label: dict.nav.calendar },
-    { href: "/settings", label: dict.nav.settings },
-  ];
+  const navItems = useMemo(
+    () => [
+      { href: "/chat", label: dict.nav.chat },
+      { href: "/calendar", label: dict.nav.calendar },
+      { href: "/settings", label: dict.nav.settings },
+    ],
+    [dict.nav.calendar, dict.nav.chat, dict.nav.settings],
+  );
   const activeNavItem = navItems.find((item) => item.href === pathname) ?? navItems[0];
   const ActiveIcon = navIconByPath[activeNavItem.href as keyof typeof navIconByPath];
 
   useEffect(() => {
     document.documentElement.classList.toggle("dark", theme === "dark");
   }, [theme]);
+
+  useEffect(() => {
+    navItems.forEach((item) => {
+      if (item.href !== pathname) {
+        router.prefetch(item.href);
+      }
+    });
+  }, [navItems, pathname, router]);
 
   return (
     <main
@@ -103,7 +115,10 @@ export function AppShell({
                       <TooltipTrigger>
                         <Link
                           href={item.href}
+                          prefetch
                           aria-label={item.label}
+                          onMouseEnter={() => router.prefetch(item.href)}
+                          onFocus={() => router.prefetch(item.href)}
                           className={cn(
                             "inline-flex size-9 items-center justify-center rounded-lg transition sm:size-10",
                             active

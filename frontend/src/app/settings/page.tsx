@@ -33,20 +33,32 @@ type SettingsPageProps = {
 
 export default async function SettingsPage({ searchParams }: SettingsPageProps) {
   const user = await requireUser("/settings");
-  const locale = await readUserLocale(user.id);
-  const theme = await readAppTheme(user.id);
+  const [
+    resolved,
+    locale,
+    theme,
+    calendarSyncEnabled,
+    aiTone,
+    preferredTravelMode,
+    arrivalLeadMinutes,
+    backendHealth,
+    backendChat,
+  ] = await Promise.all([
+    searchParams ? searchParams : Promise.resolve(undefined),
+    readUserLocale(user.id),
+    readAppTheme(user.id),
+    readGoogleCalendarSyncEnabled(user.id),
+    readAiTone(user.id),
+    readPreferredTravelMode(user.id),
+    readArrivalLeadMinutes(user.id),
+    readBackendHealth(),
+    readBackendChatCapabilities(),
+  ]);
   const dict = getDictionary(locale);
-  const resolved = searchParams ? await searchParams : undefined;
   const sheetsReady = hasGoogleSheetsReadConfig();
   const calendarReady = hasGoogleCalendarWriteConfig();
   const mapsReady = hasGoogleMapsConfig();
   const supabaseReady = hasSupabaseConfig();
-  const calendarSyncEnabled = await readGoogleCalendarSyncEnabled(user.id);
-  const aiTone = await readAiTone(user.id);
-  const preferredTravelMode = await readPreferredTravelMode(user.id);
-  const arrivalLeadMinutes = await readArrivalLeadMinutes(user.id);
-  const backendHealth = await readBackendHealth();
-  const backendChat = await readBackendChatCapabilities();
 
   return (
     <AppShell

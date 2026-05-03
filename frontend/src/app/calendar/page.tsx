@@ -18,10 +18,6 @@ export default async function CalendarPage({ searchParams }: CalendarPageProps) 
   const params = searchParams ? await searchParams : undefined;
   const selectedMonth = params?.month;
   const user = await requireUser("/calendar");
-  const locale = await readUserLocale(user.id);
-  const theme = await readAppTheme(user.id);
-  const googleCalendarSyncEnabled = await readGoogleCalendarSyncEnabled(user.id);
-  const dict = getDictionary(locale);
   const monthForQuery =
     selectedMonth ??
     new Intl.DateTimeFormat("sv-SE", {
@@ -29,7 +25,13 @@ export default async function CalendarPage({ searchParams }: CalendarPageProps) 
       year: "numeric",
       month: "2-digit",
     }).format(new Date());
-  const events = await listEventsForMonthForUser(user.id, monthForQuery);
+  const [locale, theme, googleCalendarSyncEnabled, events] = await Promise.all([
+    readUserLocale(user.id),
+    readAppTheme(user.id),
+    readGoogleCalendarSyncEnabled(user.id),
+    listEventsForMonthForUser(user.id, monthForQuery),
+  ]);
+  const dict = getDictionary(locale);
 
   return (
     <AppShell
