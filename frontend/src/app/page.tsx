@@ -15,6 +15,7 @@ import {
 import { headers } from "next/headers";
 import Link from "next/link";
 import { redirect } from "next/navigation";
+import { PwaInstallPanel } from "@/components/pwa-install-panel";
 import { getCurrentUser } from "@/lib/supabase/auth";
 import { supportedLocales, type AppLocale } from "@/lib/i18n";
 
@@ -1276,6 +1277,8 @@ export default async function LandingPage() {
                   {copy.secondaryCta}
                 </a>
               </div>
+
+              <PwaInstallPanel />
             </div>
           </div>
         </div>

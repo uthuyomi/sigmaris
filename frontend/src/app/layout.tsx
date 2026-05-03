@@ -24,6 +24,19 @@ const ibmPlexMono = IBM_Plex_Mono({
 
 export const metadata: Metadata = {
   title: "ShiftPilotAI",
+  manifest: "/manifest.webmanifest",
+  icons: {
+    icon: [
+      { url: "/images/icon/icon.ico", sizes: "48x48" },
+      { url: "/images/icon/icon.png", sizes: "1254x1254", type: "image/png" },
+    ],
+    apple: [{ url: "/images/icon/icon.png", sizes: "1254x1254", type: "image/png" }],
+  },
+  appleWebApp: {
+    capable: true,
+    title: "ShiftPilotAI",
+    statusBarStyle: "black-translucent",
+  },
   description: "チャットから予定、移動、Google 連携まで扱うスケジューラー",
 };
 
