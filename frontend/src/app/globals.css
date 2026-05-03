@@ -53,10 +53,14 @@
 }
 
 html {
+  max-width: 100%;
+  overflow-x: clip;
   scroll-behavior: smooth;
 }
 
 body {
+  max-width: 100%;
+  overflow-x: clip;
   font-family: var(--font-space-grotesk), sans-serif;
 }
 
@@ -228,6 +232,39 @@ button {
   [data-scrollbar-hidden="true"]::-webkit-scrollbar-thumb,
   [data-scrollbar-hidden="true"]::-webkit-scrollbar-track {
     background: transparent !important;
+  }
+
+  .chat-thread-surface,
+  .chat-thread-surface * {
+    max-width: 100%;
+  }
+
+  .chat-thread-surface {
+    overscroll-behavior-x: none;
+    touch-action: pan-y;
+  }
+
+  .chat-thread-surface :is([data-scrollbar-hidden="true"], [role="log"]) {
+    overflow-x: hidden !important;
+    overscroll-behavior-x: none;
+    touch-action: pan-y;
+  }
+
+  .chat-thread-surface :is(.aui-md, .aui-md *, [data-aui-thread-viewport], [data-aui-message]) {
+    min-width: 0;
+    overflow-wrap: anywhere;
+    word-break: break-word;
+  }
+
+  .chat-thread-surface :is(pre, code, table, tbody, thead, tr, th, td) {
+    max-width: 100%;
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+    word-break: break-word;
+  }
+
+  .chat-thread-surface :is(pre, table) {
+    overflow-x: hidden !important;
   }
 
   .dark .settings-page :is(h1, h2, h3, h4, label) {

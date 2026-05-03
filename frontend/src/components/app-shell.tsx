@@ -46,12 +46,12 @@ const swipeAnimationKey = "shiftpilotai-nav-swipe";
 const swipeDistanceThreshold = 72;
 const swipeIntentRatio = 1.35;
 
-const isInteractiveTarget = (target: EventTarget | null) => {
-  if (!(target instanceof HTMLElement)) return false;
+const isSwipeBlockedTarget = (target: EventTarget | null) => {
+  if (!(target instanceof Element)) return false;
 
   return Boolean(
     target.closest(
-      'a, button, input, textarea, select, [role="button"], [contenteditable="true"]',
+      '.chat-thread-surface, a, button, input, textarea, select, [role="button"], [contenteditable="true"]',
     ),
   );
 };
@@ -84,6 +84,7 @@ export function AppShell({
   const activeNavItem = navItems.find((item) => item.href === pathname) ?? navItems[0];
   const ActiveIcon = navIconByPath[activeNavItem.href as keyof typeof navIconByPath];
   const activeNavIndex = navItems.findIndex((item) => item.href === activeNavItem.href);
+  const swipeNavigationEnabled = pathname !== "/chat";
 
   useEffect(() => {
     document.documentElement.classList.toggle("dark", theme === "dark");
@@ -123,6 +124,8 @@ export function AppShell({
 
   const navigateBySwipe = useCallback(
     (direction: SwipeDirection) => {
+      if (!swipeNavigationEnabled) return;
+
       const nextIndex = direction === "left" ? activeNavIndex + 1 : activeNavIndex - 1;
       const nextItem = navItems[nextIndex];
       if (!nextItem || nextItem.href === pathname) return;
@@ -134,11 +137,17 @@ export function AppShell({
         router.push(nextItem.href);
       }, 110);
     },
-    [activeNavIndex, navItems, pathname, router],
+    [activeNavIndex, navItems, pathname, router, swipeNavigationEnabled],
   );
 
   const handleTouchStart = useCallback((event: React.TouchEvent<HTMLElement>) => {
-    if (event.touches.length !== 1 || isInteractiveTarget(event.target)) {
+    if (!swipeNavigationEnabled) {
+      touchStartRef.current = null;
+      touchTargetRef.current = null;
+      return;
+    }
+
+    if (event.touches.length !== 1 || isSwipeBlockedTarget(event.target)) {
       touchStartRef.current = null;
       touchTargetRef.current = null;
       return;
@@ -147,7 +156,7 @@ export function AppShell({
     const touch = event.touches[0];
     touchStartRef.current = { x: touch.clientX, y: touch.clientY };
     touchTargetRef.current = event.target;
-  }, []);
+  }, [swipeNavigationEnabled]);
 
   const handleTouchEnd = useCallback(
     (event: React.TouchEvent<HTMLElement>) => {
@@ -155,7 +164,12 @@ export function AppShell({
       const touch = event.changedTouches[0];
       touchStartRef.current = null;
 
-      if (!start || !touch || isInteractiveTarget(touchTargetRef.current)) {
+      if (!swipeNavigationEnabled) {
+        touchTargetRef.current = null;
+        return;
+      }
+
+      if (!start || !touch || isSwipeBlockedTarget(touchTargetRef.current)) {
         touchTargetRef.current = null;
         return;
       }
@@ -171,11 +185,11 @@ export function AppShell({
 
       navigateBySwipe(deltaX < 0 ? "left" : "right");
     },
-    [navigateBySwipe],
+    [navigateBySwipe, swipeNavigationEnabled],
   );
 
   const contentAnimationClass = cn(
-    "h-full min-h-0 transition-[opacity,transform] duration-200 ease-out",
+    "h-full min-h-0 min-w-0 overflow-hidden transition-[opacity,transform] duration-200 ease-out",
     exitDirection === "left" && "translate-x-[-18px] opacity-0",
     exitDirection === "right" && "translate-x-[18px] opacity-0",
     !exitDirection && enterDirection === "left" && "animate-[swipe-in-from-right_220ms_ease-out]",
@@ -185,14 +199,14 @@ export function AppShell({
   return (
     <main
       className={cn(
-        "min-h-screen bg-[#f7f7f8] text-stone-950 dark:bg-[#212121] dark:text-stone-100",
+        "min-h-screen w-full max-w-[100dvw] overflow-x-hidden bg-[#f7f7f8] text-stone-950 dark:bg-[#212121] dark:text-stone-100",
         theme === "dark" && "dark",
         fitViewport && "h-[100dvh] overflow-hidden",
       )}
     >
       <div
         className={cn(
-          "mx-auto flex min-h-screen w-full max-w-[1500px] flex-col px-3 pb-4 pt-3 sm:px-4 lg:px-5",
+          "mx-auto flex min-h-screen w-full max-w-[min(1500px,100dvw)] flex-col overflow-x-hidden px-3 pb-4 pt-3 sm:px-4 lg:px-5",
           fitViewport && "h-full min-h-0 overflow-hidden",
         )}
       >
@@ -254,7 +268,7 @@ export function AppShell({
         </header>
 
         <section
-          className={cn("flex-1 min-h-0", fitViewport && "overflow-hidden")}
+          className={cn("min-w-0 flex-1 overflow-hidden", fitViewport && "min-h-0")}
           onTouchStart={handleTouchStart}
           onTouchEnd={handleTouchEnd}
         >

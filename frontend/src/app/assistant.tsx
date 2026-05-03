@@ -85,7 +85,7 @@ export const Assistant = ({ threadId, initialMessages, locale }: AssistantProps)
 
   return (
     <AssistantRuntimeProvider runtime={runtime}>
-      <div className="h-full min-h-0">
+      <div className="h-full min-h-0 min-w-0 overflow-hidden">
         <Thread locale={locale} />
       </div>
     </AssistantRuntimeProvider>

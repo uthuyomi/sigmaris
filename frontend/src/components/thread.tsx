@@ -22,6 +22,7 @@ type ThreadProps = {
 export const Thread: FC<ThreadProps> = ({ locale }) => {
   const dict = getDictionary(locale);
   const viewportRef = useRef<HTMLDivElement | null>(null);
+  const touchStartRef = useRef<{ x: number; y: number } | null>(null);
   const showScrollButtonRef = useRef(false);
   const [showScrollButton, setShowScrollButton] = useState(false);
   const messages = useAuiState((s) => s.thread.messages);
@@ -53,6 +54,9 @@ export const Thread: FC<ThreadProps> = ({ locale }) => {
   const updateScrollState = useCallback(() => {
     const viewport = viewportRef.current;
     if (!viewport) return;
+    if (viewport.scrollLeft !== 0) {
+      viewport.scrollLeft = 0;
+    }
 
     const distanceFromBottom =
       viewport.scrollHeight - viewport.scrollTop - viewport.clientHeight;
@@ -69,18 +73,62 @@ export const Thread: FC<ThreadProps> = ({ locale }) => {
     viewport.scrollTo({ top: viewport.scrollHeight, behavior });
   }, []);
 
+  const resetHorizontalScroll = useCallback(() => {
+    const viewport = viewportRef.current;
+    if (!viewport || viewport.scrollLeft === 0) return;
+    viewport.scrollLeft = 0;
+  }, []);
+
   useEffect(() => {
     const viewport = viewportRef.current;
     if (!viewport) return;
 
+    resetHorizontalScroll();
     updateScrollState();
-    const handleScroll = () => updateScrollState();
+    const handleScroll = () => {
+      resetHorizontalScroll();
+      updateScrollState();
+    };
+    const handleTouchStart = (event: TouchEvent) => {
+      if (event.touches.length !== 1) {
+        touchStartRef.current = null;
+        return;
+      }
+
+      const touch = event.touches[0];
+      touchStartRef.current = { x: touch.clientX, y: touch.clientY };
+    };
+    const handleTouchMove = (event: TouchEvent) => {
+      const start = touchStartRef.current;
+      const touch = event.touches[0];
+      if (!start || !touch) return;
+
+      const deltaX = touch.clientX - start.x;
+      const deltaY = touch.clientY - start.y;
+      if (Math.abs(deltaX) > Math.abs(deltaY) && Math.abs(deltaX) > 8) {
+        event.preventDefault();
+        resetHorizontalScroll();
+      }
+    };
+    const handleTouchEnd = () => {
+      touchStartRef.current = null;
+      resetHorizontalScroll();
+    };
+
     viewport.addEventListener("scroll", handleScroll);
+    viewport.addEventListener("touchstart", handleTouchStart, { passive: true });
+    viewport.addEventListener("touchmove", handleTouchMove, { passive: false });
+    viewport.addEventListener("touchend", handleTouchEnd);
+    viewport.addEventListener("touchcancel", handleTouchEnd);
 
     return () => {
       viewport.removeEventListener("scroll", handleScroll);
+      viewport.removeEventListener("touchstart", handleTouchStart);
+      viewport.removeEventListener("touchmove", handleTouchMove);
+      viewport.removeEventListener("touchend", handleTouchEnd);
+      viewport.removeEventListener("touchcancel", handleTouchEnd);
     };
-  }, [updateScrollState]);
+  }, [resetHorizontalScroll, updateScrollState]);
 
   useEffect(() => {
     const viewport = viewportRef.current;
@@ -117,12 +165,12 @@ export const Thread: FC<ThreadProps> = ({ locale }) => {
   }, [showPendingStatus]);
 
   return (
-    <ThreadPrimitive.Root className="flex h-full min-h-0 flex-col bg-white dark:bg-[#212121]">
-      <div className="relative flex-1 min-h-0">
+    <ThreadPrimitive.Root className="chat-thread-surface flex h-full min-h-0 min-w-0 max-w-full touch-pan-y flex-col overflow-hidden overscroll-x-none bg-white dark:bg-[#212121]">
+      <div className="relative min-h-0 min-w-0 flex-1 overflow-hidden">
         <ThreadPrimitive.Viewport
           ref={viewportRef}
           data-scrollbar-hidden="true"
-          className="no-scrollbar scrollbar-hidden h-full overflow-y-auto px-3 pt-5 pb-44 sm:px-6 sm:pb-48"
+          className="no-scrollbar scrollbar-hidden h-full min-w-0 max-w-full touch-pan-y overflow-x-hidden overflow-y-auto overscroll-x-none px-3 pt-5 pb-44 sm:px-6 sm:pb-48"
           style={{
             msOverflowStyle: "none",
             scrollbarWidth: "none",
@@ -182,7 +230,7 @@ const ThreadMessage: FC = () => {
   const role = useAuiState((s) => s.message.role);
 
   return (
-    <MessagePrimitive.Root className="mx-auto w-full max-w-3xl py-2 sm:py-3" data-role={role}>
+    <MessagePrimitive.Root className="mx-auto w-full max-w-3xl min-w-0 overflow-hidden py-2 sm:py-3" data-role={role}>
       {role === "user" ? <UserMessage /> : <AssistantMessage />}
     </MessagePrimitive.Root>
   );
@@ -193,7 +241,7 @@ const AssistantMessage: FC = () => {
     text.replace(/^確認中\.\.\.\s*/u, "").replace(/^確認中…\s*/u, "");
 
   return (
-    <div className="w-full px-1 py-2 text-sm leading-7 text-stone-900 dark:text-stone-100 sm:px-3">
+    <div className="w-full min-w-0 overflow-hidden break-words px-1 py-2 text-sm leading-7 text-stone-900 [overflow-wrap:anywhere] dark:text-stone-100 sm:px-3">
       <MessagePrimitive.Parts>
         {({ part }) => {
           if (part.type === "text") {
@@ -216,9 +264,9 @@ const getPendingStatusLabel = (step: number) => {
 
 const UserMessage: FC = () => {
   return (
-    <div className="ml-auto flex max-w-[92%] flex-col gap-2 sm:max-w-[78%]">
+    <div className="ml-auto flex max-w-[92%] min-w-0 flex-col gap-2 sm:max-w-[78%]">
       <MessagePrimitive.Attachments components={{ Attachment: UserMessageAttachments }} />
-      <div className="ml-auto rounded-[22px] bg-[#f4f4f4] px-4 py-3 text-sm leading-7 text-stone-950 dark:bg-[#2f2f2f] dark:text-stone-100">
+      <div className="ml-auto min-w-0 overflow-hidden break-words rounded-[22px] bg-[#f4f4f4] px-4 py-3 text-sm leading-7 text-stone-950 [overflow-wrap:anywhere] dark:bg-[#2f2f2f] dark:text-stone-100">
         <MessagePrimitive.Parts />
       </div>
     </div>
@@ -272,8 +320,8 @@ const Composer: FC<{ placeholder: string }> = ({ placeholder }) => {
   };
 
   return (
-    <ComposerPrimitive.Root className="mx-auto w-full max-w-3xl">
-      <div className="rounded-[26px] border border-stone-900/12 bg-white p-2 text-stone-950 shadow-[0_18px_50px_-32px_rgba(0,0,0,0.55)] dark:border-white/12 dark:bg-[#2f2f2f] dark:text-stone-100 sm:p-3">
+    <ComposerPrimitive.Root className="mx-auto w-full max-w-3xl min-w-0">
+      <div className="min-w-0 overflow-hidden rounded-[26px] border border-stone-900/12 bg-white p-2 text-stone-950 shadow-[0_18px_50px_-32px_rgba(0,0,0,0.55)] dark:border-white/12 dark:bg-[#2f2f2f] dark:text-stone-100 sm:p-3">
         <ComposerPrimitive.Attachments
           components={{
             Attachment: ComposerAttachments,

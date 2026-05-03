@@ -25,7 +25,7 @@ const MarkdownTextImpl: FC<MarkdownTextProps> = ({ preprocess }) => {
   return (
     <MarkdownTextPrimitive
       remarkPlugins={[remarkGfm]}
-      className="aui-md"
+      className="aui-md max-w-full min-w-0 overflow-hidden break-words [overflow-wrap:anywhere]"
       components={defaultComponents}
       preprocess={preprocess}
     />
@@ -140,7 +140,7 @@ const defaultComponents = memoizeMarkdownComponents({
   a: ({ className, ...props }) => (
     <a
       className={cn(
-        "aui-md-a text-primary underline underline-offset-2 hover:text-primary/80",
+        "aui-md-a break-words text-primary underline underline-offset-2 [overflow-wrap:anywhere] hover:text-primary/80",
         className,
       )}
       {...props}
@@ -182,7 +182,7 @@ const defaultComponents = memoizeMarkdownComponents({
   table: ({ className, ...props }) => (
     <table
       className={cn(
-        "aui-md-table my-2 w-full border-separate border-spacing-0 overflow-y-auto",
+        "aui-md-table my-2 w-full max-w-full table-fixed border-separate border-spacing-0 overflow-y-auto",
         className,
       )}
       {...props}
@@ -191,7 +191,7 @@ const defaultComponents = memoizeMarkdownComponents({
   th: ({ className, ...props }) => (
     <th
       className={cn(
-        "aui-md-th bg-muted px-2 py-1 text-left font-medium first:rounded-tl-lg last:rounded-tr-lg [[align=center]]:text-center [[align=right]]:text-right",
+        "aui-md-th break-words bg-muted px-2 py-1 text-left font-medium [overflow-wrap:anywhere] first:rounded-tl-lg last:rounded-tr-lg [[align=center]]:text-center [[align=right]]:text-right",
         className,
       )}
       {...props}
@@ -200,7 +200,7 @@ const defaultComponents = memoizeMarkdownComponents({
   td: ({ className, ...props }) => (
     <td
       className={cn(
-        "aui-md-td border-muted-foreground/20 border-b border-l px-2 py-1 text-left last:border-r [[align=center]]:text-center [[align=right]]:text-right",
+        "aui-md-td break-words border-muted-foreground/20 border-b border-l px-2 py-1 text-left [overflow-wrap:anywhere] last:border-r [[align=center]]:text-center [[align=right]]:text-right",
         className,
       )}
       {...props}
@@ -227,7 +227,7 @@ const defaultComponents = memoizeMarkdownComponents({
   pre: ({ className, ...props }) => (
     <pre
       className={cn(
-        "aui-md-pre overflow-x-auto rounded-t-none rounded-b-lg border border-border/50 border-t-0 bg-muted/30 p-3 text-xs leading-relaxed",
+        "aui-md-pre max-w-full overflow-x-hidden whitespace-pre-wrap break-words rounded-t-none rounded-b-lg border border-border/50 border-t-0 bg-muted/30 p-3 text-xs leading-relaxed [overflow-wrap:anywhere]",
         className,
       )}
       {...props}
