@@ -121,7 +121,12 @@ export const Thread: FC<ThreadProps> = ({ locale }) => {
       <div className="relative flex-1 min-h-0">
         <ThreadPrimitive.Viewport
           ref={viewportRef}
-          className="h-full overflow-y-auto px-3 pt-5 pb-44 sm:px-6 sm:pb-48"
+          data-scrollbar-hidden="true"
+          className="no-scrollbar scrollbar-hidden h-full overflow-y-auto px-3 pt-5 pb-44 sm:px-6 sm:pb-48"
+          style={{
+            msOverflowStyle: "none",
+            scrollbarWidth: "none",
+          }}
         >
           <ThreadWelcome locale={locale} />
 
