@@ -14,7 +14,15 @@ import {
 } from "lucide-react";
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
-import { useEffect, useMemo, type PropsWithChildren, type ReactNode } from "react";
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type PropsWithChildren,
+  type ReactNode,
+} from "react";
 
 type AppShellProps = PropsWithChildren<{
   locale: AppLocale;
@@ -32,6 +40,22 @@ const navIconByPath = {
   "/settings": Settings2Icon,
 } as const;
 
+type SwipeDirection = "left" | "right";
+
+const swipeAnimationKey = "shiftpilotai-nav-swipe";
+const swipeDistanceThreshold = 72;
+const swipeIntentRatio = 1.35;
+
+const isInteractiveTarget = (target: EventTarget | null) => {
+  if (!(target instanceof HTMLElement)) return false;
+
+  return Boolean(
+    target.closest(
+      'a, button, input, textarea, select, [role="button"], [contenteditable="true"]',
+    ),
+  );
+};
+
 export function AppShell({
   locale,
   title,
@@ -44,6 +68,10 @@ export function AppShell({
 }: AppShellProps) {
   const pathname = usePathname();
   const router = useRouter();
+  const touchStartRef = useRef<{ x: number; y: number } | null>(null);
+  const touchTargetRef = useRef<EventTarget | null>(null);
+  const [exitDirection, setExitDirection] = useState<SwipeDirection | null>(null);
+  const [enterDirection, setEnterDirection] = useState<SwipeDirection | null>(null);
   const dict = getDictionary(locale);
   const navItems = useMemo(
     () => [
@@ -55,10 +83,35 @@ export function AppShell({
   );
   const activeNavItem = navItems.find((item) => item.href === pathname) ?? navItems[0];
   const ActiveIcon = navIconByPath[activeNavItem.href as keyof typeof navIconByPath];
+  const activeNavIndex = navItems.findIndex((item) => item.href === activeNavItem.href);
 
   useEffect(() => {
     document.documentElement.classList.toggle("dark", theme === "dark");
   }, [theme]);
+
+  useEffect(() => {
+    const storedDirection = window.sessionStorage.getItem(swipeAnimationKey) as SwipeDirection | null;
+    if (storedDirection !== "left" && storedDirection !== "right") {
+      const resetTimer = window.setTimeout(() => {
+        setExitDirection(null);
+        setEnterDirection(null);
+      }, 0);
+
+      return () => window.clearTimeout(resetTimer);
+    }
+
+    window.sessionStorage.removeItem(swipeAnimationKey);
+    const enterTimer = window.setTimeout(() => {
+      setExitDirection(null);
+      setEnterDirection(storedDirection);
+    }, 0);
+    const animationTimer = window.setTimeout(() => setEnterDirection(null), 220);
+
+    return () => {
+      window.clearTimeout(enterTimer);
+      window.clearTimeout(animationTimer);
+    };
+  }, [pathname]);
 
   useEffect(() => {
     navItems.forEach((item) => {
@@ -67,6 +120,67 @@ export function AppShell({
       }
     });
   }, [navItems, pathname, router]);
+
+  const navigateBySwipe = useCallback(
+    (direction: SwipeDirection) => {
+      const nextIndex = direction === "left" ? activeNavIndex + 1 : activeNavIndex - 1;
+      const nextItem = navItems[nextIndex];
+      if (!nextItem || nextItem.href === pathname) return;
+
+      router.prefetch(nextItem.href);
+      setExitDirection(direction);
+      window.sessionStorage.setItem(swipeAnimationKey, direction);
+      window.setTimeout(() => {
+        router.push(nextItem.href);
+      }, 110);
+    },
+    [activeNavIndex, navItems, pathname, router],
+  );
+
+  const handleTouchStart = useCallback((event: React.TouchEvent<HTMLElement>) => {
+    if (event.touches.length !== 1 || isInteractiveTarget(event.target)) {
+      touchStartRef.current = null;
+      touchTargetRef.current = null;
+      return;
+    }
+
+    const touch = event.touches[0];
+    touchStartRef.current = { x: touch.clientX, y: touch.clientY };
+    touchTargetRef.current = event.target;
+  }, []);
+
+  const handleTouchEnd = useCallback(
+    (event: React.TouchEvent<HTMLElement>) => {
+      const start = touchStartRef.current;
+      const touch = event.changedTouches[0];
+      touchStartRef.current = null;
+
+      if (!start || !touch || isInteractiveTarget(touchTargetRef.current)) {
+        touchTargetRef.current = null;
+        return;
+      }
+      touchTargetRef.current = null;
+
+      if (window.matchMedia("(min-width: 1024px)").matches) return;
+
+      const deltaX = touch.clientX - start.x;
+      const deltaY = touch.clientY - start.y;
+      const horizontalEnough = Math.abs(deltaX) >= swipeDistanceThreshold;
+      const mostlyHorizontal = Math.abs(deltaX) >= Math.abs(deltaY) * swipeIntentRatio;
+      if (!horizontalEnough || !mostlyHorizontal) return;
+
+      navigateBySwipe(deltaX < 0 ? "left" : "right");
+    },
+    [navigateBySwipe],
+  );
+
+  const contentAnimationClass = cn(
+    "h-full min-h-0 transition-[opacity,transform] duration-200 ease-out",
+    exitDirection === "left" && "translate-x-[-18px] opacity-0",
+    exitDirection === "right" && "translate-x-[18px] opacity-0",
+    !exitDirection && enterDirection === "left" && "animate-[swipe-in-from-right_220ms_ease-out]",
+    !exitDirection && enterDirection === "right" && "animate-[swipe-in-from-left_220ms_ease-out]",
+  );
 
   return (
     <main
@@ -139,8 +253,12 @@ export function AppShell({
           </div>
         </header>
 
-        <section className={cn("flex-1 min-h-0", fitViewport && "overflow-hidden")}>
-          {children}
+        <section
+          className={cn("flex-1 min-h-0", fitViewport && "overflow-hidden")}
+          onTouchStart={handleTouchStart}
+          onTouchEnd={handleTouchEnd}
+        >
+          <div className={contentAnimationClass}>{children}</div>
         </section>
       </div>
     </main>

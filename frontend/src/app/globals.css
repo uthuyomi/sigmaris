@@ -186,6 +186,28 @@ button {
 }
 
 @layer utilities {
+  @keyframes swipe-in-from-left {
+    from {
+      opacity: 0;
+      transform: translateX(-22px);
+    }
+    to {
+      opacity: 1;
+      transform: translateX(0);
+    }
+  }
+
+  @keyframes swipe-in-from-right {
+    from {
+      opacity: 0;
+      transform: translateX(22px);
+    }
+    to {
+      opacity: 1;
+      transform: translateX(0);
+    }
+  }
+
   .scrollbar-hidden,
   [data-scrollbar-hidden="true"] {
     -ms-overflow-style: none !important;
