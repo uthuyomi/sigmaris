@@ -96,7 +96,12 @@ export function ChatWorkspace({
         </div>
 
         <div className="min-h-0 min-w-0 flex-1 overflow-hidden">
-          <Assistant threadId={activeThreadId} initialMessages={initialMessages} locale={locale} />
+          <Assistant
+            key={activeThreadId}
+            threadId={activeThreadId}
+            initialMessages={initialMessages}
+            locale={locale}
+          />
         </div>
       </section>
     </section>

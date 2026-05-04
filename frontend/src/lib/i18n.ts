@@ -124,7 +124,7 @@ const dictionaries: Record<AppLocale, Dictionary> = {
     },
     shell: {
       chatTitle: "チャット",
-      chatDescription: "予定相談、画像、URLを同じスレッドで扱う",
+      chatDescription: "予定相談、画像、URLを同じスレッドで確認できます",
       calendarTitle: "カレンダー",
       calendarDescription: "月表示から日を選んで予定を開く",
       timelineTitle: "デイビュー",
@@ -138,8 +138,8 @@ const dictionaries: Record<AppLocale, Dictionary> = {
     },
     chat: {
       assistant: "アシスタント",
-      welcomeTitle: "何を調節する？",
-      welcomeBody: "予定相談、画像、シートURLを同じ流れで扱える。",
+      welcomeTitle: "どの予定を整理しますか？",
+      welcomeBody: "シフト表の画像、Google SheetsのURL、予定メモを送ると、登録前に日時・場所・補足を確認できます。",
       inputPlaceholder: "メッセージ、画像、URL",
       threadList: "スレッド",
       newThread: "新規スレッド",

@@ -216,12 +216,39 @@ export const Thread: FC<ThreadProps> = ({ locale }) => {
 const ThreadWelcome: FC<ThreadProps> = ({ locale }) => {
   const dict = getDictionary(locale);
   const isEmpty = useAuiState((s) => s.thread.isEmpty);
+  const composerText = useAuiState((s) => s.composer.text);
+  const composer = useComposerRuntime();
   if (!isEmpty) return null;
 
+  const insertTemplate = (template: PromptTemplate) => {
+    const nextText = composerText.trim()
+      ? `${composerText.trimEnd()}\n\n${template.text}`
+      : template.text;
+
+    composer.setText(nextText);
+  };
+
   return (
-    <div className="mx-auto my-auto flex min-h-full w-full max-w-3xl flex-col justify-center px-2 pb-24 text-center">
-      <h1 className="text-2xl font-semibold text-stone-950 dark:text-stone-50 sm:text-3xl">{dict.chat.welcomeTitle}</h1>
-      <p className="mt-3 text-sm leading-7 text-stone-500 dark:text-stone-400 sm:text-base sm:leading-8">{dict.chat.welcomeBody}</p>
+    <div className="mx-auto my-auto flex min-h-full w-full max-w-3xl flex-col justify-center px-2 pb-28 text-center">
+      <h1 className="text-2xl font-semibold text-stone-950 dark:text-stone-50 sm:text-3xl">
+        {dict.chat.welcomeTitle}
+      </h1>
+      <p className="mt-3 text-sm leading-7 text-stone-500 dark:text-stone-400 sm:text-base sm:leading-8">
+        {dict.chat.welcomeBody}
+      </p>
+
+      <div className="mt-8 flex flex-wrap justify-center gap-2.5">
+        {promptTemplates.map((template) => (
+          <button
+            key={template.id}
+            type="button"
+            onClick={() => insertTemplate(template)}
+            className="inline-flex max-w-full items-center rounded-full border border-stone-900/10 bg-stone-50 px-4 py-2.5 text-sm font-medium text-stone-800 shadow-[0_14px_35px_-30px_rgba(28,25,23,0.75)] transition hover:-translate-y-0.5 hover:border-stone-900/18 hover:bg-white focus:outline-none focus:ring-2 focus:ring-stone-900/15 dark:border-white/10 dark:bg-white/6 dark:text-stone-200 dark:hover:border-white/18 dark:hover:bg-white/10"
+          >
+            <span className="truncate">{template.label}</span>
+          </button>
+        ))}
+      </div>
     </div>
   );
 };
@@ -453,4 +480,5 @@ URL: 【ここに入力: Google Sheets URL】
   },
 ] as const;
 
+type PromptTemplate = (typeof promptTemplates)[number];
 type PromptTemplateId = (typeof promptTemplates)[number]["id"];
