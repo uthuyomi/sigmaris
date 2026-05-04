@@ -46,16 +46,6 @@ const swipeAnimationKey = "shiftpilotai-nav-swipe";
 const swipeDistanceThreshold = 72;
 const swipeIntentRatio = 1.35;
 
-const isSwipeBlockedTarget = (target: EventTarget | null) => {
-  if (!(target instanceof Element)) return false;
-
-  return Boolean(
-    target.closest(
-      '.chat-thread-surface, a, button, input, textarea, select, [role="button"], [contenteditable="true"]',
-    ),
-  );
-};
-
 export function AppShell({
   locale,
   title,
@@ -84,7 +74,7 @@ export function AppShell({
   const activeNavItem = navItems.find((item) => item.href === pathname) ?? navItems[0];
   const ActiveIcon = navIconByPath[activeNavItem.href as keyof typeof navIconByPath];
   const activeNavIndex = navItems.findIndex((item) => item.href === activeNavItem.href);
-  const swipeNavigationEnabled = pathname !== "/chat";
+  const chatPageActive = pathname === "/chat";
 
   useEffect(() => {
     document.documentElement.classList.toggle("dark", theme === "dark");
@@ -92,6 +82,16 @@ export function AppShell({
 
   useEffect(() => {
     const storedDirection = window.sessionStorage.getItem(swipeAnimationKey) as SwipeDirection | null;
+    if (chatPageActive) {
+      window.sessionStorage.removeItem(swipeAnimationKey);
+      const resetTimer = window.setTimeout(() => {
+        setExitDirection(null);
+        setEnterDirection(null);
+      }, 0);
+
+      return () => window.clearTimeout(resetTimer);
+    }
+
     if (storedDirection !== "left" && storedDirection !== "right") {
       const resetTimer = window.setTimeout(() => {
         setExitDirection(null);
@@ -112,7 +112,7 @@ export function AppShell({
       window.clearTimeout(enterTimer);
       window.clearTimeout(animationTimer);
     };
-  }, [pathname]);
+  }, [chatPageActive, pathname]);
 
   useEffect(() => {
     navItems.forEach((item) => {
@@ -124,8 +124,6 @@ export function AppShell({
 
   const navigateBySwipe = useCallback(
     (direction: SwipeDirection) => {
-      if (!swipeNavigationEnabled) return;
-
       const nextIndex = direction === "left" ? activeNavIndex + 1 : activeNavIndex - 1;
       const nextItem = navItems[nextIndex];
       if (!nextItem || nextItem.href === pathname) return;
@@ -135,19 +133,13 @@ export function AppShell({
       window.sessionStorage.setItem(swipeAnimationKey, direction);
       window.setTimeout(() => {
         router.push(nextItem.href);
-      }, 110);
+      }, chatPageActive ? 0 : 110);
     },
-    [activeNavIndex, navItems, pathname, router, swipeNavigationEnabled],
+    [activeNavIndex, chatPageActive, navItems, pathname, router],
   );
 
   const handleTouchStart = useCallback((event: React.TouchEvent<HTMLElement>) => {
-    if (!swipeNavigationEnabled) {
-      touchStartRef.current = null;
-      touchTargetRef.current = null;
-      return;
-    }
-
-    if (event.touches.length !== 1 || isSwipeBlockedTarget(event.target)) {
+    if (event.touches.length !== 1) {
       touchStartRef.current = null;
       touchTargetRef.current = null;
       return;
@@ -156,7 +148,7 @@ export function AppShell({
     const touch = event.touches[0];
     touchStartRef.current = { x: touch.clientX, y: touch.clientY };
     touchTargetRef.current = event.target;
-  }, [swipeNavigationEnabled]);
+  }, []);
 
   const handleTouchEnd = useCallback(
     (event: React.TouchEvent<HTMLElement>) => {
@@ -164,12 +156,7 @@ export function AppShell({
       const touch = event.changedTouches[0];
       touchStartRef.current = null;
 
-      if (!swipeNavigationEnabled) {
-        touchTargetRef.current = null;
-        return;
-      }
-
-      if (!start || !touch || isSwipeBlockedTarget(touchTargetRef.current)) {
+      if (!start || !touch) {
         touchTargetRef.current = null;
         return;
       }
@@ -185,15 +172,15 @@ export function AppShell({
 
       navigateBySwipe(deltaX < 0 ? "left" : "right");
     },
-    [navigateBySwipe, swipeNavigationEnabled],
+    [navigateBySwipe],
   );
 
   const contentAnimationClass = cn(
     "h-full min-h-0 min-w-0 overflow-hidden transition-[opacity,transform] duration-200 ease-out",
-    exitDirection === "left" && "translate-x-[-18px] opacity-0",
-    exitDirection === "right" && "translate-x-[18px] opacity-0",
-    !exitDirection && enterDirection === "left" && "animate-[swipe-in-from-right_220ms_ease-out]",
-    !exitDirection && enterDirection === "right" && "animate-[swipe-in-from-left_220ms_ease-out]",
+    !chatPageActive && exitDirection === "left" && "translate-x-[-18px] opacity-0",
+    !chatPageActive && exitDirection === "right" && "translate-x-[18px] opacity-0",
+    !chatPageActive && !exitDirection && enterDirection === "left" && "animate-[swipe-in-from-right_220ms_ease-out]",
+    !chatPageActive && !exitDirection && enterDirection === "right" && "animate-[swipe-in-from-left_220ms_ease-out]",
   );
 
   return (
@@ -268,7 +255,7 @@ export function AppShell({
         </header>
 
         <section
-          className={cn("min-w-0 flex-1 overflow-hidden", fitViewport && "min-h-0")}
+          className={cn("min-w-0 flex-1 touch-pan-y overflow-hidden overscroll-x-none", fitViewport && "min-h-0")}
           onTouchStart={handleTouchStart}
           onTouchEnd={handleTouchEnd}
         >

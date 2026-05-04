@@ -44,7 +44,7 @@ export function ChatWorkspace({
   }, []);
 
   return (
-    <section className="relative flex h-full min-h-0 overflow-hidden rounded-2xl border border-stone-900/10 bg-white shadow-[0_18px_60px_-44px_rgba(28,25,23,0.35)] dark:border-white/10 dark:bg-[#212121]">
+    <section className="relative flex h-full min-h-0 touch-pan-y overflow-hidden overscroll-x-none rounded-2xl border border-stone-900/10 bg-white shadow-[0_18px_60px_-44px_rgba(28,25,23,0.35)] dark:border-white/10 dark:bg-[#212121]">
       <div
         className={cn(
           "hidden min-h-0 shrink-0 overflow-hidden border-r border-stone-900/10 bg-[#f7f7f8] transition-[width] duration-200 ease-out dark:border-white/10 dark:bg-[#171717] lg:block",

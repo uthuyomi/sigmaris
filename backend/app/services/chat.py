@@ -154,7 +154,11 @@ async def run_chat_completion(
                     )
                     tool_result = {
                         "ok": False,
-                        "reason": f"Tool timed out after {TOOL_EXECUTION_TIMEOUT_SECONDS} seconds.",
+                        "reason": (
+                            f"Tool timed out after {TOOL_EXECUTION_TIMEOUT_SECONDS} seconds. "
+                            "Some events may already have been saved; rerun the same request to "
+                            "continue, because existing app calendar events are skipped."
+                        ),
                     }
                 except RefreshError as error:
                     logger.warning(

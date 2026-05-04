@@ -11,11 +11,13 @@ from app.services.app_chat_data import (
 )
 from app.services.app_event_data import (
     create_event,
+    create_events,
     get_event_by_id,
     list_conflicting_events,
     list_events,
     replace_travel_plan,
     search_events,
+    update_event_external_link,
 )
 from app.services.app_profile_data import get_profile_context
 
@@ -29,6 +31,8 @@ __all__ = [
     "get_event_by_id",
     "list_conflicting_events",
     "create_event",
+    "create_events",
+    "update_event_external_link",
     "replace_travel_plan",
     "get_chat_thread",
     "replace_chat_messages",

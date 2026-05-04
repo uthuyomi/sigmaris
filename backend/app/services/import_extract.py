@@ -15,6 +15,7 @@ PROMPT_BASE = "\n".join(
         "Return JSON only.",
         "Use this exact schema: {\"summary\": string, \"candidates\": [{\"title\": string, \"date\": \"YYYY-MM-DD\", \"startTime\": \"HH:mm\", \"endTime\": \"HH:mm\", \"description\": string|null, \"confidence\": number|null}]}",
         "If information is ambiguous, keep only entries you can justify from the source.",
+        "Extract every schedule candidate present in the provided rows, up to 100 candidates. Do not stop after 10 items when more justified entries are present.",
         "Use the generic title '勤務' when no better title is available.",
         "Use Japan date and time conventions.",
     ]

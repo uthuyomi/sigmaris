@@ -9,12 +9,14 @@ from app.schemas.google_tools import GoogleCalendarCreateEvent, GoogleProviderTo
 from app.services.chat_tool_definitions import FUNCTION_TOOL_MAP, FUNCTION_TOOLS
 from app.services.app_data import (
     create_event,
+    create_events,
     get_event_by_id,
     get_profile_context,
     list_conflicting_events,
     list_events,
     replace_travel_plan,
     search_events,
+    update_event_external_link,
 )
 from app.services.google_calendar import (
     create_google_calendar_events,
@@ -88,12 +90,73 @@ async def execute_tool(
             GoogleCalendarCreateEvent.model_validate(event)
             for event in arguments.get("events", [])
         ]
+        created_app_events = await create_events(
+            jwt,
+            [
+                {
+                    "title": event.title,
+                    "description": event.description,
+                    "location_text": event.location,
+                    "starts_at": event.start,
+                    "ends_at": event.end,
+                    "source_type": "chat",
+                    "metadata": {"provider": "google", "syncStatus": "pending"},
+                }
+                for event in events
+            ],
+        )
+        google_create_targets = [
+            (index, event, app_event)
+            for index, (event, app_event) in enumerate(zip(events, created_app_events))
+            if not app_event.get("external_event_id")
+        ]
         created = create_google_calendar_events(
             tokens=google_tokens,
             calendar_id=arguments.get("calendarId"),
-            events=events,
+            events=[event for _, event, _ in google_create_targets],
         )
-        return {"ok": True, "createdCount": len(created), "created": created}
+        for index, (_, _, app_event) in enumerate(google_create_targets):
+            google_event = created[index] if index < len(created) else {}
+            await update_event_external_link(
+                jwt,
+                event_id=app_event["id"],
+                external_event_id=google_event.get("id"),
+                metadata={
+                    "provider": "google",
+                    "htmlLink": google_event.get("htmlLink"),
+                    "syncStatus": "synced" if google_event.get("id") else "pending",
+                },
+            )
+        return {
+            "ok": True,
+            "createdCount": len(created),
+            "created": created,
+            "appCreatedCount": len(created_app_events),
+            "skippedExistingGoogleCount": len(events) - len(google_create_targets),
+            "createdAppEvents": created_app_events,
+        }
+
+    if name == "create_app_events":
+        created_app_events = await create_events(
+            jwt,
+            [
+                {
+                    "title": event["title"],
+                    "description": event.get("description"),
+                    "location_text": event.get("location"),
+                    "starts_at": event["start"],
+                    "ends_at": event["end"],
+                    "source_type": event.get("sourceType") or "chat",
+                    "metadata": {"createdBy": "chat"},
+                }
+                for event in arguments.get("events", [])
+            ],
+        )
+        return {
+            "ok": True,
+            "createdCount": len(created_app_events),
+            "createdAppEvents": created_app_events,
+        }
 
     if name == "delete_google_calendar_events":
         if not _has_google_tokens(google_tokens):
@@ -126,7 +189,7 @@ async def execute_tool(
             "ok": True,
             "spreadsheetId": preview["spreadsheetId"],
             "sheetTitle": preview["sheetTitle"],
-            "rows": preview["rows"][:20],
+            "rows": preview["rows"],
             "rowCount": len(preview["rows"]),
         }
 

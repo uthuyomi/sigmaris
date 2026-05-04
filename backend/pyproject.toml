@@ -12,6 +12,7 @@ dependencies = [
   "supabase>=2.18.0",
   "google-auth>=2.40.0",
   "google-api-python-client>=2.179.0",
+  "tzdata>=2025.2",
 ]
 
 [build-system]

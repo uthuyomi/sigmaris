@@ -31,7 +31,7 @@ class SheetImportPreviewRequest(BaseModel):
     source_type: Literal["sheet"] = Field(alias="sourceType")
     source_label: str | None = Field(default=None, alias="sourceLabel", max_length=200)
     sheet_title: str = Field(alias="sheetTitle", min_length=1, max_length=200)
-    rows: list[list[str]] = Field(max_length=50)
+    rows: list[list[str]] = Field(max_length=100)
 
 
 ImportPreviewRequest = ImageImportPreviewRequest | SheetImportPreviewRequest

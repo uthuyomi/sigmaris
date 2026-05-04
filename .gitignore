@@ -3,6 +3,7 @@
 # dependencies
 /node_modules
 /frontend/node_modules
+/backend/.venv/
 /.pnp
 .pnp.*
 .yarn/*
@@ -13,6 +14,10 @@
 
 # testing
 /coverage
+
+# python
+__pycache__/
+*.py[cod]
 
 # next.js
 /.next/

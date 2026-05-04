@@ -7,6 +7,8 @@ import re
 from app.schemas.google_tools import GoogleProviderTokens
 from app.services.google_api import create_sheets_client
 
+MAX_SHEET_PREVIEW_ROWS = 100
+
 
 def extract_spreadsheet_id(url: str) -> str | None:
     match = re.search(r"/spreadsheets/d/([a-zA-Z0-9-_]+)", url)
@@ -37,7 +39,7 @@ def read_google_sheet_preview(*, tokens: GoogleProviderTokens, url: str):
         .values()
         .get(
             spreadsheetId=spreadsheet_id,
-            range=f"{first_sheet_title}!A1:Z50",
+            range=f"{first_sheet_title}!A1:Z{MAX_SHEET_PREVIEW_ROWS}",
         )
         .execute()
     )

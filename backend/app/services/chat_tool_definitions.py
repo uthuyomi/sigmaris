@@ -25,7 +25,7 @@ FUNCTION_TOOLS: list[dict[str, Any]] = [
     {
         "type": "function",
         "name": "create_google_calendar_events",
-        "description": "Create events in Google Calendar after confirmation.",
+        "description": "Create events in Google Calendar after confirmation and mirror them into the app calendar database.",
         "parameters": {
             "type": "object",
             "properties": {
@@ -40,6 +40,37 @@ FUNCTION_TOOLS: list[dict[str, Any]] = [
                             "end": {"type": "string"},
                             "description": {"type": "string"},
                             "location": {"type": "string"},
+                        },
+                        "required": ["title", "start", "end"],
+                        "additionalProperties": False,
+                    },
+                },
+            },
+            "required": ["events"],
+            "additionalProperties": False,
+        },
+    },
+    {
+        "type": "function",
+        "name": "create_app_events",
+        "description": "Create events directly in the app calendar database after confirmation, without writing to Google Calendar.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "events": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "title": {"type": "string"},
+                            "start": {"type": "string"},
+                            "end": {"type": "string"},
+                            "description": {"type": "string"},
+                            "location": {"type": "string"},
+                            "sourceType": {
+                                "type": "string",
+                                "enum": ["manual", "chat", "sheet", "image"],
+                            },
                         },
                         "required": ["title", "start", "end"],
                         "additionalProperties": False,
