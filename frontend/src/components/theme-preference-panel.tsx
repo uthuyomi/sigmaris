@@ -64,7 +64,7 @@ export function ThemePreferencePanel({ currentTheme }: ThemePreferencePanelProps
   return (
     <section className="rounded-2xl border border-stone-900/10 bg-white p-4 shadow-sm dark:border-white/10 dark:bg-[#2f2f2f]">
       <div className="flex items-center gap-3">
-        <div className="inline-flex size-10 items-center justify-center rounded-xl bg-stone-950 text-white dark:bg-white dark:text-stone-950">
+        <div className="settings-item-icon inline-flex size-10 items-center justify-center rounded-xl">
           <MoonIcon className="size-5" />
         </div>
         <div>

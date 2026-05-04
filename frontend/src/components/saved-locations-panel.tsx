@@ -95,7 +95,7 @@ export function SavedLocationsPanel() {
   return (
     <section className="rounded-2xl border border-stone-900/10 bg-white p-5 shadow-sm dark:border-white/10 dark:bg-[#2f2f2f]">
       <div className="flex items-start gap-3">
-        <div className="inline-flex size-11 items-center justify-center rounded-xl bg-stone-900 text-stone-50 dark:bg-white dark:text-stone-950">
+        <div className="settings-item-icon inline-flex size-11 items-center justify-center rounded-xl">
           <HomeIcon className="size-5" />
         </div>
         <div>

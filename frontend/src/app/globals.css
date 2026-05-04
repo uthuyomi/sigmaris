@@ -294,6 +294,26 @@ button {
     color: rgb(250 250 249);
   }
 
+  .settings-page .settings-item-icon {
+    background-color: rgb(28 25 23);
+    color: rgb(250 250 249);
+  }
+
+  .dark .settings-page .settings-item-icon {
+    background-color: rgb(255 255 255);
+    color: rgb(28 25 23) !important;
+  }
+
+  .dark .settings-page :is(button, .settings-item-icon)[class*="dark:bg-white"][class*="dark:text-stone-950"]:not(:disabled) {
+    color: rgb(28 25 23) !important;
+  }
+
+  .dark .settings-page :is(button, .settings-item-icon)[class*="dark:bg-white"][class*="dark:text-stone-950"]:not(:disabled) svg,
+  .dark .settings-page .settings-item-icon svg {
+    color: currentColor;
+    stroke: currentColor;
+  }
+
   .dark .settings-page input,
   .dark .settings-page select,
   .dark .settings-page textarea {

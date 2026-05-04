@@ -91,7 +91,7 @@ export function GoogleCalendarSyncPanel({
     <div className="rounded-2xl border border-stone-900/10 bg-stone-50 p-4 dark:border-white/10 dark:bg-white/6">
       <div className="flex items-start justify-between gap-4">
         <div>
-          <div className="inline-flex size-11 items-center justify-center rounded-xl bg-stone-900 text-stone-50 dark:bg-white dark:text-stone-950">
+          <div className="settings-item-icon inline-flex size-11 items-center justify-center rounded-xl">
             <ArrowUpDownIcon className="size-5" />
           </div>
           <h2 className="mt-4 text-lg font-semibold text-stone-900 dark:text-stone-50">{dict.settings.syncTitle}</h2>
