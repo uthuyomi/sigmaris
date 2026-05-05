@@ -187,7 +187,7 @@ export const Thread: FC<ThreadProps> = ({ locale }) => {
           <button
             type="button"
             onClick={() => scrollToBottom()}
-            className="absolute bottom-36 right-4 z-20 inline-flex size-10 items-center justify-center rounded-full border border-stone-900/10 bg-white text-stone-900 shadow-[0_18px_35px_-24px_rgba(0,0,0,0.55)] transition hover:bg-stone-100 dark:border-white/10 dark:bg-[#2f2f2f] dark:text-white dark:hover:bg-[#3a3a3a] sm:right-6"
+            className="absolute bottom-36 left-1/2 z-20 inline-flex size-10 -translate-x-1/2 items-center justify-center rounded-full border border-stone-900/10 bg-white text-stone-900 shadow-[0_18px_35px_-24px_rgba(0,0,0,0.55)] transition hover:bg-stone-100 dark:border-white/10 dark:bg-[#2f2f2f] dark:text-white dark:hover:bg-[#3a3a3a]"
             aria-label="下へ移動"
           >
             <ArrowDownIcon className="size-5" />
