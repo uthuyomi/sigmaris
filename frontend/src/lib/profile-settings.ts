@@ -86,6 +86,145 @@ export const normalizeArrivalLeadMinutes = (value?: number | null) => {
   return Math.min(180, Math.max(0, Math.round(value)));
 };
 
+type ProfileSettingsRow = {
+  locale?: string | null;
+  app_theme?: string | null;
+  google_calendar_sync_enabled?: boolean | null;
+  ai_tone?: string | null;
+  preferred_travel_mode?: string | null;
+  arrival_lead_minutes?: number | null;
+};
+
+const isMissingProfileSettingsColumnError = (
+  error: { code?: string; message?: string } | null,
+) =>
+  isMissingLocaleColumnError(error) ||
+  isMissingAppThemeColumnError(error) ||
+  isMissingAiToneColumnError(error) ||
+  isMissingPreferredTravelModeColumnError(error) ||
+  isMissingArrivalLeadMinutesColumnError(error);
+
+const readProfileSettingsRow = async (
+  userId: string,
+  columns: string,
+): Promise<ProfileSettingsRow> => {
+  const supabase = await createClient();
+  const { data, error } = await supabase
+    .from("profiles")
+    .select(columns)
+    .eq("id", userId)
+    .single();
+
+  if (error) {
+    throw error;
+  }
+
+  return (data ?? {}) as ProfileSettingsRow;
+};
+
+export const readShellSettings = async (userId: string) => {
+  try {
+    const data = await readProfileSettingsRow(userId, "locale,app_theme");
+
+    return {
+      locale: normalizeLocale(data.locale ?? defaultLocale),
+      theme: normalizeAppTheme(data.app_theme ?? defaultAppTheme),
+    };
+  } catch (error) {
+    if (!isMissingProfileSettingsColumnError(error as { code?: string; message?: string })) {
+      throw new Error(error instanceof Error ? error.message : "Failed to read profile settings.");
+    }
+
+    const [locale, theme] = await Promise.all([readUserLocale(userId), readAppTheme(userId)]);
+    return { locale, theme };
+  }
+};
+
+export const readCalendarPageSettings = async (userId: string) => {
+  try {
+    const data = await readProfileSettingsRow(
+      userId,
+      "locale,app_theme,google_calendar_sync_enabled",
+    );
+
+    return {
+      locale: normalizeLocale(data.locale ?? defaultLocale),
+      theme: normalizeAppTheme(data.app_theme ?? defaultAppTheme),
+      googleCalendarSyncEnabled: Boolean(data.google_calendar_sync_enabled),
+    };
+  } catch (error) {
+    if (!isMissingProfileSettingsColumnError(error as { code?: string; message?: string })) {
+      throw new Error(error instanceof Error ? error.message : "Failed to read profile settings.");
+    }
+
+    const [locale, theme, googleCalendarSyncEnabled] = await Promise.all([
+      readUserLocale(userId),
+      readAppTheme(userId),
+      readGoogleCalendarSyncEnabled(userId),
+    ]);
+
+    return { locale, theme, googleCalendarSyncEnabled };
+  }
+};
+
+export const readSettingsPageSettings = async (userId: string) => {
+  try {
+    const data = await readProfileSettingsRow(
+      userId,
+      [
+        "locale",
+        "app_theme",
+        "google_calendar_sync_enabled",
+        "ai_tone",
+        "preferred_travel_mode",
+        "arrival_lead_minutes",
+      ].join(","),
+    );
+
+    return {
+      locale: normalizeLocale(data.locale ?? defaultLocale),
+      theme: normalizeAppTheme(data.app_theme ?? defaultAppTheme),
+      calendarSyncEnabled: Boolean(data.google_calendar_sync_enabled),
+      aiTone: normalizeAiTone(data.ai_tone ?? defaultAiTone),
+      preferredTravelMode: normalizePreferredTravelMode(
+        data.preferred_travel_mode ?? defaultPreferredTravelMode,
+      ),
+      arrivalLeadMinutes: normalizeArrivalLeadMinutes(
+        data.arrival_lead_minutes ?? defaultArrivalLeadMinutes,
+      ),
+    };
+  } catch (error) {
+    if (!isMissingProfileSettingsColumnError(error as { code?: string; message?: string })) {
+      throw new Error(error instanceof Error ? error.message : "Failed to read profile settings.");
+    }
+
+    const [
+      locale,
+      theme,
+      calendarSyncEnabled,
+      aiTone,
+      preferredTravelMode,
+      arrivalLeadMinutes,
+    ] = await Promise.all([
+      readUserLocale(userId),
+      readAppTheme(userId),
+      readGoogleCalendarSyncEnabled(userId),
+      readAiTone(userId),
+      readPreferredTravelMode(userId),
+      readArrivalLeadMinutes(userId),
+    ]);
+
+    return {
+      locale,
+      theme,
+      calendarSyncEnabled,
+      aiTone,
+      preferredTravelMode,
+      arrivalLeadMinutes,
+    };
+  }
+};
+
 export const readGoogleCalendarSyncEnabled = async (userId: string) => {
   const supabase = await createClient();
   const { data, error } = await supabase

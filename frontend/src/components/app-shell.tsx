@@ -114,14 +114,6 @@ export function AppShell({
     };
   }, [chatPageActive, pathname]);
 
-  useEffect(() => {
-    navItems.forEach((item) => {
-      if (item.href !== pathname) {
-        router.prefetch(item.href);
-      }
-    });
-  }, [navItems, pathname, router]);
-
   const navigateBySwipe = useCallback(
     (direction: SwipeDirection) => {
       const nextIndex = direction === "left" ? activeNavIndex + 1 : activeNavIndex - 1;
@@ -230,7 +222,7 @@ export function AppShell({
                       <TooltipTrigger>
                         <Link
                           href={item.href}
-                          prefetch
+                          prefetch={false}
                           aria-label={item.label}
                           onMouseEnter={() => router.prefetch(item.href)}
                           onFocus={() => router.prefetch(item.href)}

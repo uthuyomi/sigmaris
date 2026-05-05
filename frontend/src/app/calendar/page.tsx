@@ -5,7 +5,7 @@ import { CalendarBoard } from "@/components/calendar-board";
 import { CalendarLiveSync } from "@/components/calendar-live-sync";
 import { listEventsForMonthForUser } from "@/lib/events";
 import { getDictionary } from "@/lib/i18n";
-import { readAppTheme, readGoogleCalendarSyncEnabled, readUserLocale } from "@/lib/profile-settings";
+import { readCalendarPageSettings } from "@/lib/profile-settings";
 import { requireUser } from "@/lib/supabase/auth";
 
 type CalendarPageProps = {
@@ -25,12 +25,11 @@ export default async function CalendarPage({ searchParams }: CalendarPageProps) 
       year: "numeric",
       month: "2-digit",
     }).format(new Date());
-  const [locale, theme, googleCalendarSyncEnabled, events] = await Promise.all([
-    readUserLocale(user.id),
-    readAppTheme(user.id),
-    readGoogleCalendarSyncEnabled(user.id),
+  const [settings, events] = await Promise.all([
+    readCalendarPageSettings(user.id),
     listEventsForMonthForUser(user.id, monthForQuery),
   ]);
+  const { locale, theme, googleCalendarSyncEnabled } = settings;
   const dict = getDictionary(locale);
 
   return (

@@ -4,7 +4,8 @@ import { useRouter } from "next/navigation";
 import { useEffect, useRef } from "react";
 import { createClient } from "@/lib/supabase/client";
 
-const GOOGLE_SYNC_INTERVAL_MS = 20_000;
+const GOOGLE_SYNC_INITIAL_DELAY_MS = 45_000;
+const GOOGLE_SYNC_INTERVAL_MS = 5 * 60_000;
 
 type CalendarLiveSyncProps = {
   userId: string;
@@ -14,6 +15,7 @@ type CalendarLiveSyncProps = {
 export function CalendarLiveSync({ userId, syncEnabled }: CalendarLiveSyncProps) {
   const router = useRouter();
   const syncInFlightRef = useRef(false);
+  const lastSyncAttemptRef = useRef(0);
 
   useEffect(() => {
     let active = true;
@@ -49,6 +51,7 @@ export function CalendarLiveSync({ userId, syncEnabled }: CalendarLiveSyncProps)
 
     const syncGoogleCalendar = async () => {
       if (syncInFlightRef.current) return;
+      lastSyncAttemptRef.current = Date.now();
       syncInFlightRef.current = true;
 
       try {
@@ -64,21 +67,25 @@ export function CalendarLiveSync({ userId, syncEnabled }: CalendarLiveSyncProps)
     };
 
     const handleVisibilityChange = () => {
-      if (document.visibilityState === "visible") {
+      if (
+        document.visibilityState === "visible" &&
+        Date.now() - lastSyncAttemptRef.current >= GOOGLE_SYNC_INTERVAL_MS
+      ) {
         void syncGoogleCalendar();
       }
     };
 
-    void syncGoogleCalendar();
+    const initialDelay = window.setTimeout(syncGoogleCalendar, GOOGLE_SYNC_INITIAL_DELAY_MS);
     const interval = window.setInterval(syncGoogleCalendar, GOOGLE_SYNC_INTERVAL_MS);
     document.addEventListener("visibilitychange", handleVisibilityChange);
-    window.addEventListener("focus", syncGoogleCalendar);
+    window.addEventListener("focus", handleVisibilityChange);
 
     return () => {
       active = false;
+      window.clearTimeout(initialDelay);
       window.clearInterval(interval);
       document.removeEventListener("visibilitychange", handleVisibilityChange);
-      window.removeEventListener("focus", syncGoogleCalendar);
+      window.removeEventListener("focus", handleVisibilityChange);
     };
   }, [router, syncEnabled]);
 

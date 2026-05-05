@@ -4,24 +4,16 @@ import { AppShell } from "@/components/app-shell";
 import { AiTonePreferencePanel } from "@/components/ai-tone-preference-panel";
 import { ArrivalLeadMinutesPanel } from "@/components/arrival-lead-minutes-panel";
 import { GoogleCalendarSyncPanel } from "@/components/google-calendar-sync-panel";
+import { IntegrationStatusPanel } from "@/components/integration-status-panel";
 import { LanguagePreferencePanel } from "@/components/language-preference-panel";
 import { PreferredTravelModePanel } from "@/components/preferred-travel-mode-panel";
 import { SavedLocationsPanel } from "@/components/saved-locations-panel";
 import { ThemePreferencePanel } from "@/components/theme-preference-panel";
-import { readBackendChatCapabilities } from "@/lib/backend/chat";
 import { hasGoogleCalendarWriteConfig } from "@/lib/google/calendar";
 import { hasGoogleMapsConfig } from "@/lib/google/maps";
 import { hasGoogleSheetsReadConfig } from "@/lib/google/sheets";
-import { readBackendHealth } from "@/lib/backend/health";
 import { getDictionary } from "@/lib/i18n";
-import {
-  readAiTone,
-  readAppTheme,
-  readArrivalLeadMinutes,
-  readGoogleCalendarSyncEnabled,
-  readPreferredTravelMode,
-  readUserLocale,
-} from "@/lib/profile-settings";
+import { readSettingsPageSettings } from "@/lib/profile-settings";
 import { requireUser } from "@/lib/supabase/auth";
 import { hasSupabaseConfig } from "@/lib/supabase/client";
 
@@ -33,27 +25,18 @@ type SettingsPageProps = {
 
 export default async function SettingsPage({ searchParams }: SettingsPageProps) {
   const user = await requireUser("/settings");
-  const [
-    resolved,
+  const [resolved, settings] = await Promise.all([
+    searchParams ? searchParams : Promise.resolve(undefined),
+    readSettingsPageSettings(user.id),
+  ]);
+  const {
     locale,
     theme,
     calendarSyncEnabled,
     aiTone,
     preferredTravelMode,
     arrivalLeadMinutes,
-    backendHealth,
-    backendChat,
-  ] = await Promise.all([
-    searchParams ? searchParams : Promise.resolve(undefined),
-    readUserLocale(user.id),
-    readAppTheme(user.id),
-    readGoogleCalendarSyncEnabled(user.id),
-    readAiTone(user.id),
-    readPreferredTravelMode(user.id),
-    readArrivalLeadMinutes(user.id),
-    readBackendHealth(),
-    readBackendChatCapabilities(),
-  ]);
+  } = settings;
   const dict = getDictionary(locale);
   const sheetsReady = hasGoogleSheetsReadConfig();
   const calendarReady = hasGoogleCalendarWriteConfig();
@@ -92,34 +75,28 @@ export default async function SettingsPage({ searchParams }: SettingsPageProps) 
 
         <SavedLocationsPanel />
 
-        <section className="rounded-2xl border border-stone-900/10 bg-white p-5 shadow-sm dark:border-white/10 dark:bg-[#2f2f2f]">
-          <p className="text-xs uppercase tracking-[0.3em] text-stone-500 dark:text-stone-400">{dict.settings.integrations}</p>
-          <div className="mt-4 grid gap-3 sm:grid-cols-2">
-            {[
-              { name: "ShiftPilotAI Backend API", ready: backendHealth.ready },
-              { name: "ShiftPilotAI Backend Chat Tools", ready: backendChat.ready },
-              { name: "Supabase Authentication", ready: supabaseReady },
-              { name: "Google Sheets API", ready: sheetsReady },
-              { name: "Google Calendar API", ready: calendarReady },
-              { name: "Google Maps Routes API", ready: mapsReady },
-            ].map((item) => (
-              <div
-                key={item.name}
-                className="rounded-2xl border border-stone-900/10 bg-stone-50 px-4 py-4 dark:border-white/10 dark:bg-white/6"
-              >
-                <p className="text-sm font-semibold text-stone-900">{item.name}</p>
-                <p className="mt-2 text-sm text-stone-600">
-                  {item.ready ? dict.settings.statusReady : dict.settings.statusMissing}
-                </p>
-              </div>
-            ))}
-          </div>
-          {resolved?.authError ? (
-            <p className="mt-4 rounded-2xl border border-red-200 bg-red-50 px-4 py-3 text-sm leading-7 text-red-700">
-              {resolved.authError}
-            </p>
-          ) : null}
-        </section>
+        <IntegrationStatusPanel
+          backendApiLabel="ShiftPilotAI Backend API"
+          backendChatLabel="ShiftPilotAI Backend Chat Tools"
+          calendarLabel="Google Calendar API"
+          calendarReady={calendarReady}
+          integrationsLabel={dict.settings.integrations}
+          loadingLabel={dict.common.loading}
+          mapsLabel="Google Maps Routes API"
+          mapsReady={mapsReady}
+          missingLabel={dict.settings.statusMissing}
+          readyLabel={dict.settings.statusReady}
+          sheetsLabel="Google Sheets API"
+          sheetsReady={sheetsReady}
+          supabaseLabel="Supabase Authentication"
+          supabaseReady={supabaseReady}
+        />
+
+        {resolved?.authError ? (
+          <p className="rounded-2xl border border-red-200 bg-red-50 px-4 py-3 text-sm leading-7 text-red-700">
+            {resolved.authError}
+          </p>
+        ) : null}
       </div>
     </AppShell>
   );

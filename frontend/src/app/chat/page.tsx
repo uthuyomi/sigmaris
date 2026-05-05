@@ -11,7 +11,7 @@ import {
   listChatThreads,
 } from "@/lib/chat-threads";
 import { getDictionary } from "@/lib/i18n";
-import { readAppTheme, readUserLocale } from "@/lib/profile-settings";
+import { readShellSettings } from "@/lib/profile-settings";
 import { requireUser } from "@/lib/supabase/auth";
 
 type ChatPageProps = {
@@ -25,11 +25,11 @@ export default async function ChatPage({ searchParams }: ChatPageProps) {
   const params = searchParams ? await searchParams : undefined;
   const requestedThreadId = params?.thread;
 
-  const [locale, theme, threads] = await Promise.all([
-    readUserLocale(user.id),
-    readAppTheme(user.id),
+  const [settings, threads] = await Promise.all([
+    readShellSettings(user.id),
     listChatThreads(user.id),
   ]);
+  const { locale, theme } = settings;
   const dict = getDictionary(locale);
 
   if (!threads.length) {
