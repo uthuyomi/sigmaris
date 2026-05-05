@@ -1,6 +1,7 @@
 # 役割: FastAPI アプリ本体とルーティングを構成する。
 
 import logging
+from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
@@ -11,6 +12,10 @@ from app.routes.chat import router as chat_router
 from app.routes.google_tools import router as google_tools_router
 from app.routes.import_preview import router as import_preview_router
 from app.routes.mobility import router as mobility_router
+from app.services.supabase_rest import (
+    shutdown_supabase_http_client,
+    startup_supabase_http_client,
+)
 
 
 logging.basicConfig(
@@ -19,11 +24,21 @@ logging.basicConfig(
 )
 
 
+@asynccontextmanager
+async def lifespan(_: FastAPI):
+    await startup_supabase_http_client()
+    try:
+        yield
+    finally:
+        await shutdown_supabase_http_client()
+
+
 app = FastAPI(
     title=settings.app_name,
     version="0.1.0",
     docs_url=None if settings.app_env == "production" else "/docs",
     redoc_url=None if settings.app_env == "production" else "/redoc",
+    lifespan=lifespan,
 )
 
 app.add_middleware(

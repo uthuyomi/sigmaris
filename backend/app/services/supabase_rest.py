@@ -8,11 +8,34 @@ import httpx
 
 from app.config import settings
 
+_client: httpx.AsyncClient | None = None
+
 
 def _require_supabase_config() -> tuple[str, str]:
     if not settings.next_public_supabase_url or not settings.next_public_supabase_publishable_key:
         raise RuntimeError("Supabase environment variables are not fully configured for backend.")
     return settings.next_public_supabase_url, settings.next_public_supabase_publishable_key
+
+
+async def startup_supabase_http_client() -> None:
+    global _client
+    if _client is None:
+        _client = httpx.AsyncClient(timeout=15.0)
+
+
+async def shutdown_supabase_http_client() -> None:
+    global _client
+    if _client is not None:
+        await _client.aclose()
+        _client = None
+
+
+async def _get_client() -> httpx.AsyncClient:
+    if _client is None:
+        await startup_supabase_http_client()
+    if _client is None:
+        raise RuntimeError("Supabase HTTP client is not available.")
+    return _client
 
 
 def _headers(jwt: str, extra: dict[str, str] | None = None) -> dict[str, str]:
@@ -43,13 +66,13 @@ def _raise_for_status(response: httpx.Response) -> None:
 
 async def get_current_user(jwt: str) -> dict[str, Any]:
     base_url, _ = _require_supabase_config()
-    async with httpx.AsyncClient(timeout=15.0) as client:
-        response = await client.get(
-            f"{base_url}/auth/v1/user",
-            headers=_headers(jwt),
-        )
-        _raise_for_status(response)
-        return response.json()
+    client = await _get_client()
+    response = await client.get(
+        f"{base_url}/auth/v1/user",
+        headers=_headers(jwt),
+    )
+    _raise_for_status(response)
+    return response.json()
 
 
 async def rest_select(
@@ -61,16 +84,16 @@ async def rest_select(
 ) -> Any:
     base_url, _ = _require_supabase_config()
     headers = _headers(jwt, {"Accept": "application/vnd.pgrst.object+json"} if single else None)
-    async with httpx.AsyncClient(timeout=15.0) as client:
-        response = await client.get(
-            f"{base_url}/rest/v1/{table}",
-            headers=headers,
-            params=params,
-        )
-        if response.status_code == 406 and single:
-            return None
-        _raise_for_status(response)
-        return response.json()
+    client = await _get_client()
+    response = await client.get(
+        f"{base_url}/rest/v1/{table}",
+        headers=headers,
+        params=params,
+    )
+    if response.status_code == 406 and single:
+        return None
+    _raise_for_status(response)
+    return response.json()
 
 
 async def rest_insert(jwt: str, table: str, payload: Any, *, single: bool = False) -> Any:
@@ -78,14 +101,14 @@ async def rest_insert(jwt: str, table: str, payload: Any, *, single: bool = Fals
     headers = _headers(jwt, {"Prefer": "return=representation"})
     if single:
         headers["Accept"] = "application/vnd.pgrst.object+json"
-    async with httpx.AsyncClient(timeout=15.0) as client:
-        response = await client.post(
-            f"{base_url}/rest/v1/{table}",
-            headers=headers,
-            json=payload,
-        )
-        _raise_for_status(response)
-        return response.json()
+    client = await _get_client()
+    response = await client.post(
+        f"{base_url}/rest/v1/{table}",
+        headers=headers,
+        json=payload,
+    )
+    _raise_for_status(response)
+    return response.json()
 
 
 async def rest_update(
@@ -96,23 +119,23 @@ async def rest_update(
 ) -> Any:
     base_url, _ = _require_supabase_config()
     headers = _headers(jwt, {"Prefer": "return=representation"})
-    async with httpx.AsyncClient(timeout=15.0) as client:
-        response = await client.patch(
-            f"{base_url}/rest/v1/{table}",
-            headers=headers,
-            params=params,
-            json=payload,
-        )
-        _raise_for_status(response)
-        return response.json()
+    client = await _get_client()
+    response = await client.patch(
+        f"{base_url}/rest/v1/{table}",
+        headers=headers,
+        params=params,
+        json=payload,
+    )
+    _raise_for_status(response)
+    return response.json()
 
 
 async def rest_delete(jwt: str, table: str, params: dict[str, str]) -> None:
     base_url, _ = _require_supabase_config()
-    async with httpx.AsyncClient(timeout=15.0) as client:
-        response = await client.delete(
-            f"{base_url}/rest/v1/{table}",
-            headers=_headers(jwt),
-            params=params,
-        )
-        _raise_for_status(response)
+    client = await _get_client()
+    response = await client.delete(
+        f"{base_url}/rest/v1/{table}",
+        headers=_headers(jwt),
+        params=params,
+    )
+    _raise_for_status(response)
