@@ -1,14 +1,16 @@
 // 役割: ユーザー設定画面を表示するNext.jsページ。
 
 import { AppShell } from "@/components/app-shell";
-import { AiTonePreferencePanel } from "@/components/ai-tone-preference-panel";
-import { ArrivalLeadMinutesPanel } from "@/components/arrival-lead-minutes-panel";
-import { GoogleCalendarSyncPanel } from "@/components/google-calendar-sync-panel";
-import { IntegrationStatusPanel } from "@/components/integration-status-panel";
-import { LanguagePreferencePanel } from "@/components/language-preference-panel";
-import { PreferredTravelModePanel } from "@/components/preferred-travel-mode-panel";
-import { SavedLocationsPanel } from "@/components/saved-locations-panel";
-import { ThemePreferencePanel } from "@/components/theme-preference-panel";
+import {
+  AiTonePreferencePanel,
+  ArrivalLeadMinutesPanel,
+  GoogleCalendarSyncPanel,
+  IntegrationStatusPanel,
+  LanguagePreferencePanel,
+  PreferredTravelModePanel,
+  SavedLocationsPanel,
+  ThemePreferencePanel,
+} from "@/components/settings";
 import { hasGoogleCalendarWriteConfig } from "@/lib/google/calendar";
 import { hasGoogleMapsConfig } from "@/lib/google/maps";
 import { hasGoogleSheetsReadConfig } from "@/lib/google/sheets";

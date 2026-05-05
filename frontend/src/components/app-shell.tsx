@@ -3,7 +3,7 @@
 
 
 import { AuthControls } from "@/components/auth-controls";
-import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
+import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui";
 import { getDictionary, type AppLocale } from "@/lib/i18n";
 import type { AppTheme } from "@/lib/profile-settings";
 import { cn } from "@/lib/utils";

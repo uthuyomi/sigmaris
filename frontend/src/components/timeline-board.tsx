@@ -3,8 +3,7 @@
 
 
 import { useState } from "react";
-import { TimelineDayGrid } from "@/components/timeline/timeline-day-grid";
-import { TimelineSidePanel } from "@/components/timeline/timeline-side-panel";
+import { TimelineDayGrid, TimelineSidePanel } from "@/components/timeline";
 import { getDictionary, type AppLocale } from "@/lib/i18n";
 import {
   formatJapaneseDate,

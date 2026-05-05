@@ -1,9 +1,12 @@
 "use client";
 // 役割: アシスタントとのチャットスレッド表示と入力欄を構成するReactコンポーネント。
 
-
-import { ComposerAttachments, UserMessageAttachments } from "@/components/attachment";
+import {
+  ComposerAttachments,
+  UserMessageAttachments,
+} from "@/components/attachment";
 import { MarkdownText } from "@/components/markdown-text";
+import { promptTemplates } from "@/components/thread-prompt-templates";
 import { getDictionary, type AppLocale } from "@/lib/i18n";
 import {
   ComposerPrimitive,
@@ -12,7 +15,13 @@ import {
   useAuiState,
   useComposerRuntime,
 } from "@assistant-ui/react";
-import { ArrowDownIcon, ArrowUpIcon, FileTextIcon, PlusIcon, SquareIcon } from "lucide-react";
+import {
+  ArrowDownIcon,
+  ArrowUpIcon,
+  FileTextIcon,
+  PlusIcon,
+  SquareIcon,
+} from "lucide-react";
 import { type FC, useCallback, useEffect, useRef, useState } from "react";
 
 type ThreadProps = {
@@ -49,7 +58,8 @@ export const Thread: FC<ThreadProps> = ({ locale }) => {
     })
     .join("|");
 
-  const showPendingStatus = isRunning && latestAssistantText.trim().length === 0;
+  const showPendingStatus =
+    isRunning && latestAssistantText.trim().length === 0;
 
   const updateScrollState = useCallback(() => {
     const viewport = viewportRef.current;
@@ -116,7 +126,9 @@ export const Thread: FC<ThreadProps> = ({ locale }) => {
     };
 
     viewport.addEventListener("scroll", handleScroll);
-    viewport.addEventListener("touchstart", handleTouchStart, { passive: true });
+    viewport.addEventListener("touchstart", handleTouchStart, {
+      passive: true,
+    });
     viewport.addEventListener("touchmove", handleTouchMove, { passive: false });
     viewport.addEventListener("touchend", handleTouchEnd);
     viewport.addEventListener("touchcancel", handleTouchEnd);
@@ -257,7 +269,10 @@ const ThreadMessage: FC = () => {
   const role = useAuiState((s) => s.message.role);
 
   return (
-    <MessagePrimitive.Root className="mx-auto w-full max-w-3xl min-w-0 overflow-hidden py-2 sm:py-3" data-role={role}>
+    <MessagePrimitive.Root
+      className="mx-auto w-full max-w-3xl min-w-0 overflow-hidden py-2 sm:py-3"
+      data-role={role}
+    >
       {role === "user" ? <UserMessage /> : <AssistantMessage />}
     </MessagePrimitive.Root>
   );
@@ -292,7 +307,9 @@ const getPendingStatusLabel = (step: number) => {
 const UserMessage: FC = () => {
   return (
     <div className="ml-auto flex max-w-[92%] min-w-0 flex-col gap-2 sm:max-w-[78%]">
-      <MessagePrimitive.Attachments components={{ Attachment: UserMessageAttachments }} />
+      <MessagePrimitive.Attachments
+        components={{ Attachment: UserMessageAttachments }}
+      />
       <div className="ml-auto min-w-0 overflow-hidden break-words rounded-[22px] bg-[#f4f4f4] px-4 py-3 text-sm leading-7 text-stone-950 [overflow-wrap:anywhere] dark:bg-[#2f2f2f] dark:text-stone-100">
         <MessagePrimitive.Parts />
       </div>
@@ -315,16 +332,17 @@ const Composer: FC<{ placeholder: string }> = ({ placeholder }) => {
   const composerText = useAuiState((s) => s.composer.text);
   const inputRef = useRef<HTMLTextAreaElement | null>(null);
   const latestAssistantMessageKeyRef = useRef(latestAssistantMessageKey);
-  const [selectedTemplateId, setSelectedTemplateId] = useState<PromptTemplateId>(
-    promptTemplates[0].id,
-  );
+  const [selectedTemplateId, setSelectedTemplateId] =
+    useState<PromptTemplateId>(promptTemplates[0].id);
   const [showTemplatePreview, setShowTemplatePreview] = useState(false);
 
   const selectedTemplate =
-    promptTemplates.find((template) => template.id === selectedTemplateId) ?? promptTemplates[0];
+    promptTemplates.find((template) => template.id === selectedTemplateId) ??
+    promptTemplates[0];
 
   useEffect(() => {
-    if (latestAssistantMessageKeyRef.current === latestAssistantMessageKey) return;
+    if (latestAssistantMessageKeyRef.current === latestAssistantMessageKey)
+      return;
 
     latestAssistantMessageKeyRef.current = latestAssistantMessageKey;
     if (latestAssistantMessageKey) {
@@ -368,10 +386,16 @@ const Composer: FC<{ placeholder: string }> = ({ placeholder }) => {
             }}
             onFocus={() => setShowTemplatePreview(true)}
             className="min-h-10 flex-1 rounded-xl border border-stone-900/10 bg-stone-50 px-3 text-sm text-stone-900 outline-none transition hover:bg-stone-100 focus:border-stone-900/30 dark:border-white/10 dark:bg-white/6 dark:text-stone-100 dark:hover:bg-white/10"
-            aria-describedby={showTemplatePreview ? "prompt-template-preview" : undefined}
+            aria-describedby={
+              showTemplatePreview ? "prompt-template-preview" : undefined
+            }
           >
             {promptTemplates.map((template) => (
-              <option key={template.id} value={template.id} className="bg-white text-stone-900">
+              <option
+                key={template.id}
+                value={template.id}
+                className="bg-white text-stone-900"
+              >
                 {template.label}
               </option>
             ))}
@@ -380,7 +404,9 @@ const Composer: FC<{ placeholder: string }> = ({ placeholder }) => {
             type="button"
             onClick={handleInsertTemplate}
             className="inline-flex min-h-10 items-center justify-center gap-2 rounded-xl border border-stone-900/10 bg-stone-50 px-4 text-sm font-medium text-stone-800 transition hover:bg-stone-100 focus:outline-none focus:ring-2 focus:ring-stone-900/15 dark:border-white/10 dark:bg-white/6 dark:text-stone-200 dark:hover:bg-white/10"
-            aria-describedby={showTemplatePreview ? "prompt-template-preview" : undefined}
+            aria-describedby={
+              showTemplatePreview ? "prompt-template-preview" : undefined
+            }
           >
             <FileTextIcon className="size-4" />
             挿入
@@ -426,59 +452,6 @@ const Composer: FC<{ placeholder: string }> = ({ placeholder }) => {
     </ComposerPrimitive.Root>
   );
 };
-
-const promptTemplates = [
-  {
-    id: "extract-shift-image",
-    label: "シフト表・画像から予定抽出",
-    text: `添付したシフト表・予定表から予定候補を抽出してください。
-必要ならタイトル、日付、開始時刻、終了時刻、場所、補足を整理してください。
-不明なところは勝手に確定せず、確認項目として出してください。`,
-  },
-  {
-    id: "import-google-sheets",
-    label: "Sheetsから予定取り込み",
-    text: `この Google Sheets から予定候補を読み取ってください。
-
-URL: 【ここに入力: Google Sheets URL】
-
-読み取った内容を、日付・開始時刻・終了時刻・タイトル・場所・補足に整理してください。
-登録前に確認できる一覧で出してください。`,
-  },
-  {
-    id: "create-event-manual",
-    label: "予定を手入力で作成",
-    text: `次の予定をカレンダーに登録したいです。
-
-タイトル: 【ここに入力: 予定名】
-日付: 【ここに入力: 日付】
-開始時刻: 【ここに入力: 開始時刻】
-終了時刻: 【ここに入力: 終了時刻】
-場所: 【ここに入力: 住所または施設名】
-補足: 【ここに入力: メモ】
-
-登録前に内容を確認してください。`,
-  },
-  {
-    id: "check-day-events",
-    label: "今日・明日の予定確認",
-    text: `【ここに入力: 今日 / 明日 / 日付】の予定を確認してください。
-アプリ内の予定と Google Calendar の予定を見て、時間順に整理してください。
-移動が必要そうな予定があれば教えてください。`,
-  },
-  {
-    id: "plan-travel-time",
-    label: "移動時間を計算",
-    text: `次の予定に間に合う移動計画を作ってください。
-
-出発地: 【ここに入力: 自宅 / 現在地 / 保存済み地点名 / 住所】
-目的地: 【ここに入力: 住所または施設名】
-到着したい時刻: 【ここに入力: 日付と時刻】
-移動手段: 【ここに入力: 車 / 自転車 / 徒歩】
-
-出発時刻、所要時間、注意点を出してください。`,
-  },
-] as const;
 
 type PromptTemplate = (typeof promptTemplates)[number];
 type PromptTemplateId = (typeof promptTemplates)[number]["id"];

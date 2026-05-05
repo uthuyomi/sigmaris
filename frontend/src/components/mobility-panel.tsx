@@ -5,21 +5,17 @@
 import { getDictionary, type AppLocale } from "@/lib/i18n";
 import {
   loadLocationSettings,
-  requestSchedulePreview,
-  resolveCurrentLocation,
-} from "@/components/mobility/api";
-import {
+  type OriginType,
   OriginControls,
+  requestSchedulePreview,
   ResolutionHintCard,
+  resolveCurrentLocation,
+  type RouteLookupResolution,
+  type SavedLocation,
   SchedulePreviewCard,
+  type ScheduleResponse,
   TravelModeControls,
-} from "@/components/mobility/panel-sections";
-import type {
-  OriginType,
-  RouteLookupResolution,
-  SavedLocation,
-  ScheduleResponse,
-} from "@/components/mobility/types";
+} from "@/components/mobility";
 import type { EventItem } from "@/lib/mock-schedule";
 import type { PreferredTravelMode } from "@/lib/profile-settings";
 import { MapPinnedIcon } from "lucide-react";

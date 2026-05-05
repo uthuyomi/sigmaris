@@ -1,6 +1,6 @@
 // 役割: アプリ全体に適用するNext.jsルートレイアウト。
 
-import { TooltipProvider } from "@/components/ui/tooltip";
+import { TooltipProvider } from "@/components/ui";
 import { cn } from "@/lib/utils";
 import type { Metadata } from "next";
 import { Geist, IBM_Plex_Mono, Space_Grotesk } from "next/font/google";
