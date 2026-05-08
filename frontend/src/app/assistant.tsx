@@ -12,6 +12,7 @@ import {
   type UIMessage,
 } from "ai";
 import { Thread } from "@/components/thread";
+import type { ChatUsageStatus } from "@/lib/chat-usage";
 import type { AppLocale } from "@/lib/i18n";
 
 const toCreateMessage = <UI_MESSAGE extends UIMessage = UIMessage>(
@@ -64,9 +65,11 @@ type AssistantProps = {
   threadId: string;
   initialMessages: UIMessage[];
   locale: AppLocale;
+  freeChatUsage: ChatUsageStatus | null;
 };
 
-export const Assistant = ({ threadId, initialMessages, locale }: AssistantProps) => {
+export const Assistant = ({ threadId, initialMessages, locale, freeChatUsage }: AssistantProps) => {
+  const initialUserMessageCount = initialMessages.filter((message) => message.role === "user").length;
   const chat = useChat({
     id: threadId,
     messages: initialMessages,
@@ -86,7 +89,11 @@ export const Assistant = ({ threadId, initialMessages, locale }: AssistantProps)
   return (
     <AssistantRuntimeProvider runtime={runtime}>
       <div className="h-full min-h-0 min-w-0 overflow-hidden">
-        <Thread locale={locale} />
+        <Thread
+          locale={locale}
+          freeChatUsage={freeChatUsage}
+          initialUserMessageCount={initialUserMessageCount}
+        />
       </div>
     </AssistantRuntimeProvider>
   );

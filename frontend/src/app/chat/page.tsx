@@ -4,6 +4,8 @@ import { type UIMessage } from "ai";
 import { redirect } from "next/navigation";
 import { AppShell } from "@/components/app-shell";
 import { ChatWorkspace } from "@/components/chat-workspace";
+import { isProBillingStatus, readBillingStatus } from "@/lib/billing";
+import { readChatUsageStatus } from "@/lib/chat-usage";
 import {
   createChatThread,
   getChatThread,
@@ -25,9 +27,11 @@ export default async function ChatPage({ searchParams }: ChatPageProps) {
   const params = searchParams ? await searchParams : undefined;
   const requestedThreadId = params?.thread;
 
-  const [settings, threads] = await Promise.all([
+  const [settings, threads, billing, chatUsage] = await Promise.all([
     readShellSettings(user.id),
     listChatThreads(user.id),
+    readBillingStatus(user.id),
+    readChatUsageStatus(user.id),
   ]);
   const { locale, theme } = settings;
   const dict = getDictionary(locale);
@@ -68,6 +72,7 @@ export default async function ChatPage({ searchParams }: ChatPageProps) {
         activeThreadTitle={selectedThread.title}
         initialMessages={initialMessages}
         assistantLabel={dict.chat.assistant}
+        freeChatUsage={isProBillingStatus(billing) ? null : chatUsage}
       />
     </AppShell>
   );

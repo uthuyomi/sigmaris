@@ -5,6 +5,7 @@ import { PanelLeftCloseIcon, PanelLeftOpenIcon } from "lucide-react";
 import { useEffect, useState } from "react";
 import { Assistant } from "@/app/assistant";
 import { ChatThreadSidebar } from "@/components/chat-thread-sidebar";
+import type { ChatUsageStatus } from "@/lib/chat-usage";
 import type { AppLocale } from "@/lib/i18n";
 import { cn } from "@/lib/utils";
 
@@ -21,6 +22,7 @@ type ChatWorkspaceProps = {
   activeThreadTitle: string;
   initialMessages: UIMessage[];
   assistantLabel: string;
+  freeChatUsage: ChatUsageStatus | null;
 };
 
 export function ChatWorkspace({
@@ -30,6 +32,7 @@ export function ChatWorkspace({
   activeThreadTitle,
   initialMessages,
   assistantLabel,
+  freeChatUsage,
 }: ChatWorkspaceProps) {
   const [sidebarOpen, setSidebarOpen] = useState(false);
 
@@ -101,6 +104,7 @@ export function ChatWorkspace({
             threadId={activeThreadId}
             initialMessages={initialMessages}
             locale={locale}
+            freeChatUsage={freeChatUsage}
           />
         </div>
       </section>

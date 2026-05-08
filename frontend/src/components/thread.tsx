@@ -18,17 +18,22 @@ import {
 import {
   ArrowDownIcon,
   ArrowUpIcon,
+  CreditCardIcon,
   FileTextIcon,
   PlusIcon,
   SquareIcon,
 } from "lucide-react";
+import Link from "next/link";
 import { type FC, useCallback, useEffect, useRef, useState } from "react";
+import type { ChatUsageStatus } from "@/lib/chat-usage";
 
 type ThreadProps = {
   locale: AppLocale;
+  freeChatUsage: ChatUsageStatus | null;
+  initialUserMessageCount: number;
 };
 
-export const Thread: FC<ThreadProps> = ({ locale }) => {
+export const Thread: FC<ThreadProps> = ({ locale, freeChatUsage, initialUserMessageCount }) => {
   const dict = getDictionary(locale);
   const viewportRef = useRef<HTMLDivElement | null>(null);
   const touchStartRef = useRef<{ x: number; y: number } | null>(null);
@@ -37,6 +42,14 @@ export const Thread: FC<ThreadProps> = ({ locale }) => {
   const messages = useAuiState((s) => s.thread.messages);
   const isRunning = useAuiState((s) => s.thread.isRunning);
   const [statusStep, setStatusStep] = useState(0);
+  const currentUserMessageCount = messages.filter((message) => message.role === "user").length;
+  const usedChatCount = freeChatUsage
+    ? freeChatUsage.used + Math.max(0, currentUserMessageCount - initialUserMessageCount)
+    : 0;
+  const chatLimitReached = Boolean(freeChatUsage && usedChatCount >= freeChatUsage.limit);
+  const remainingChatCount = freeChatUsage
+    ? Math.max(0, freeChatUsage.limit - usedChatCount)
+    : null;
 
   const latestAssistantText = (() => {
     for (let index = messages.length - 1; index >= 0; index -= 1) {
@@ -217,7 +230,17 @@ export const Thread: FC<ThreadProps> = ({ locale }) => {
         <div className="pointer-events-none absolute inset-x-0 bottom-0 z-10 px-3 pb-4 pt-10 sm:px-6 sm:pb-6">
           <div className="pointer-events-none absolute inset-x-0 bottom-0 h-28 bg-[linear-gradient(180deg,rgba(255,255,255,0),rgba(255,255,255,0.92)_48%,rgba(255,255,255,1)_100%)] dark:bg-[linear-gradient(180deg,rgba(33,33,33,0),rgba(33,33,33,0.92)_48%,rgba(33,33,33,1)_100%)]" />
           <div className="pointer-events-auto relative">
-            <Composer placeholder={dict.chat.inputPlaceholder} />
+            {freeChatUsage ? (
+              <ChatLimitNotice
+                limit={freeChatUsage.limit}
+                remaining={remainingChatCount ?? 0}
+                reached={chatLimitReached}
+              />
+            ) : null}
+            <Composer
+              placeholder={dict.chat.inputPlaceholder}
+              disabled={chatLimitReached}
+            />
           </div>
         </div>
       </div>
@@ -225,7 +248,7 @@ export const Thread: FC<ThreadProps> = ({ locale }) => {
   );
 };
 
-const ThreadWelcome: FC<ThreadProps> = ({ locale }) => {
+const ThreadWelcome: FC<Pick<ThreadProps, "locale">> = ({ locale }) => {
   const dict = getDictionary(locale);
   const isEmpty = useAuiState((s) => s.thread.isEmpty);
   const composerText = useAuiState((s) => s.composer.text);
@@ -317,7 +340,39 @@ const UserMessage: FC = () => {
   );
 };
 
-const Composer: FC<{ placeholder: string }> = ({ placeholder }) => {
+const ChatLimitNotice: FC<{ limit: number; remaining: number; reached: boolean }> = ({
+  limit,
+  remaining,
+  reached,
+}) => {
+  return (
+    <div className="mb-2 rounded-2xl border border-amber-300/70 bg-amber-50 px-4 py-3 text-sm text-amber-950 shadow-[0_16px_45px_-36px_rgba(120,53,15,0.7)] dark:border-amber-300/25 dark:bg-amber-300/10 dark:text-amber-100">
+      <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+        <div className="min-w-0">
+          <p className="font-semibold">
+            {reached
+              ? `Freeプランのチャット上限 ${limit} 回に達したよ。`
+              : `Freeプランの残りチャット: ${remaining} / ${limit}`}
+          </p>
+          <p className="mt-1 text-xs leading-5 text-amber-900/80 dark:text-amber-100/75">
+            {reached
+              ? "続けるにはShiftPilotAI Proへのアップグレードが必要だよ。"
+              : "上限に達すると、この画面からProへの案内が出るよ。"}
+          </p>
+        </div>
+        <Link
+          href="/settings"
+          className="inline-flex min-h-10 shrink-0 items-center justify-center gap-2 rounded-xl bg-stone-950 px-4 text-sm font-medium text-white transition hover:bg-stone-800 focus:outline-none focus:ring-2 focus:ring-stone-900/20 dark:bg-white dark:text-stone-950 dark:hover:bg-stone-200"
+        >
+          <CreditCardIcon className="size-4" />
+          Proを見る
+        </Link>
+      </div>
+    </div>
+  );
+};
+
+const Composer: FC<{ placeholder: string; disabled: boolean }> = ({ placeholder, disabled }) => {
   const isRunning = useAuiState((s) => s.thread.isRunning);
   const latestAssistantMessageKey = useAuiState((s) => {
     for (let index = s.thread.messages.length - 1; index >= 0; index -= 1) {
@@ -380,6 +435,7 @@ const Composer: FC<{ placeholder: string }> = ({ placeholder }) => {
           <select
             id="prompt-template-select"
             value={selectedTemplateId}
+            disabled={disabled}
             onChange={(event) => {
               setSelectedTemplateId(event.target.value as PromptTemplateId);
               setShowTemplatePreview(true);
@@ -403,6 +459,7 @@ const Composer: FC<{ placeholder: string }> = ({ placeholder }) => {
           <button
             type="button"
             onClick={handleInsertTemplate}
+            disabled={disabled}
             className="inline-flex min-h-10 items-center justify-center gap-2 rounded-xl border border-stone-900/10 bg-stone-50 px-4 text-sm font-medium text-stone-800 transition hover:bg-stone-100 focus:outline-none focus:ring-2 focus:ring-stone-900/15 dark:border-white/10 dark:bg-white/6 dark:text-stone-200 dark:hover:bg-white/10"
             aria-describedby={
               showTemplatePreview ? "prompt-template-preview" : undefined
@@ -425,6 +482,7 @@ const Composer: FC<{ placeholder: string }> = ({ placeholder }) => {
         <div className="mt-2 flex items-end gap-2">
           <ComposerPrimitive.AddAttachment
             multiple
+            disabled={disabled}
             className="inline-flex size-10 shrink-0 items-center justify-center rounded-full text-stone-500 transition hover:bg-stone-100 dark:text-stone-400 dark:hover:bg-white/10 sm:size-11"
           >
             <PlusIcon className="size-5" />
@@ -433,6 +491,7 @@ const Composer: FC<{ placeholder: string }> = ({ placeholder }) => {
           <ComposerPrimitive.Input
             ref={inputRef}
             placeholder={placeholder}
+            disabled={disabled}
             className="min-h-11 w-full resize-none bg-transparent px-2 py-2 text-sm outline-none placeholder:text-stone-400"
             rows={1}
             aria-label="メッセージ"
@@ -443,7 +502,10 @@ const Composer: FC<{ placeholder: string }> = ({ placeholder }) => {
               <SquareIcon className="size-4 fill-current" />
             </ComposerPrimitive.Cancel>
           ) : (
-            <ComposerPrimitive.Send className="inline-flex size-10 shrink-0 items-center justify-center rounded-full bg-stone-900 text-white transition hover:bg-stone-700 sm:size-11">
+            <ComposerPrimitive.Send
+              disabled={disabled}
+              className="inline-flex size-10 shrink-0 items-center justify-center rounded-full bg-stone-900 text-white transition hover:bg-stone-700 disabled:cursor-not-allowed disabled:opacity-40 sm:size-11"
+            >
               <ArrowUpIcon className="size-4" />
             </ComposerPrimitive.Send>
           )}
