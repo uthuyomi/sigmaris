@@ -24,6 +24,7 @@ export function BillingPanel({ initialBilling }: BillingPanelProps) {
   const [error, setError] = useState<string | null>(null);
   const [isPending, startTransition] = useTransition();
   const isPro = billing.plan === "pro";
+  const price = PRO_MONTHLY_PRICE_JPY.toLocaleString("ja-JP");
 
   const runBillingAction = (endpoint: string) => {
     setError(null);
@@ -47,7 +48,7 @@ export function BillingPanel({ initialBilling }: BillingPanelProps) {
             ShiftPilotAI Pro
           </h2>
           <p className="mt-2 max-w-md text-sm leading-7 text-stone-600 dark:text-stone-400">
-            Google Calendar sync, schedule imports, travel planning, and departure notifications.
+            チャット継続、Google Calendar同期、移動予定、出発前通知までまとめて使えます。
           </p>
         </div>
 
@@ -58,14 +59,14 @@ export function BillingPanel({ initialBilling }: BillingPanelProps) {
 
       <div className="mt-4 rounded-xl border border-stone-900/10 bg-white px-4 py-3 dark:border-white/10 dark:bg-white/6">
         <p className="text-sm font-semibold text-stone-900 dark:text-stone-50">
-          {isPro ? "Active subscription" : `¥${PRO_MONTHLY_PRICE_JPY.toLocaleString("ja-JP")} / month`}
+          {isPro ? "Proプランを利用中です" : `Proプランは月額${price}円です`}
         </p>
         <p className="mt-1 text-xs leading-6 text-stone-500 dark:text-stone-400">
           {isPro
             ? billing.cancelAtPeriodEnd
-              ? "Your plan stays active until the current period ends."
-              : "Your Pro features are enabled."
-            : "Upgrade when you want the connected calendar and mobility automation features."}
+              ? "現在の契約期間が終わるまではPro機能を使えます。"
+              : "Pro機能が有効になっています。"
+            : "無料枠を超えても、そのまま予定管理と移動サポートを続けられます。"}
         </p>
       </div>
 
@@ -76,7 +77,7 @@ export function BillingPanel({ initialBilling }: BillingPanelProps) {
         className="mt-4 inline-flex min-h-10 items-center gap-2 rounded-full bg-stone-900 px-4 text-sm font-semibold text-stone-50 transition hover:bg-stone-800 disabled:opacity-60 dark:bg-white dark:text-stone-950 dark:hover:bg-stone-200"
       >
         <ExternalLinkIcon className="size-4" />
-        {isPending ? "Opening..." : isPro ? "Manage billing" : "Upgrade to Pro"}
+        {isPending ? "開いています..." : isPro ? "支払いを管理" : "Proプランを見る"}
       </button>
 
       {error ? <p className="mt-3 text-sm leading-6 text-red-600">{error}</p> : null}

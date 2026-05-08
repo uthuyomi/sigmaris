@@ -3,17 +3,19 @@
 import { readBackendAuthHeaders } from "@/lib/backend/auth";
 import { isProBillingStatus, readBillingStatus } from "@/lib/billing";
 import { readChatUsageStatus, type ChatUsageStatus } from "@/lib/chat-usage";
+import { PRO_MONTHLY_PRICE_JPY } from "@/lib/stripe";
 import { createClient } from "@/lib/supabase/server";
 
 const createUpgradeStream = (usage: ChatUsageStatus) => {
   const encoder = new TextEncoder();
   const messageId = crypto.randomUUID();
   const textPartId = crypto.randomUUID();
+  const price = PRO_MONTHLY_PRICE_JPY.toLocaleString("ja-JP");
   const message = [
-    `Freeプランのチャット上限 ${usage.limit} 回に達したよ。`,
+    `無料チャット上限 ${usage.limit} 回に達しました。`,
     "",
-    "このまま続けるには Settings から ShiftPilotAI Pro にアップグレードしてね。",
-    "Proにすると、チャット継続、Google Calendar同期、移動予定、出発前通知、Sheets/画像取り込みが使えるようになるよ。",
+    `このまま続ける場合は、ShiftPilotAI Proが月額${price}円です。`,
+    "Settings の Proプランから手続きできます。",
   ].join("\n");
   const events = [
     { type: "start", messageId },

@@ -26,6 +26,7 @@ import {
 import Link from "next/link";
 import { type FC, useCallback, useEffect, useRef, useState } from "react";
 import type { ChatUsageStatus } from "@/lib/chat-usage";
+import { PRO_MONTHLY_PRICE_JPY } from "@/lib/stripe";
 
 type ThreadProps = {
   locale: AppLocale;
@@ -345,27 +346,32 @@ const ChatLimitNotice: FC<{ limit: number; remaining: number; reached: boolean }
   remaining,
   reached,
 }) => {
+  const price = PRO_MONTHLY_PRICE_JPY.toLocaleString("ja-JP");
+
   return (
-    <div className="mb-2 rounded-2xl border border-amber-300/70 bg-amber-50 px-4 py-3 text-sm text-amber-950 shadow-[0_16px_45px_-36px_rgba(120,53,15,0.7)] dark:border-amber-300/25 dark:bg-amber-300/10 dark:text-amber-100">
+    <div className="mb-3 rounded-2xl border border-amber-400/80 bg-amber-50 px-4 py-3 text-sm text-amber-950 shadow-[0_22px_60px_-34px_rgba(120,53,15,0.9)] ring-1 ring-amber-200/80 dark:border-amber-300/35 dark:bg-amber-300/12 dark:text-amber-50 dark:ring-amber-300/15">
       <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
         <div className="min-w-0">
-          <p className="font-semibold">
+          <div className="mb-1 inline-flex rounded-full bg-amber-200/80 px-2.5 py-1 text-[11px] font-bold uppercase tracking-wide text-amber-950 dark:bg-amber-200/20 dark:text-amber-100">
+            Free limit
+          </div>
+          <p className="text-base font-semibold leading-6">
             {reached
-              ? `Freeプランのチャット上限 ${limit} 回に達したよ。`
-              : `Freeプランの残りチャット: ${remaining} / ${limit}`}
+              ? `無料チャット上限 ${limit} 回に達しました。`
+              : `無料チャットは残り ${remaining} / ${limit} 回です。`}
           </p>
-          <p className="mt-1 text-xs leading-5 text-amber-900/80 dark:text-amber-100/75">
+          <p className="mt-1 text-xs leading-5 text-amber-900/85 dark:text-amber-100/80">
             {reached
-              ? "続けるにはShiftPilotAI Proへのアップグレードが必要だよ。"
-              : "上限に達すると、この画面からProへの案内が出るよ。"}
+              ? `このまま続ける場合は、ShiftPilotAI Proが月額${price}円です。`
+              : `上限後も使う場合は、Proプランが月額${price}円です。`}
           </p>
         </div>
         <Link
           href="/settings"
-          className="inline-flex min-h-10 shrink-0 items-center justify-center gap-2 rounded-xl bg-stone-950 px-4 text-sm font-medium text-white transition hover:bg-stone-800 focus:outline-none focus:ring-2 focus:ring-stone-900/20 dark:bg-white dark:text-stone-950 dark:hover:bg-stone-200"
+          className="inline-flex min-h-11 shrink-0 items-center justify-center gap-2 rounded-xl bg-stone-950 px-5 text-sm font-semibold text-white shadow-[0_16px_35px_-24px_rgba(0,0,0,0.9)] transition hover:bg-stone-800 focus:outline-none focus:ring-2 focus:ring-stone-900/20 dark:bg-white dark:text-stone-950 dark:hover:bg-stone-200"
         >
           <CreditCardIcon className="size-4" />
-          Proを見る
+          Proプランを見る
         </Link>
       </div>
     </div>
