@@ -212,8 +212,8 @@ def build_specialized_router_instruction(
         ],
         "calendar_write": [
             "This request is primarily about writing or replacing calendar events.",
-            "Use create_google_calendar_events when the user wants Google Calendar or normal synced calendar registration; it also mirrors created events into the app calendar database.",
-            "Use create_app_events when the user explicitly wants app-calendar-only registration.",
+            "For ordinary phrases like 'add to calendar', 'register in calendar', or 'save this schedule', use create_google_calendar_events so the event is saved to both Google Calendar and the app calendar database.",
+            "Use create_app_events with skipGoogleSync=true only when the user explicitly says app-calendar-only, local-only, or not to write to Google Calendar.",
             "Confirm destructive actions before deletion or replacement.",
         ],
         "sync_control": [
@@ -241,8 +241,8 @@ def tool_names_for_intent(intent: ChatIntent) -> list[str]:
     if intent == "schedule_import":
         return [
             "read_google_sheet",
-            "create_app_events",
             "create_google_calendar_events",
+            "create_app_events",
             "search_app_events",
             "read_home_context",
         ]
@@ -252,8 +252,8 @@ def tool_names_for_intent(intent: ChatIntent) -> list[str]:
             "search_app_events",
             "list_app_events",
             "list_google_calendar_events",
-            "create_app_events",
             "create_google_calendar_events",
+            "create_app_events",
             "delete_google_calendar_events",
             "delete_google_calendar_events_in_range",
             "read_google_sheet",

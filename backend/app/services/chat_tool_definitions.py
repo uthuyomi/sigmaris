@@ -53,7 +53,7 @@ FUNCTION_TOOLS: list[dict[str, Any]] = [
     {
         "type": "function",
         "name": "create_app_events",
-        "description": "Create events directly in the app calendar database after confirmation, without writing to Google Calendar.",
+        "description": "Create events in the app calendar database after confirmation. By default, also sync them to Google Calendar when Google authorization is available; set skipGoogleSync only when the user explicitly requests app-calendar-only storage.",
         "parameters": {
             "type": "object",
             "properties": {
@@ -76,6 +76,7 @@ FUNCTION_TOOLS: list[dict[str, Any]] = [
                         "additionalProperties": False,
                     },
                 },
+                "skipGoogleSync": {"type": "boolean"},
             },
             "required": ["events"],
             "additionalProperties": False,
@@ -184,7 +185,7 @@ FUNCTION_TOOLS: list[dict[str, Any]] = [
     {
         "type": "function",
         "name": "save_travel_plan_for_event",
-        "description": "Save a selected route into the app schedule as a travel block, and optionally sync it to Google Calendar after confirmation. If plan is omitted, recalculate the route from the event start time and the user's arrival lead setting. If the event location is ambiguous, pass destinationAddress.",
+        "description": "Save a selected route into the app schedule as a travel block, and by default sync it to Google Calendar after confirmation when Google authorization is available. If plan is omitted, recalculate the route from the event start time and the user's arrival lead setting. If the event location is ambiguous, pass destinationAddress.",
         "parameters": {
             "type": "object",
             "properties": {

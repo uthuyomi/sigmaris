@@ -4,7 +4,6 @@ import { useRouter } from "next/navigation";
 import { useEffect, useRef } from "react";
 import { createClient } from "@/lib/supabase/client";
 
-const GOOGLE_SYNC_INITIAL_DELAY_MS = 45_000;
 const GOOGLE_SYNC_INTERVAL_MS = 5 * 60_000;
 
 type CalendarLiveSyncProps = {
@@ -60,7 +59,12 @@ export function CalendarLiveSync({ userId, syncEnabled }: CalendarLiveSyncProps)
         });
         if (active && response.ok) {
           router.refresh();
+        } else if (!response.ok) {
+          const payload = await response.json().catch(() => null);
+          console.warn("[calendar-live-sync] Google Calendar sync failed", payload);
         }
+      } catch (error) {
+        console.warn("[calendar-live-sync] Google Calendar sync request failed", error);
       } finally {
         syncInFlightRef.current = false;
       }
@@ -75,14 +79,13 @@ export function CalendarLiveSync({ userId, syncEnabled }: CalendarLiveSyncProps)
       }
     };
 
-    const initialDelay = window.setTimeout(syncGoogleCalendar, GOOGLE_SYNC_INITIAL_DELAY_MS);
+    void syncGoogleCalendar();
     const interval = window.setInterval(syncGoogleCalendar, GOOGLE_SYNC_INTERVAL_MS);
     document.addEventListener("visibilitychange", handleVisibilityChange);
     window.addEventListener("focus", handleVisibilityChange);
 
     return () => {
       active = false;
-      window.clearTimeout(initialDelay);
       window.clearInterval(interval);
       document.removeEventListener("visibilitychange", handleVisibilityChange);
       window.removeEventListener("focus", handleVisibilityChange);

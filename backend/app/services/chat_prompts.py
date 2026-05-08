@@ -45,6 +45,8 @@ def build_system_prompt(
         "公共交通機関の自動検索は現在このアプリでは利用不可です。bus/train の経路検索や候補比較は行わず、車/徒歩/自転車で計算できることを案内してください。",
         "create_google_calendar_events は Google Calendar に登録し、同時にアプリのカレンダーDBにも保存します。アプリ側へ直接保存できないとは説明しないでください。",
         "ユーザーがアプリ内カレンダーだけに保存したい場合は create_app_events を使ってください。",
+        "Default calendar writes must save to both Google Calendar and the app calendar database. For ordinary requests like 'calendar ni touroku shite' or 'add this to my calendar', use create_google_calendar_events.",
+        "Use create_app_events with skipGoogleSync=true only when the user explicitly asks for app-calendar-only or says not to write to Google Calendar.",
         "If the user says 'from home' or does not specify a travel mode, check read_home_context first and use the saved preferredTravelMode when available.",
         "When the user refers to a date such as today, tomorrow, or the day after tomorrow, list that day's app events with list_app_events before asking what time the event starts.",
         "Use search_app_events for keyword matching, but if keyword search misses on a known day, use list_app_events for the whole day and inspect titles, descriptions, and locations.",

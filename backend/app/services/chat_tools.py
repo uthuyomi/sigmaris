@@ -152,10 +152,47 @@ async def execute_tool(
                 for event in arguments.get("events", [])
             ],
         )
+        should_sync_to_google = not arguments.get("skipGoogleSync") and _has_google_tokens(google_tokens)
+        google_create_targets = [
+            app_event
+            for app_event in created_app_events
+            if not app_event.get("external_event_id")
+        ]
+        created_google_events: list[dict[str, Any]] = []
+        if should_sync_to_google and google_create_targets:
+            created_google_events = create_google_calendar_events(
+                tokens=google_tokens,
+                events=[
+                    GoogleCalendarCreateEvent(
+                        title=event["title"],
+                        start=event["starts_at"],
+                        end=event["ends_at"],
+                        description=event.get("description"),
+                        location=event.get("location_text"),
+                    )
+                    for event in google_create_targets
+                ],
+            )
+            for index, app_event in enumerate(google_create_targets):
+                google_event = created_google_events[index] if index < len(created_google_events) else {}
+                await update_event_external_link(
+                    jwt,
+                    event_id=app_event["id"],
+                    external_event_id=google_event.get("id"),
+                    metadata={
+                        **(app_event.get("metadata") or {}),
+                        "provider": "google",
+                        "htmlLink": google_event.get("htmlLink"),
+                        "syncStatus": "synced" if google_event.get("id") else "pending",
+                    },
+                )
         return {
             "ok": True,
             "createdCount": len(created_app_events),
             "createdAppEvents": created_app_events,
+            "googleCreatedCount": len(created_google_events),
+            "createdGoogleEvents": created_google_events,
+            "googleSyncSkipped": bool(arguments.get("skipGoogleSync")) or not _has_google_tokens(google_tokens),
         }
 
     if name == "delete_google_calendar_events":
@@ -301,7 +338,8 @@ async def execute_tool(
             }
 
         external_event_id = None
-        if arguments.get("syncToGoogle") and _has_google_tokens(google_tokens):
+        should_sync_to_google = arguments.get("syncToGoogle") is not False and _has_google_tokens(google_tokens)
+        if should_sync_to_google:
             created = create_google_calendar_events(
                 tokens=google_tokens,
                 calendar_id=arguments.get("calendarId"),
