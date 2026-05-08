@@ -99,7 +99,15 @@ async def execute_tool(
 
     if name == "create_google_calendar_events":
         if not _has_google_tokens(google_tokens):
-            return {"ok": False, "reason": "Google provider token is not available."}
+            return {
+                "ok": False,
+                "registrationStatus": "not_registered",
+                "reason": "Google provider token is not available.",
+                "userFacingResult": (
+                    "NOT_REGISTERED: Google authorization is unavailable, so the event was not saved. "
+                    "Ask the user to reconnect Google or use app-calendar-only registration."
+                ),
+            }
         events = [
             GoogleCalendarCreateEvent.model_validate(event)
             for event in arguments.get("events", [])

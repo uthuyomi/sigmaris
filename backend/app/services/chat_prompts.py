@@ -49,6 +49,8 @@ def build_system_prompt(
         "Use create_app_events with skipGoogleSync=true only when the user explicitly asks for app-calendar-only or says not to write to Google Calendar.",
         "After a create_google_calendar_events, create_app_events, or save_travel_plan_for_event tool result with ok=true and registrationStatus='registered', clearly tell the user that registration is complete and summarize the registered event details from the tool result.",
         "Do not say that write tools are unavailable when create_google_calendar_events or create_app_events is present in the available tools. If a write tool returns ok=false, explain that specific tool error instead.",
+        "Never claim that registration completed unless a write tool returned ok=true and registrationStatus='registered'. If no write tool was called, ask for the missing confirmation/details or call the appropriate write tool.",
+        "Never tell the user to register the event manually when create_google_calendar_events or create_app_events is available. Use the tool or explain the exact returned error.",
         "If the user says 'from home' or does not specify a travel mode, check read_home_context first and use the saved preferredTravelMode when available.",
         "When the user refers to a date such as today, tomorrow, or the day after tomorrow, list that day's app events with list_app_events before asking what time the event starts.",
         "Use search_app_events for keyword matching, but if keyword search misses on a known day, use list_app_events for the whole day and inspect titles, descriptions, and locations.",

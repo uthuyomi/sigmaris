@@ -49,6 +49,40 @@ CALENDAR_WRITE_KEYWORDS = (
     "書き直",
 )
 
+CALENDAR_WRITE_CONFIRMATION_KEYWORDS = (
+    "お願い",
+    "おねがい",
+    "頼む",
+    "たのむ",
+    "よろしく",
+    "ok",
+    "okay",
+    "yes",
+    "はい",
+    "うん",
+    "それで",
+    "その内容",
+    "それ",
+    "1で",
+    "１で",
+    "確定",
+)
+
+PENDING_CALENDAR_WRITE_CONTEXT_KEYWORDS = (
+    "カレンダーに入れていい",
+    "入れていい",
+    "登録していい",
+    "追加していい",
+    "確定でいい",
+    "予定",
+    "タイトル",
+    "日時",
+    "場所",
+    "calendar",
+    "register",
+    "add",
+)
+
 
 def latest_user_text(messages: list[dict[str, Any]]) -> str:
     for message in reversed(messages):
@@ -74,10 +108,12 @@ def has_attachment(messages: list[dict[str, Any]]) -> bool:
 def heuristic_intent(
     *,
     latest_text: str,
+    context_text: str = "",
     has_file_attachment: bool,
     has_image_context: bool,
 ) -> tuple[ChatIntent | None, str | None]:
     lowered = latest_text.lower()
+    lowered_context = context_text.lower()
 
     if has_file_attachment or has_image_context:
         return "schedule_import", "attachment-present"
@@ -87,6 +123,15 @@ def heuristic_intent(
 
     if any(keyword in lowered or keyword in latest_text for keyword in CALENDAR_WRITE_KEYWORDS):
         return "calendar_write", "calendar-write-keyword"
+
+    if (
+        any(keyword in lowered or keyword in latest_text for keyword in CALENDAR_WRITE_CONFIRMATION_KEYWORDS)
+        and any(
+            keyword in lowered_context or keyword in context_text
+            for keyword in PENDING_CALENDAR_WRITE_CONTEXT_KEYWORDS
+        )
+    ):
+        return "calendar_write", "calendar-write-confirmation-context"
 
     if (
         "バス" in latest_text
@@ -130,9 +175,18 @@ async def classify_chat_intent(
     latest_text = latest_user_text(messages)
     has_file_attachment = has_attachment(messages)
     has_image_context = bool(attachment_facts)
+    context_text = "\n".join(
+        " ".join(
+            str(part.get("text", "")).strip()
+            for part in message.get("parts", [])
+            if part.get("type") == "text" and str(part.get("text", "")).strip()
+        )
+        for message in messages[-8:]
+    )
 
     guessed_intent, guessed_reason = heuristic_intent(
         latest_text=latest_text,
+        context_text=context_text,
         has_file_attachment=has_file_attachment,
         has_image_context=has_image_context,
     )
@@ -164,6 +218,7 @@ async def classify_chat_intent(
             "Use schedule_import for images, spreadsheets, work schedules, shift tables, or extracting events from files.",
             "Use calendar_write for adding, deleting, replacing, writing, or syncing calendar events.",
             "Use calendar_write for Japanese phrases such as 入れて, 入れておいて, 予定入れて, 登録して, 追加して, 確定で, or 作って when they refer to a schedule/event.",
+            "Use calendar_write when the latest user message is a short confirmation such as お願い, OK, はい, それで, 1でお願い, or 確定 and the recent conversation proposed adding/registering an event.",
             "Use event_lookup for identifying which app event/day the user refers to.",
             "Use sync_control for integration or sync mode settings.",
             "Use general_chat only if no specialized intent is dominant.",
@@ -210,6 +265,7 @@ def build_specialized_router_instruction(
         "general_chat": [
             "Handle this as general planning chat.",
             "Use tools only when they materially improve the answer.",
+            "If the user asks to add, register, confirm, save, or put an event into the calendar, use the available calendar write tools instead of saying write tools are unavailable.",
         ],
         "event_lookup": [
             "This request likely refers to an existing event.",
@@ -254,7 +310,13 @@ def build_specialized_router_instruction(
 
 def tool_names_for_intent(intent: ChatIntent) -> list[str]:
     if intent == "general_chat":
-        return ["read_home_context", "search_app_events", "list_app_events"]
+        return [
+            "read_home_context",
+            "search_app_events",
+            "list_app_events",
+            "create_google_calendar_events",
+            "create_app_events",
+        ]
     if intent == "event_lookup":
         return [
             "search_app_events",
