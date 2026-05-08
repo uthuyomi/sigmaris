@@ -26,6 +26,29 @@ VALID_INTENTS: set[str] = {
     "sync_control",
 }
 
+CALENDAR_WRITE_KEYWORDS = (
+    "add to calendar",
+    "add this to my calendar",
+    "register in calendar",
+    "save this schedule",
+    "create event",
+    "予定入れて",
+    "予定を入れて",
+    "予定入れ",
+    "入れておいて",
+    "入れといて",
+    "入れて",
+    "入れたい",
+    "入れれ",
+    "登録して",
+    "追加して",
+    "作って",
+    "確定で",
+    "確定",
+    "カレンダーに",
+    "書き直",
+)
+
 
 def latest_user_text(messages: list[dict[str, Any]]) -> str:
     for message in reversed(messages):
@@ -61,6 +84,9 @@ def heuristic_intent(
 
     if "spreadsheet" in lowered or "sheet" in lowered or "スプレッドシート" in latest_text or "勤務表" in latest_text:
         return "schedule_import", "sheet-keyword"
+
+    if any(keyword in lowered or keyword in latest_text for keyword in CALENDAR_WRITE_KEYWORDS):
+        return "calendar_write", "calendar-write-keyword"
 
     if (
         "バス" in latest_text
@@ -137,6 +163,7 @@ async def classify_chat_intent(
             "Use mobility_plan for route, departure, public-transit questions, walking, driving, bicycle, or home-to-destination guidance. Public-transit auto planning is unavailable; answer with that limitation and offer car, walking, or bicycle route planning.",
             "Use schedule_import for images, spreadsheets, work schedules, shift tables, or extracting events from files.",
             "Use calendar_write for adding, deleting, replacing, writing, or syncing calendar events.",
+            "Use calendar_write for Japanese phrases such as 入れて, 入れておいて, 予定入れて, 登録して, 追加して, 確定で, or 作って when they refer to a schedule/event.",
             "Use event_lookup for identifying which app event/day the user refers to.",
             "Use sync_control for integration or sync mode settings.",
             "Use general_chat only if no specialized intent is dominant.",
@@ -187,6 +214,7 @@ def build_specialized_router_instruction(
         "event_lookup": [
             "This request likely refers to an existing event.",
             "Calendar and app-event reads are non-destructive, so perform them without asking for confirmation.",
+            "If the user asks to add, register, confirm, save, or put an event into the calendar after a lookup, use the calendar write tools instead of saying write tools are unavailable.",
             "If the user gives a relative date such as today, tomorrow, or the day after tomorrow, use list_app_events for that whole day before asking the user to restate dates or start times.",
             "Use search_app_events for keyword matching, but if search misses on a known day, inspect list_app_events results for that day.",
             "If app events return no plausible match, fall back to list_google_calendar_events before saying the event was not found.",
@@ -228,7 +256,14 @@ def tool_names_for_intent(intent: ChatIntent) -> list[str]:
     if intent == "general_chat":
         return ["read_home_context", "search_app_events", "list_app_events"]
     if intent == "event_lookup":
-        return ["search_app_events", "list_app_events", "list_google_calendar_events", "read_home_context"]
+        return [
+            "search_app_events",
+            "list_app_events",
+            "list_google_calendar_events",
+            "create_google_calendar_events",
+            "create_app_events",
+            "read_home_context",
+        ]
     if intent == "mobility_plan":
         return [
             "read_home_context",

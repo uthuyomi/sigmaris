@@ -25,6 +25,7 @@ from app.services.google_calendar import (
     list_google_calendar_events,
 )
 from app.services.google_maps import RouteLookupError, get_simple_route_plan
+from app.services.google_maps_url import build_google_maps_directions_url
 from app.services.google_sheets import read_google_sheet_preview
 
 
@@ -61,6 +62,19 @@ def google_auth_error_result(error: BaseException) -> dict[str, Any]:
         "status": "GOOGLE_AUTH_ERROR",
         "reason": f"Google authorization failed: {error}",
     }
+
+
+def _registration_success_message(
+    *,
+    app_count: int,
+    google_count: int,
+    google_skipped: bool = False,
+) -> str:
+    if google_count:
+        return f"REGISTERED: saved {app_count} event(s) to the app calendar and {google_count} event(s) to Google Calendar."
+    if google_skipped:
+        return f"REGISTERED: saved {app_count} event(s) to the app calendar. Google Calendar sync was skipped."
+    return f"REGISTERED: saved {app_count} event(s) to the app calendar."
 
 
 async def execute_tool(
@@ -129,6 +143,11 @@ async def execute_tool(
             )
         return {
             "ok": True,
+            "registrationStatus": "registered",
+            "userFacingResult": _registration_success_message(
+                app_count=len(created_app_events),
+                google_count=len(created),
+            ),
             "createdCount": len(created),
             "created": created,
             "appCreatedCount": len(created_app_events),
@@ -188,6 +207,12 @@ async def execute_tool(
                 )
         return {
             "ok": True,
+            "registrationStatus": "registered",
+            "userFacingResult": _registration_success_message(
+                app_count=len(created_app_events),
+                google_count=len(created_google_events),
+                google_skipped=bool(arguments.get("skipGoogleSync")) or not _has_google_tokens(google_tokens),
+            ),
             "createdCount": len(created_app_events),
             "createdAppEvents": created_app_events,
             "googleCreatedCount": len(created_google_events),
@@ -338,6 +363,19 @@ async def execute_tool(
             }
 
         external_event_id = None
+        maps_navigation_url = build_google_maps_directions_url(
+            origin=arguments["origin"],
+            destination=destination_address,
+            travel_mode=arguments["travelMode"],
+        )
+        travel_event_description = arguments.get("travelEventDescription") or "\n".join(
+            part
+            for part in [
+                str(selected_plan.get("durationText") or "").strip(),
+                f"Google Maps: {maps_navigation_url}",
+            ]
+            if part
+        )
         should_sync_to_google = arguments.get("syncToGoogle") is not False and _has_google_tokens(google_tokens)
         if should_sync_to_google:
             created = create_google_calendar_events(
@@ -348,7 +386,7 @@ async def execute_tool(
                         title=arguments.get("travelEventTitle") or f"Travel: {arguments['originLabel']} -> {event['title']}",
                         start=recommended_departure_iso,
                         end=travel_block_end_iso,
-                        description=arguments.get("travelEventDescription"),
+                        description=travel_event_description,
                         location=destination_address,
                     )
                 ],
@@ -358,7 +396,7 @@ async def execute_tool(
         created_event = await create_event(
             jwt,
             title=arguments.get("travelEventTitle") or f"Travel: {arguments['originLabel']} -> {destination_label}",
-            description=arguments.get("travelEventDescription"),
+            description=travel_event_description,
             location_text=destination_address,
             starts_at=recommended_departure_iso,
             ends_at=travel_block_end_iso,
@@ -372,6 +410,7 @@ async def execute_tool(
                 "destinationLabel": destination_label,
                 "destinationAddress": destination_address,
                 "travelMode": arguments["travelMode"],
+                "mapsNavigationUrl": maps_navigation_url,
             },
         )
 
@@ -399,8 +438,15 @@ async def execute_tool(
 
         return {
             "ok": True,
+            "registrationStatus": "registered",
+            "userFacingResult": _registration_success_message(
+                app_count=1,
+                google_count=1 if external_event_id else 0,
+                google_skipped=not should_sync_to_google,
+            ),
             "createdEvent": created_event,
             "savedToGoogle": bool(external_event_id),
+            "mapsNavigationUrl": maps_navigation_url,
             "warnings": warnings,
         }
     return {"ok": False, "reason": f"Unknown tool: {name}"}
