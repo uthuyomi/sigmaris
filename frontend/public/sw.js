@@ -38,3 +38,54 @@ self.addEventListener("fetch", (event) => {
     ),
   );
 });
+
+self.addEventListener("notificationclick", (event) => {
+  event.notification.close();
+
+  const navigationUrl = event.notification.data?.navigationUrl;
+  if (!navigationUrl) return;
+
+  event.waitUntil(
+    self.clients
+      .matchAll({ type: "window", includeUncontrolled: true })
+      .then((clientList) => {
+        for (const client of clientList) {
+          if ("focus" in client) {
+            client.focus();
+            break;
+          }
+        }
+
+        return self.clients.openWindow(navigationUrl);
+      }),
+  );
+});
+
+self.addEventListener("push", (event) => {
+  const fallbackPayload = {
+    title: "Travel reminder",
+    body: "It is almost time to leave.",
+    tag: "travel-reminder",
+    navigationUrl: "/calendar",
+  };
+  const payload = event.data ? event.data.json() : fallbackPayload;
+
+  event.waitUntil(
+    self.registration.showNotification(payload.title || fallbackPayload.title, {
+      body: payload.body || fallbackPayload.body,
+      tag: payload.tag || fallbackPayload.tag,
+      icon: "/images/icon/icon.png",
+      badge: "/images/icon/icon.png",
+      data: {
+        navigationUrl: payload.navigationUrl || fallbackPayload.navigationUrl,
+        reminderId: payload.reminderId,
+      },
+      actions: [
+        {
+          action: "navigate",
+          title: "Start navigation",
+        },
+      ],
+    }),
+  );
+});

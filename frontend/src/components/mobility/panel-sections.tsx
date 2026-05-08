@@ -10,7 +10,7 @@ import type {
   ScheduleResponse,
 } from "@/components/mobility/types";
 import type { PreferredTravelMode } from "@/lib/profile-settings";
-import { AlertTriangleIcon, CheckIcon, PlusCircleIcon } from "lucide-react";
+import { AlertTriangleIcon, CheckIcon, NavigationIcon, PlusCircleIcon } from "lucide-react";
 
 type OriginControlsProps = {
   originType: OriginType;
@@ -223,6 +223,17 @@ export function SchedulePreviewCard({
       </div>
 
       <div className="flex flex-wrap gap-2">
+        {preview.mapsNavigationUrl ? (
+          <a
+            href={preview.mapsNavigationUrl}
+            target="_blank"
+            rel="noreferrer"
+            className="inline-flex items-center gap-2 rounded-full border border-stone-900/15 bg-white px-4 py-2 text-sm font-semibold text-stone-900"
+          >
+            <NavigationIcon className="size-4" />
+            Maps
+          </a>
+        ) : null}
         <button
           type="button"
           onClick={onConfirm}

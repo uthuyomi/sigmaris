@@ -3,6 +3,7 @@
 
 
 import { AuthControls } from "@/components/auth-controls";
+import { TravelReminderScheduler } from "@/components/travel-reminder-scheduler";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui";
 import { getDictionary, type AppLocale } from "@/lib/i18n";
 import type { AppTheme } from "@/lib/profile-settings";
@@ -183,6 +184,7 @@ export function AppShell({
         fitViewport && "h-[100dvh] overflow-hidden",
       )}
     >
+      <TravelReminderScheduler />
       <div
         className={cn(
           "mx-auto flex min-h-screen w-full max-w-[min(1500px,100dvw)] flex-col overflow-x-hidden px-3 pb-4 pt-3 sm:px-4 lg:px-5",

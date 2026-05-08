@@ -46,6 +46,7 @@ export type ScheduleResponse = {
   }>;
   arrivalLeadMinutes?: number;
   desiredArrivalIso?: string;
+  mapsNavigationUrl?: string;
   willSyncToGoogle?: boolean;
   savedToGoogle?: boolean;
 };

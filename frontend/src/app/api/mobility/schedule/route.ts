@@ -4,6 +4,7 @@ import { NextResponse } from "next/server";
 import { z } from "zod";
 import { readBackendAuthHeaders } from "@/lib/backend/auth";
 import { createGoogleCalendarEvents, hasGoogleCalendarWriteConfig } from "@/lib/google/calendar";
+import { buildGoogleMapsDirectionsUrl } from "@/lib/google/maps-url";
 import { getBackendBaseUrl } from "@/lib/backend/client";
 import {
   createEventForUser,
@@ -162,9 +163,20 @@ export async function POST(request: Request) {
       location: conflict.location_text,
     }));
 
+    const mapsNavigationUrl = buildGoogleMapsDirectionsUrl({
+      origin: input.origin,
+      destination: event.location_text,
+      travelMode: input.travelMode,
+    });
+    const travelDescription = [
+      `${input.travelMode} / ${plan.durationText ?? ""}`.trim(),
+      `Google Maps: ${mapsNavigationUrl}`,
+    ]
+      .filter(Boolean)
+      .join("\n");
     const travelEventDraft = {
       title: `Travel: ${input.originLabel} -> ${event.title}`,
-      description: `${input.travelMode} / ${plan.durationText ?? ""}`.trim(),
+      description: travelDescription,
       locationText: event.location_text,
       startsAt: plan.recommendedDepartureIso,
       endsAt: travelBlockEndIso,
@@ -183,6 +195,7 @@ export async function POST(request: Request) {
         willSyncToGoogle: syncEnabled,
         arrivalLeadMinutes,
         desiredArrivalIso,
+        mapsNavigationUrl,
       });
     }
 
@@ -228,8 +241,11 @@ export async function POST(request: Request) {
         linkedEventId: event.id,
         originType: input.originType,
         originLabel: input.originLabel,
+        originAddress: input.origin,
         destinationLabel: event.title,
+        destinationAddress: event.location_text,
         travelMode: input.travelMode,
+        mapsNavigationUrl,
       },
     });
 
@@ -266,6 +282,7 @@ export async function POST(request: Request) {
       savedToGoogle: Boolean(externalEventId),
       arrivalLeadMinutes,
       desiredArrivalIso,
+      mapsNavigationUrl,
     });
   } catch (error) {
     const message = error instanceof Error ? error.message : "Mobility scheduling failed.";
