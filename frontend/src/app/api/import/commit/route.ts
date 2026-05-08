@@ -1,6 +1,7 @@
 // 役割: プレビュー済み予定候補をアプリDBと外部カレンダーへ保存するNext.js API Route。
 import { NextResponse } from "next/server";
 import { z } from "zod";
+import { requireProPlan } from "@/lib/billing-gate";
 import { createEventsForUser, updateEventExternalLinkForUser } from "@/lib/event-data/writes";
 import { createGoogleCalendarEvents } from "@/lib/google/calendar";
 import { importCandidateSchema } from "@/lib/import/schema";
@@ -95,6 +96,9 @@ export async function POST(req: Request) {
   if (!user) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
+
+  const proRequired = await requireProPlan(user.id);
+  if (proRequired) return proRequired;
 
   const parsed = requestSchema.parse(await req.json());
 

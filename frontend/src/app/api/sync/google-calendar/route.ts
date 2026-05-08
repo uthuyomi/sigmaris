@@ -2,6 +2,7 @@
 
 import { NextResponse } from "next/server";
 import { createGoogleCalendarEvents, listGoogleCalendarEvents } from "@/lib/google/calendar";
+import { requireProPlan } from "@/lib/billing-gate";
 import { isGoogleInvalidGrantError } from "@/lib/google/oauth";
 import { clearGoogleProviderCookies } from "@/lib/google/provider-tokens";
 import { createClient } from "@/lib/supabase/server";
@@ -35,6 +36,9 @@ export async function POST() {
   if (!user) {
     return NextResponse.json({ error: "認証が必要です。" }, { status: 401 });
   }
+
+  const proRequired = await requireProPlan(user.id);
+  if (proRequired) return proRequired;
 
   const syncEnabled = await readGoogleCalendarSyncEnabled(user.id);
   if (!syncEnabled) {
