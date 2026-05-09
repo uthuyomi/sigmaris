@@ -1,6 +1,6 @@
 import Stripe from "stripe";
 
-export const PRO_MONTHLY_PRICE_JPY = 680;
+export const PRO_MONTHLY_PRICE_JPY = 980;
 
 export const hasStripeConfig = () =>
   Boolean(process.env.STRIPE_SECRET_KEY && process.env.STRIPE_PRO_PRICE_ID);

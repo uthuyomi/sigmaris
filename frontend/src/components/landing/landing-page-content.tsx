@@ -14,6 +14,7 @@ import {
 import Link from "next/link";
 import { PwaInstallPanel } from "@/components/pwa-install-panel";
 import type { LandingCopy, LandingUseCaseIcon } from "@/i18n/landing";
+import { PRO_MONTHLY_PRICE_JPY } from "@/lib/stripe";
 
 const landingUseCaseIcons = {
   image: ImageIcon,
@@ -27,6 +28,8 @@ type LandingPageContentProps = {
 };
 
 export function LandingPageContent({ copy }: LandingPageContentProps) {
+  const proPrice = PRO_MONTHLY_PRICE_JPY.toLocaleString("ja-JP");
+
   return (
     <main className="min-h-screen bg-[#f7f2e8] text-stone-900">
       <section className="relative min-h-[86dvh] overflow-hidden border-b border-stone-900/10 bg-[#efe3cf]">
@@ -68,7 +71,7 @@ export function LandingPageContent({ copy }: LandingPageContentProps) {
         </div>
 
         <div className="relative z-10 mx-auto flex min-h-[86dvh] max-w-6xl flex-col px-4 py-5 sm:px-6 lg:px-8">
-          <header className="flex items-center justify-between">
+          <header className="flex items-center justify-between gap-4">
             <Link href="/" className="inline-flex items-center gap-3">
               <span className="inline-flex size-10 items-center justify-center rounded-2xl bg-stone-900 text-stone-50">
                 <SparklesIcon className="size-5" />
@@ -83,13 +86,26 @@ export function LandingPageContent({ copy }: LandingPageContentProps) {
               </span>
             </Link>
 
-            <Link
-              href="/login"
-              className="inline-flex items-center gap-2 rounded-full bg-stone-900 px-4 py-2 text-sm font-semibold text-stone-50"
-            >
-              {copy.login}
-              <ArrowRightIcon className="size-4" />
-            </Link>
+            <div className="flex items-center gap-3">
+              <nav className="hidden items-center gap-5 text-sm font-semibold text-stone-700 md:flex">
+                <a href="#details" className="hover:text-stone-950">
+                  機能
+                </a>
+                <a href="#pricing" className="hover:text-stone-950">
+                  料金
+                </a>
+                <Link href="/legal" className="hover:text-stone-950">
+                  法務情報
+                </Link>
+              </nav>
+              <Link
+                href="/login"
+                className="inline-flex items-center gap-2 rounded-full bg-stone-900 px-4 py-2 text-sm font-semibold text-stone-50"
+              >
+                {copy.login}
+                <ArrowRightIcon className="size-4" />
+              </Link>
+            </div>
           </header>
 
           <div className="flex flex-1 items-center py-12">
@@ -268,6 +284,79 @@ export function LandingPageContent({ copy }: LandingPageContentProps) {
           </div>
         </div>
       </section>
+
+      <section id="pricing" className="bg-white">
+        <div className="mx-auto grid max-w-6xl gap-6 px-4 py-12 sm:px-6 lg:grid-cols-[0.9fr_1.1fr] lg:px-8">
+          <div>
+            <p className="text-xs font-medium uppercase tracking-[0.28em] text-stone-500">
+              Pricing
+            </p>
+            <h2 className="mt-3 text-3xl font-semibold tracking-tight">
+              Proプラン
+            </h2>
+            <p className="mt-3 text-sm leading-7 text-stone-600">
+              無料枠を超えても、チャットによる予定管理、Google Calendar連携、移動時間の予定作成、出発前通知を継続して利用できます。
+            </p>
+          </div>
+
+          <div className="rounded-[28px] border border-stone-900/10 bg-[#f7f2e8] p-6">
+            <div className="flex flex-wrap items-start justify-between gap-4">
+              <div>
+                <h3 className="text-xl font-semibold">ShiftPilotAI Pro</h3>
+                <p className="mt-2 text-sm leading-7 text-stone-600">
+                  月額サブスクリプション
+                </p>
+              </div>
+              <p className="text-3xl font-semibold">
+                {proPrice}円
+                <span className="ml-1 text-sm font-medium text-stone-500">/ 月</span>
+              </p>
+            </div>
+
+            <ul className="mt-5 grid gap-3 text-sm leading-7 text-stone-700">
+              {[
+                "チャット上限解除",
+                "Google Calendar同期",
+                "勤務表・画像・スプレッドシートからの予定抽出",
+                "移動時間の予定作成と出発前通知",
+              ].map((item) => (
+                <li key={item} className="flex gap-2">
+                  <CheckCircle2Icon className="mt-1 size-4 shrink-0 text-[#2a9d8f]" />
+                  <span>{item}</span>
+                </li>
+              ))}
+            </ul>
+
+            <Link
+              href="/login"
+              className="mt-6 inline-flex items-center gap-2 rounded-full bg-stone-900 px-5 py-3 text-sm font-semibold text-stone-50"
+            >
+              Proプランを見る
+              <ArrowRightIcon className="size-4" />
+            </Link>
+          </div>
+        </div>
+      </section>
+
+      <footer className="border-t border-stone-900/10 bg-[#efe3cf]">
+        <div className="mx-auto flex max-w-6xl flex-col gap-3 px-4 py-6 text-sm text-stone-600 sm:flex-row sm:items-center sm:justify-between sm:px-6 lg:px-8">
+          <p>© ShiftPilotAI</p>
+          <nav className="flex flex-wrap gap-4">
+            <Link href="/legal" className="font-medium hover:text-stone-950">
+              法務情報
+            </Link>
+            <Link href="/legal/tokushoho" className="font-medium hover:text-stone-950">
+              特定商取引法に基づく表記
+            </Link>
+            <Link href="/legal/terms" className="font-medium hover:text-stone-950">
+              利用規約
+            </Link>
+            <Link href="/legal/privacy" className="font-medium hover:text-stone-950">
+              プライバシーポリシー
+            </Link>
+          </nav>
+        </div>
+      </footer>
     </main>
   );
 }
