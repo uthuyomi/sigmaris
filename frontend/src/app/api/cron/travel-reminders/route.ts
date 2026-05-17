@@ -91,7 +91,17 @@ export async function POST(request: Request) {
 
   const events = (eventRows ?? []) as EventRow[];
   if (!events.length) {
-    return NextResponse.json({ ok: true, sent: 0, events: 0 });
+    return NextResponse.json({
+      ok: true,
+      sent: 0,
+      events: 0,
+      dueEvents: 0,
+      subscriptions: 0,
+      usersWithoutSubscriptions: 0,
+      failedPushes: 0,
+      windowStart: now.toISOString(),
+      windowEnd: to.toISOString(),
+    });
   }
 
   const eventIds = events.map((event) => event.id);
@@ -113,7 +123,17 @@ export async function POST(request: Request) {
   );
 
   if (!dueEvents.length) {
-    return NextResponse.json({ ok: true, sent: 0, events: 0 });
+    return NextResponse.json({
+      ok: true,
+      sent: 0,
+      events: events.length,
+      dueEvents: 0,
+      subscriptions: 0,
+      usersWithoutSubscriptions: 0,
+      failedPushes: 0,
+      windowStart: now.toISOString(),
+      windowEnd: to.toISOString(),
+    });
   }
 
   const userIds = [...new Set(dueEvents.map((event) => event.user_id))];
@@ -137,6 +157,8 @@ export async function POST(request: Request) {
   let sent = 0;
   const expiredSubscriptionIds: string[] = [];
   const deliveredPayload = [];
+  const pushFailures: Array<{ eventId: string; statusCode?: number; message: string }> = [];
+  const usersWithoutSubscriptions = new Set<string>();
 
   for (const event of dueEvents) {
     const metadata = event.metadata ?? {};
@@ -146,9 +168,12 @@ export async function POST(request: Request) {
         origin: metadata.originAddress,
         destination: metadata.destinationAddress ?? event.location_text,
         travelMode: metadata.travelMode,
-      });
+    });
     const subscriptions = subscriptionsByUser.get(event.user_id) ?? [];
-    if (!subscriptions.length) continue;
+    if (!subscriptions.length) {
+      usersWithoutSubscriptions.add(event.user_id);
+      continue;
+    }
 
     const payload = JSON.stringify({
       title: `Leave in ${REMINDER_LEAD_MINUTES} min: ${metadata.destinationLabel ?? event.title}`,
@@ -168,6 +193,12 @@ export async function POST(request: Request) {
         if (isExpiredSubscriptionError(error)) {
           expiredSubscriptionIds.push(subscription.id);
         }
+        const candidate = error as { statusCode?: number; body?: string; message?: string };
+        pushFailures.push({
+          eventId: event.id,
+          statusCode: candidate.statusCode,
+          message: candidate.body ?? candidate.message ?? "Web Push send failed.",
+        });
       }
     }
 
@@ -193,9 +224,16 @@ export async function POST(request: Request) {
 
   return NextResponse.json({
     ok: true,
-    events: dueEvents.length,
+    events: events.length,
+    dueEvents: dueEvents.length,
     sent,
+    subscriptions: (subscriptionRows ?? []).length,
+    usersWithoutSubscriptions: usersWithoutSubscriptions.size,
+    failedPushes: pushFailures.length,
     expiredSubscriptions: expiredSubscriptionIds.length,
+    pushFailures: pushFailures.slice(0, 5),
+    windowStart: now.toISOString(),
+    windowEnd: to.toISOString(),
   });
 }
 
