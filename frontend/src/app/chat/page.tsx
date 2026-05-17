@@ -30,7 +30,7 @@ export default async function ChatPage({ searchParams }: ChatPageProps) {
   const [settings, threads, billing, chatUsage] = await Promise.all([
     readShellSettings(user.id),
     listChatThreads(user.id),
-    readBillingStatus(user.id),
+    readBillingStatus(user.id, user.email),
     readChatUsageStatus(user.id),
   ]);
   const { locale, theme } = settings;

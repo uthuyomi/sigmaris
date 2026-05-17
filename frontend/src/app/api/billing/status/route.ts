@@ -12,5 +12,5 @@ export async function GET() {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
 
-  return NextResponse.json({ ok: true, billing: await readBillingStatus(user.id) });
+  return NextResponse.json({ ok: true, billing: await readBillingStatus(user.id, user.email) });
 }

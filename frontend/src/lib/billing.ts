@@ -14,8 +14,42 @@ const activeSubscriptionStatuses = new Set(["active", "trialing"]);
 
 export const isProBillingStatus = (status: BillingStatus) => status.plan === "pro";
 
-export const readBillingStatus = async (userId: string): Promise<BillingStatus> => {
+const proOverrideStatus = (): BillingStatus => ({
+  plan: "pro",
+  subscriptionStatus: "manual_override",
+  currentPeriodEnd: null,
+  cancelAtPeriodEnd: false,
+});
+
+const parseProOverrideEmails = () =>
+  (process.env.PRO_PLAN_OVERRIDE_EMAILS ?? "")
+    .split(",")
+    .map((email) => email.trim().toLowerCase())
+    .filter(Boolean);
+
+const hasProOverrideEmail = (email?: string | null) => {
+  if (!email) return false;
+  return parseProOverrideEmails().includes(email.trim().toLowerCase());
+};
+
+export const readBillingStatus = async (
+  userId: string,
+  email?: string | null,
+): Promise<BillingStatus> => {
+  if (hasProOverrideEmail(email)) {
+    return proOverrideStatus();
+  }
+
   const supabase = await createClient();
+  if (email === undefined) {
+    const {
+      data: { user },
+    } = await supabase.auth.getUser();
+    if (user?.id === userId && hasProOverrideEmail(user.email)) {
+      return proOverrideStatus();
+    }
+  }
+
   const { data, error } = await supabase
     .from("subscriptions")
     .select("status,current_period_end,cancel_at_period_end")

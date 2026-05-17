@@ -32,7 +32,7 @@ export default async function SettingsPage({ searchParams }: SettingsPageProps) 
   const [resolved, settings, billing] = await Promise.all([
     searchParams ? searchParams : Promise.resolve(undefined),
     readSettingsPageSettings(user.id),
-    readBillingStatus(user.id),
+    readBillingStatus(user.id, user.email),
   ]);
   const {
     locale,

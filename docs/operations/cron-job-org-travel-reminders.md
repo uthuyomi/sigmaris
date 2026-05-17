@@ -30,3 +30,15 @@ Authorization: Bearer <CRON_SECRET>
 - `GET` also works because the route aliases `GET` to `POST`, but `POST` is the
   preferred method for the external scheduler.
 - Running every minute matches the current reminder lookup window.
+
+## Pro plan override
+
+For internal operators or testers, set this production environment variable to
+treat specific login emails as Pro users without a Stripe subscription:
+
+```text
+PRO_PLAN_OVERRIDE_EMAILS=first@example.com,second@example.com
+```
+
+Email matching is case-insensitive. Do not expose this as a `NEXT_PUBLIC_`
+variable.

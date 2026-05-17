@@ -40,6 +40,7 @@ export async function POST(req: Request) {
 
   let authHeaders: Record<string, string>;
   let userId: string;
+  let userEmail: string | null | undefined;
   try {
     const supabase = await createClient();
     const {
@@ -50,6 +51,7 @@ export async function POST(req: Request) {
     }
 
     userId = user.id;
+    userEmail = user.email;
     authHeaders = await readBackendAuthHeaders();
   } catch (error) {
     return new Response(
@@ -64,7 +66,7 @@ export async function POST(req: Request) {
   }
 
   const [billing, usage] = await Promise.all([
-    readBillingStatus(userId),
+    readBillingStatus(userId, userEmail),
     readChatUsageStatus(userId),
   ]);
   if (!isProBillingStatus(billing) && usage.limited) {
