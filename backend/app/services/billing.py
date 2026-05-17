@@ -2,12 +2,41 @@ from __future__ import annotations
 
 from typing import Any
 
-from app.services.supabase_rest import rest_select
+from app.config import settings
+from app.services.supabase_rest import get_current_user, rest_select
 
 ACTIVE_SUBSCRIPTION_STATUSES = {"active", "trialing"}
 
 
+def _override_emails() -> set[str]:
+    return {
+        email.strip().lower()
+        for email in (settings.pro_plan_override_emails or "").split(",")
+        if email.strip()
+    }
+
+
+def _has_override_email(email: str | None) -> bool:
+    return bool(email and email.strip().lower() in _override_emails())
+
+
+def _pro_override_status() -> dict[str, Any]:
+    return {
+        "plan": "pro",
+        "subscriptionStatus": "manual_override",
+        "currentPeriodEnd": None,
+        "cancelAtPeriodEnd": False,
+    }
+
+
 async def read_billing_status(jwt: str) -> dict[str, Any]:
+    try:
+        user = await get_current_user(jwt)
+        if _has_override_email(user.get("email")):
+            return _pro_override_status()
+    except Exception:
+        pass
+
     try:
         rows = await rest_select(
             jwt,

@@ -34,7 +34,9 @@ Authorization: Bearer <CRON_SECRET>
 ## Pro plan override
 
 For internal operators or testers, set this production environment variable to
-treat specific login emails as Pro users without a Stripe subscription:
+treat specific login emails as Pro users without a Stripe subscription.
+Set it in both the Vercel frontend and the Fly.io backend when backend chat
+tools are enabled:
 
 ```text
 PRO_PLAN_OVERRIDE_EMAILS=first@example.com,second@example.com

@@ -18,6 +18,7 @@ class Settings(BaseSettings):
     google_calendar_id: str = "primary"
     next_public_supabase_url: str | None = None
     next_public_supabase_publishable_key: str | None = None
+    pro_plan_override_emails: str | None = None
 
     model_config = SettingsConfigDict(
         env_file=(".env", "../frontend/.env.local"),
