@@ -185,7 +185,7 @@ FUNCTION_TOOLS: list[dict[str, Any]] = [
     {
         "type": "function",
         "name": "save_travel_plan_for_event",
-        "description": "Save a selected route into the app schedule as a travel block, and by default sync it to Google Calendar after confirmation when Google authorization is available. If plan is omitted, recalculate the route from the event start time and the user's arrival lead setting. If the event location is ambiguous, pass destinationAddress.",
+        "description": "Save a selected route into the app schedule as a travel block with a Google Maps navigation URL. Travel blocks are used by the app's travel reminder push notifications; when Travel alerts are enabled on the user's phone and the cron reminder job is running, the user can receive a smartphone notification before departure and tap it to open Google Maps. By default, also sync the travel block to Google Calendar after confirmation when Google authorization is available. If plan is omitted, recalculate the route from the event start time and the user's arrival lead setting. If the event location is ambiguous, pass destinationAddress.",
         "parameters": {
             "type": "object",
             "properties": {

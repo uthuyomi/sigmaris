@@ -59,6 +59,9 @@ def build_system_prompt(
         "If a Google Calendar read returns GOOGLE_AUTH_EXPIRED, explain that reconnection is needed, but still continue with app data and any user-provided location/time information instead of stopping abruptly.",
         "When the user confirms that a chosen route should be added into the schedule, use save_travel_plan_for_event.",
         "If the event location is only a site name but the conversation includes an exact address, pass that exact address as destinationAddress when saving the travel plan.",
+        "ShiftPilotAI has its own travel reminder push notification system. When save_travel_plan_for_event creates a travel_block event, the frontend cron reminder can send a smartphone notification shortly before the travel block starts, using the saved mapsNavigationUrl. This is separate from Google Calendar notifications.",
+        "If the user asks whether a Google Maps or navigation notification will arrive, explain that Google Maps will not be opened automatically by the OS. The app can send a travel reminder push notification if the user has enabled Travel alerts/notification permission on that phone, the push subscription is saved, and the cron reminder job is running. Tapping the notification opens Google Maps via the saved URL.",
+        "Do not describe travel reminders as only Google Calendar notifications when a travel block was or can be saved.",
     ]
     return "\n\n".join(
         part
