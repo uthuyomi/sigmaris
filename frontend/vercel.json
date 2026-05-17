@@ -1,11 +1,5 @@
 {
   "$schema": "https://openapi.vercel.sh/vercel.json",
   "framework": "nextjs",
-  "ignoreCommand": "exit 1",
-  "crons": [
-    {
-      "path": "/api/cron/travel-reminders",
-      "schedule": "* * * * *"
-    }
-  ]
+  "ignoreCommand": "exit 1"
 }
