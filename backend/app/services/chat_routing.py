@@ -115,6 +115,17 @@ def heuristic_intent(
     lowered = latest_text.lower()
     lowered_context = context_text.lower()
 
+    if "[shiftpilotai処理: calendar_write]" in lowered:
+        return "calendar_write", "template-operation-tag"
+    if "[shiftpilotai処理: mobility_plan]" in lowered:
+        return "mobility_plan", "template-operation-tag"
+    if "[shiftpilotai処理: event_lookup]" in lowered:
+        return "event_lookup", "template-operation-tag"
+    if "[shiftpilotai処理: schedule_import]" in lowered:
+        return "schedule_import", "template-operation-tag"
+    if "[shiftpilotai処理: sync_control]" in lowered:
+        return "sync_control", "template-operation-tag"
+
     if has_file_attachment or has_image_context:
         return "schedule_import", "attachment-present"
 
