@@ -6,7 +6,7 @@ import { configureWebPush, hasWebPushConfig } from "@/lib/web-push";
 
 export const runtime = "nodejs";
 
-const LOOKBACK_SECONDS = 90;
+const LOOKBACK_SECONDS = 15 * 60;
 
 type TravelBlockMetadata = {
   kind?: string;
