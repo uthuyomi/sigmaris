@@ -19,6 +19,7 @@ import {
   ThreadPrimitive,
   useAuiState,
   useComposerRuntime,
+  useThreadRuntime,
 } from "@assistant-ui/react";
 import {
   ArrowDownIcon,
@@ -310,7 +311,7 @@ const ThreadMessage: FC = () => {
 };
 
 const AssistantMessage: FC = () => {
-  const composer = useComposerRuntime();
+  const thread = useThreadRuntime();
   const [isSendingConfirmation, setIsSendingConfirmation] = useState(false);
   const currentMessageId = useAuiState((s) => s.message.id);
   const latestAssistantMessageId = useAuiState((s) => {
@@ -335,8 +336,16 @@ const AssistantMessage: FC = () => {
   const sendConfirmation = (choice: "yes" | "no", action: ChatConfirmationAction) => {
     const label = choice === "yes" ? "実行して" : "キャンセルして";
     setIsSendingConfirmation(true);
-    composer.setText(`SHIFT_PILOT_CONFIRM:${choice} ${action.tool}\n${action.title} を${label}。`);
-    window.setTimeout(() => composer.send(), 0);
+    thread.append({
+      role: "user",
+      content: [
+        {
+          type: "text",
+          text: `SHIFT_PILOT_CONFIRM:${choice} ${action.tool}\n${action.title} を${label}。`,
+        },
+      ],
+      startRun: true,
+    });
   };
   const sanitizeAssistantText = (text: string) =>
     text.replace(/^確認中\.\.\.\s*/u, "").replace(/^確認中…\s*/u, "");

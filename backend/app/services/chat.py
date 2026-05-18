@@ -72,6 +72,35 @@ def _confirmation_choice(text: str) -> bool | None:
     return None
 
 
+def _looks_like_confirmation_update(text: str) -> bool:
+    normalized = text.strip().lower()
+    update_keywords = (
+        "変更",
+        "修正",
+        "変えて",
+        "直して",
+        "登録",
+        "入れて",
+        "作成",
+        "追加",
+        "削除",
+        "時間",
+        "時刻",
+        "日付",
+        "場所",
+        "タイトル",
+        "メモ",
+        "calendar",
+        "register",
+        "save",
+        "create",
+        "delete",
+        "change",
+        "update",
+    )
+    return any(keyword in normalized or keyword in text for keyword in update_keywords)
+
+
 def _find_latest_pending_confirmation(messages: list[dict[str, Any]]) -> dict[str, Any] | None:
     for message in reversed(messages):
         if message.get("role") != "assistant":
@@ -245,7 +274,8 @@ async def run_chat_completion(
     )
     google_tokens = headers_to_google_tokens(google_header_map)
     final_text = ""
-    confirmation_choice = _confirmation_choice(_latest_user_text(messages))
+    latest_user_text = _latest_user_text(messages)
+    confirmation_choice = _confirmation_choice(latest_user_text)
     pending_confirmation = _find_latest_pending_confirmation(messages)
     if confirmation_choice is False and pending_confirmation:
         final_text = "了解、今回は実行しないで止めておくよ。"
@@ -276,10 +306,16 @@ async def run_chat_completion(
         await replace_chat_messages(jwt, thread_id=thread_id, messages=messages_to_store)
         return final_text, messages_to_store, assistant_message["id"]
 
+    block_confirmation_tools = (
+        pending_confirmation is not None
+        and confirmation_choice is None
+        and not _looks_like_confirmation_update(latest_user_text)
+    )
     enabled_tools = [
         FUNCTION_TOOL_MAP[name]
         for name in tool_names_for_intent(route["intent"])
         if name in FUNCTION_TOOL_MAP
+        and not (block_confirmation_tools and name in CONFIRMATION_REQUIRED_TOOLS)
     ]
     response_input: list[dict[str, Any]] = [
         {
@@ -431,7 +467,8 @@ async def stream_chat_completion_ui(
     )
     google_tokens = headers_to_google_tokens(google_header_map)
     final_text = ""
-    confirmation_choice = _confirmation_choice(_latest_user_text(messages))
+    latest_user_text = _latest_user_text(messages)
+    confirmation_choice = _confirmation_choice(latest_user_text)
     pending_confirmation = _find_latest_pending_confirmation(messages)
     if confirmation_choice is False and pending_confirmation:
         final_text = "了解、今回は実行しないで止めておくよ。"
@@ -474,10 +511,16 @@ async def stream_chat_completion_ui(
             yield f"data: {json.dumps(chunk, ensure_ascii=False)}\n\n".encode("utf-8")
         return
 
+    block_confirmation_tools = (
+        pending_confirmation is not None
+        and confirmation_choice is None
+        and not _looks_like_confirmation_update(latest_user_text)
+    )
     enabled_tools = [
         FUNCTION_TOOL_MAP[name]
         for name in tool_names_for_intent(route["intent"])
         if name in FUNCTION_TOOL_MAP
+        and not (block_confirmation_tools and name in CONFIRMATION_REQUIRED_TOOLS)
     ]
     response_input: list[dict[str, Any]] = [
         {
