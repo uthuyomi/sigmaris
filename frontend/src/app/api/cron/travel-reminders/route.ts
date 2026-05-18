@@ -1,8 +1,8 @@
 import { NextResponse } from "next/server";
 import type webpush from "web-push";
 import { buildGoogleMapsDirectionsUrl } from "@/lib/google/maps-url";
-import { createAdminClient } from "@/lib/supabase/admin";
-import { configureWebPush } from "@/lib/web-push";
+import { createAdminClient, hasSupabaseAdminConfig } from "@/lib/supabase/admin";
+import { configureWebPush, hasWebPushConfig } from "@/lib/web-push";
 
 export const runtime = "nodejs";
 
@@ -68,6 +68,20 @@ const formatStartTime = (value: string) =>
 export async function POST(request: Request) {
   if (!isAuthorized(request)) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  }
+
+  if (!hasSupabaseAdminConfig()) {
+    return NextResponse.json(
+      { error: "Supabase admin environment variables are not configured." },
+      { status: 503 },
+    );
+  }
+
+  if (!hasWebPushConfig()) {
+    return NextResponse.json(
+      { error: "Web Push environment variables are not configured." },
+      { status: 503 },
+    );
   }
 
   const supabase = createAdminClient();
