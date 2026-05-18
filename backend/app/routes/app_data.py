@@ -15,6 +15,7 @@ from app.services.app_data import (
 )
 
 router = APIRouter(prefix="/api/app", tags=["app-data"])
+CHAT_MESSAGE_REPLACE_LIMIT = 200
 
 
 def _require_jwt(authorization: str | None) -> str:
@@ -32,7 +33,7 @@ class SearchEventsRequest(BaseModel):
 
 class ReplaceMessagesRequest(BaseModel):
     threadId: str = Field(min_length=1, max_length=80)
-    messages: list[dict[str, Any]] = Field(max_length=50)
+    messages: list[dict[str, Any]] = Field(max_length=CHAT_MESSAGE_REPLACE_LIMIT)
 
 
 @router.post("/events/search")
