@@ -135,6 +135,16 @@ def _confirmed_tool_followup_input(
     return [{"role": "user", "content": [{"type": "input_text", "text": instruction}]}]
 
 
+def _auto_confirm_tools_for_confirmation(payload: dict[str, Any] | None) -> set[str]:
+    if (
+        payload
+        and payload.get("tool") in {"create_google_calendar_events", "create_app_events"}
+        and payload.get("autoContinueTravelReminder") is True
+    ):
+        return {"save_travel_plan_for_event"}
+    return set()
+
+
 def _looks_like_confirmation_update(text: str) -> bool:
     normalized = text.strip().lower()
     update_keywords = (
@@ -204,7 +214,12 @@ def _confirmation_copy(tool_name: str, arguments: dict[str, Any]) -> tuple[str, 
     return title, description
 
 
-def _build_confirmation_message(tool_name: str, arguments: dict[str, Any]) -> str:
+def _build_confirmation_message(
+    tool_name: str,
+    arguments: dict[str, Any],
+    *,
+    auto_continue_travel_reminder: bool = False,
+) -> str:
     title, description = _confirmation_copy(tool_name, arguments)
     marker = {
         "tool": tool_name,
@@ -212,6 +227,15 @@ def _build_confirmation_message(tool_name: str, arguments: dict[str, Any]) -> st
         "title": title,
         "description": description,
     }
+    if auto_continue_travel_reminder:
+        title = "予定と移動通知を登録しますか？"
+        marker["autoContinueTravelReminder"] = True
+        description = (
+            f"{description}\n\n"
+            "予定登録が成功したら、そのまま移動時間を計算してスマホ通知用の移動予定も作ります。"
+        )
+        marker["title"] = title
+        marker["description"] = description
     return (
         f"{title}\n\n"
         f"{description}\n\n"
@@ -341,9 +365,11 @@ async def run_chat_completion(
     latest_user_text = _latest_user_text(messages)
     confirmation_choice = _confirmation_choice(latest_user_text)
     pending_confirmation = _find_latest_pending_confirmation(messages)
+    auto_confirm_tools: set[str] = set()
     if confirmation_choice is False and pending_confirmation:
         final_text = "了解、今回は実行しないで止めておくよ。"
     elif confirmation_choice is True and pending_confirmation:
+        auto_confirm_tools = _auto_confirm_tools_for_confirmation(pending_confirmation)
         tool_name = str(pending_confirmation["tool"])
         arguments = pending_confirmation["arguments"]
         tool_result = await _execute_chat_tool(
@@ -424,8 +450,16 @@ async def run_chat_completion(
                     arguments = json.loads(function_call.arguments or "{}")
                 except json.JSONDecodeError:
                     arguments = {}
-                if function_call.name in CONFIRMATION_REQUIRED_TOOLS:
-                    final_text = _build_confirmation_message(function_call.name, arguments)
+                if function_call.name in CONFIRMATION_REQUIRED_TOOLS and function_call.name not in auto_confirm_tools:
+                    auto_continue_travel_reminder = (
+                        function_call.name in {"create_google_calendar_events", "create_app_events"}
+                        and _conversation_requests_travel_reminder(messages)
+                    )
+                    final_text = _build_confirmation_message(
+                        function_call.name,
+                        arguments,
+                        auto_continue_travel_reminder=auto_continue_travel_reminder,
+                    )
                     break
                 tool_result = await _execute_chat_tool(
                     jwt=jwt,
@@ -543,11 +577,13 @@ async def stream_chat_completion_ui(
     latest_user_text = _latest_user_text(messages)
     confirmation_choice = _confirmation_choice(latest_user_text)
     pending_confirmation = _find_latest_pending_confirmation(messages)
+    auto_confirm_tools: set[str] = set()
     if confirmation_choice is False and pending_confirmation:
         final_text = "了解、今回は実行しないで止めておくよ。"
         payload = {"type": "text-delta", "id": text_part_id, "delta": final_text}
         yield f"data: {json.dumps(payload, ensure_ascii=False)}\n\n".encode("utf-8")
     elif confirmation_choice is True and pending_confirmation:
+        auto_confirm_tools = _auto_confirm_tools_for_confirmation(pending_confirmation)
         tool_name = str(pending_confirmation["tool"])
         arguments = pending_confirmation["arguments"]
         tool_result = await _execute_chat_tool(
@@ -669,8 +705,16 @@ async def stream_chat_completion_ui(
                     arguments = json.loads(function_call.arguments or "{}")
                 except json.JSONDecodeError:
                     arguments = {}
-                if function_call.name in CONFIRMATION_REQUIRED_TOOLS:
-                    confirmation_text = _build_confirmation_message(function_call.name, arguments)
+                if function_call.name in CONFIRMATION_REQUIRED_TOOLS and function_call.name not in auto_confirm_tools:
+                    auto_continue_travel_reminder = (
+                        function_call.name in {"create_google_calendar_events", "create_app_events"}
+                        and _conversation_requests_travel_reminder(messages)
+                    )
+                    confirmation_text = _build_confirmation_message(
+                        function_call.name,
+                        arguments,
+                        auto_continue_travel_reminder=auto_continue_travel_reminder,
+                    )
                     if final_text.strip():
                         confirmation_text = f"\n\n{confirmation_text}"
                     final_text += confirmation_text
