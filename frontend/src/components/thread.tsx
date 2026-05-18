@@ -335,17 +335,13 @@ const AssistantMessage: FC = () => {
       : null;
   const sendConfirmation = (choice: "yes" | "no", action: ChatConfirmationAction) => {
     const label = choice === "yes" ? "実行して" : "キャンセルして";
+    const confirmationText = `SHIFT_PILOT_CONFIRM:${choice} ${action.tool}\n${action.title} を${label}。`;
     setIsSendingConfirmation(true);
-    thread.append({
-      role: "user",
-      content: [
-        {
-          type: "text",
-          text: `SHIFT_PILOT_CONFIRM:${choice} ${action.tool}\n${action.title} を${label}。`,
-        },
-      ],
-      startRun: true,
-    });
+    try {
+      thread.append(confirmationText);
+    } catch {
+      setIsSendingConfirmation(false);
+    }
   };
   const sanitizeAssistantText = (text: string) =>
     text.replace(/^確認中\.\.\.\s*/u, "").replace(/^確認中…\s*/u, "");
