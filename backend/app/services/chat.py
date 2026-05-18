@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import re
 import uuid
 from collections.abc import AsyncIterator
 from typing import Any
@@ -34,6 +35,159 @@ from app.services.chat_routing import (
 
 logger = logging.getLogger(__name__)
 TOOL_EXECUTION_TIMEOUT_SECONDS = 45
+CONFIRMATION_MARKER_RE = re.compile(
+    r"<!--\s*shiftpilot-confirmation\s+({.*?})\s*-->",
+    re.DOTALL,
+)
+CONFIRMATION_REQUIRED_TOOLS = {
+    "create_google_calendar_events",
+    "create_app_events",
+    "delete_google_calendar_events",
+    "delete_google_calendar_events_in_range",
+    "save_travel_plan_for_event",
+}
+
+
+def _extract_message_text(message: dict[str, Any]) -> str:
+    return "\n".join(
+        str(part.get("text", "")).strip()
+        for part in message.get("parts", [])
+        if part.get("type") == "text" and str(part.get("text", "")).strip()
+    ).strip()
+
+
+def _latest_user_text(messages: list[dict[str, Any]]) -> str:
+    for message in reversed(messages):
+        if message.get("role") == "user":
+            return _extract_message_text(message)
+    return ""
+
+
+def _confirmation_choice(text: str) -> bool | None:
+    normalized = text.strip().lower()
+    if "shift_pilot_confirm:no" in normalized or "confirm_action:no" in normalized:
+        return False
+    if "shift_pilot_confirm:yes" in normalized or "confirm_action:yes" in normalized:
+        return True
+    return None
+
+
+def _find_latest_pending_confirmation(messages: list[dict[str, Any]]) -> dict[str, Any] | None:
+    for message in reversed(messages):
+        if message.get("role") != "assistant":
+            continue
+        text = _extract_message_text(message)
+        matches = list(CONFIRMATION_MARKER_RE.finditer(text))
+        if not matches:
+            continue
+        for match in reversed(matches):
+            try:
+                payload = json.loads(match.group(1))
+            except json.JSONDecodeError:
+                continue
+            if (
+                isinstance(payload, dict)
+                and payload.get("tool") in CONFIRMATION_REQUIRED_TOOLS
+                and isinstance(payload.get("arguments"), dict)
+            ):
+                return payload
+    return None
+
+
+def _confirmation_copy(tool_name: str, arguments: dict[str, Any]) -> tuple[str, str]:
+    if tool_name == "save_travel_plan_for_event":
+        title = "移動予定通知を入れますか？"
+        description = "移動ブロックを予定に追加して、出発時間になったらスマホ通知からGoogleマップを開けるようにします。"
+    elif tool_name in {"create_google_calendar_events", "create_app_events"}:
+        events = arguments.get("events")
+        count = len(events) if isinstance(events, list) else 1
+        title = "予定を登録しますか？" if count <= 1 else f"{count}件の予定を登録しますか？"
+        description = "内容を確認して、問題なければカレンダーへ登録します。"
+    elif tool_name == "delete_google_calendar_events_in_range":
+        title = "予定をまとめて削除しますか？"
+        description = "指定した期間の予定を削除します。取り消しにくい操作なので確認してから実行します。"
+    else:
+        title = "予定を削除しますか？"
+        description = "指定した予定を削除します。取り消しにくい操作なので確認してから実行します。"
+    return title, description
+
+
+def _build_confirmation_message(tool_name: str, arguments: dict[str, Any]) -> str:
+    title, description = _confirmation_copy(tool_name, arguments)
+    marker = {
+        "tool": tool_name,
+        "arguments": arguments,
+        "title": title,
+        "description": description,
+    }
+    return (
+        f"{title}\n\n"
+        f"{description}\n\n"
+        "下のボタンで実行するか選んでね。\n"
+        f"<!-- shiftpilot-confirmation {json.dumps(marker, ensure_ascii=False)} -->"
+    )
+
+
+def _summarize_tool_result(tool_name: str, result: dict[str, Any]) -> str:
+    if not result.get("ok"):
+        reason = result.get("userFacingResult") or result.get("reason") or "原因不明のエラーです。"
+        return f"実行できなかったよ。\n\n理由: {reason}"
+
+    user_facing = result.get("userFacingResult")
+    if tool_name == "save_travel_plan_for_event":
+        maps_url = result.get("mapsNavigationUrl")
+        extra = f"\n\nGoogleマップ: {maps_url}" if maps_url else ""
+        return f"移動予定通知を登録したよ。出発時間になったらスマホ通知から開ける形だね。{extra}"
+    if tool_name in {"create_google_calendar_events", "create_app_events"}:
+        created_count = result.get("createdCount") or result.get("appCreatedCount") or 0
+        return f"{user_facing or '予定を登録したよ。'}\n\n登録件数: {created_count}"
+    if tool_name in {"delete_google_calendar_events", "delete_google_calendar_events_in_range"}:
+        deleted_count = result.get("deletedCount") or result.get("count") or 0
+        return f"削除を実行したよ。\n\n削除件数: {deleted_count}"
+    return user_facing or "実行したよ。"
+
+
+async def _execute_chat_tool(
+    *,
+    jwt: str,
+    google_tokens: dict[str, str],
+    thread_id: str,
+    tool_name: str,
+    arguments: dict[str, Any],
+) -> dict[str, Any]:
+    logger.info("chat stream tool execute thread_id=%s tool=%s", thread_id, tool_name)
+    try:
+        return await asyncio.wait_for(
+            execute_tool(
+                jwt=jwt,
+                google_tokens=google_tokens,
+                name=tool_name,
+                arguments=arguments,
+            ),
+            timeout=TOOL_EXECUTION_TIMEOUT_SECONDS,
+        )
+    except TimeoutError:
+        logger.exception(
+            "chat tool timeout thread_id=%s tool=%s timeout_seconds=%s",
+            thread_id,
+            tool_name,
+            TOOL_EXECUTION_TIMEOUT_SECONDS,
+        )
+        return {
+            "ok": False,
+            "reason": f"Tool timed out after {TOOL_EXECUTION_TIMEOUT_SECONDS} seconds.",
+        }
+    except RefreshError as error:
+        logger.warning(
+            "chat stream tool google auth failed thread_id=%s tool=%s error=%s",
+            thread_id,
+            tool_name,
+            error,
+        )
+        return google_auth_error_result(error)
+    except Exception as error:  # noqa: BLE001
+        logger.exception("chat stream tool failed thread_id=%s tool=%s", thread_id, tool_name)
+        return {"ok": False, "reason": str(error)}
 
 
 def _require_openai_client() -> AsyncOpenAI:
@@ -90,6 +244,37 @@ async def run_chat_completion(
         router_instruction,
     )
     google_tokens = headers_to_google_tokens(google_header_map)
+    confirmation_choice = _confirmation_choice(_latest_user_text(messages))
+    pending_confirmation = _find_latest_pending_confirmation(messages)
+    if confirmation_choice is False and pending_confirmation:
+        final_text = "了解、今回は実行しないで止めておくよ。"
+    elif confirmation_choice is True and pending_confirmation:
+        tool_name = str(pending_confirmation["tool"])
+        arguments = pending_confirmation["arguments"]
+        tool_result = await _execute_chat_tool(
+            jwt=jwt,
+            google_tokens=google_tokens,
+            thread_id=thread_id,
+            tool_name=tool_name,
+            arguments=arguments,
+        )
+        final_text = _summarize_tool_result(tool_name, tool_result)
+
+    if final_text.strip():
+        assistant_message = {
+            "id": str(uuid.uuid4()),
+            "role": "assistant",
+            "parts": [{"type": "text", "text": final_text}],
+            "metadata": {
+                "routeIntent": route["intent"],
+                "routeReason": route["reason"],
+                "routeSource": route["source"],
+            },
+        }
+        messages_to_store = [*messages, assistant_message]
+        await replace_chat_messages(jwt, thread_id=thread_id, messages=messages_to_store)
+        return final_text, messages_to_store, assistant_message["id"]
+
     enabled_tools = [
         FUNCTION_TOOL_MAP[name]
         for name in tool_names_for_intent(route["intent"])
@@ -130,54 +315,16 @@ async def run_chat_completion(
                     arguments = json.loads(function_call.arguments or "{}")
                 except json.JSONDecodeError:
                     arguments = {}
-                logger.info(
-                    "chat stream tool execute thread_id=%s tool=%s",
-                    thread_id,
-                    function_call.name,
+                if function_call.name in CONFIRMATION_REQUIRED_TOOLS:
+                    final_text = _build_confirmation_message(function_call.name, arguments)
+                    break
+                tool_result = await _execute_chat_tool(
+                    jwt=jwt,
+                    google_tokens=google_tokens,
+                    thread_id=thread_id,
+                    tool_name=function_call.name,
+                    arguments=arguments,
                 )
-                try:
-                    tool_result = await asyncio.wait_for(
-                        execute_tool(
-                            jwt=jwt,
-                            google_tokens=google_tokens,
-                            name=function_call.name,
-                            arguments=arguments,
-                        ),
-                        timeout=TOOL_EXECUTION_TIMEOUT_SECONDS,
-                    )
-                except TimeoutError:
-                    logger.exception(
-                        "chat tool timeout thread_id=%s tool=%s timeout_seconds=%s",
-                        thread_id,
-                        function_call.name,
-                        TOOL_EXECUTION_TIMEOUT_SECONDS,
-                    )
-                    tool_result = {
-                        "ok": False,
-                        "reason": (
-                            f"Tool timed out after {TOOL_EXECUTION_TIMEOUT_SECONDS} seconds. "
-                            "Some events may already have been saved; rerun the same request to "
-                            "continue, because existing app calendar events are skipped."
-                        ),
-                    }
-                except RefreshError as error:
-                    logger.warning(
-                        "chat tool google auth failed thread_id=%s tool=%s error=%s",
-                        thread_id,
-                        function_call.name,
-                        error,
-                    )
-                    tool_result = google_auth_error_result(error)
-                except Exception as error:  # noqa: BLE001
-                    logger.exception(
-                        "chat tool failed thread_id=%s tool=%s",
-                        thread_id,
-                        function_call.name,
-                    )
-                    tool_result = {
-                        "ok": False,
-                        "reason": str(error),
-                    }
                 logger.info(
                     "chat stream tool complete thread_id=%s tool=%s ok=%s",
                     thread_id,
@@ -191,6 +338,8 @@ async def run_chat_completion(
                         "output": json.dumps(tool_result, ensure_ascii=False),
                     }
                 )
+            if final_text.strip():
+                break
             previous_response_id = response.id
             response_input = outputs
             continue
@@ -280,6 +429,49 @@ async def stream_chat_completion_ui(
         router_instruction,
     )
     google_tokens = headers_to_google_tokens(google_header_map)
+    confirmation_choice = _confirmation_choice(_latest_user_text(messages))
+    pending_confirmation = _find_latest_pending_confirmation(messages)
+    if confirmation_choice is False and pending_confirmation:
+        final_text = "了解、今回は実行しないで止めておくよ。"
+        payload = {"type": "text-delta", "id": text_part_id, "delta": final_text}
+        yield f"data: {json.dumps(payload, ensure_ascii=False)}\n\n".encode("utf-8")
+    elif confirmation_choice is True and pending_confirmation:
+        tool_name = str(pending_confirmation["tool"])
+        arguments = pending_confirmation["arguments"]
+        tool_result = await _execute_chat_tool(
+            jwt=jwt,
+            google_tokens=google_tokens,
+            thread_id=thread_id,
+            tool_name=tool_name,
+            arguments=arguments,
+        )
+        final_text = _summarize_tool_result(tool_name, tool_result)
+        payload = {"type": "text-delta", "id": text_part_id, "delta": final_text}
+        yield f"data: {json.dumps(payload, ensure_ascii=False)}\n\n".encode("utf-8")
+
+    if final_text.strip():
+        assistant_message = {
+            "id": message_id,
+            "role": "assistant",
+            "parts": [{"type": "text", "text": final_text}],
+            "metadata": {
+                "routeIntent": route["intent"],
+                "routeReason": route["reason"],
+                "routeSource": route["source"],
+            },
+        }
+        messages_to_store = [*messages, assistant_message]
+        try:
+            await replace_chat_messages(jwt, thread_id=thread_id, messages=messages_to_store)
+        except Exception:
+            logger.exception("failed to persist streamed chat messages")
+        for chunk in (
+            {"type": "text-end", "id": text_part_id},
+            {"type": "finish", "finishReason": "stop"},
+        ):
+            yield f"data: {json.dumps(chunk, ensure_ascii=False)}\n\n".encode("utf-8")
+        return
+
     enabled_tools = [
         FUNCTION_TOOL_MAP[name]
         for name in tool_names_for_intent(route["intent"])
@@ -345,55 +537,32 @@ async def stream_chat_completion_ui(
                 [getattr(call, "name", "unknown") for call in function_calls],
             )
             outputs = []
+            confirmation_requested = False
             for function_call in function_calls:
                 try:
                     arguments = json.loads(function_call.arguments or "{}")
                 except json.JSONDecodeError:
                     arguments = {}
-                logger.info(
-                    "chat stream tool execute thread_id=%s tool=%s",
-                    thread_id,
-                    function_call.name,
+                if function_call.name in CONFIRMATION_REQUIRED_TOOLS:
+                    confirmation_text = _build_confirmation_message(function_call.name, arguments)
+                    if final_text.strip():
+                        confirmation_text = f"\n\n{confirmation_text}"
+                    final_text += confirmation_text
+                    payload = {
+                        "type": "text-delta",
+                        "id": text_part_id,
+                        "delta": confirmation_text,
+                    }
+                    yield f"data: {json.dumps(payload, ensure_ascii=False)}\n\n".encode("utf-8")
+                    confirmation_requested = True
+                    break
+                tool_result = await _execute_chat_tool(
+                    jwt=jwt,
+                    google_tokens=google_tokens,
+                    thread_id=thread_id,
+                    tool_name=function_call.name,
+                    arguments=arguments,
                 )
-                try:
-                    tool_result = await asyncio.wait_for(
-                        execute_tool(
-                            jwt=jwt,
-                            google_tokens=google_tokens,
-                            name=function_call.name,
-                            arguments=arguments,
-                        ),
-                        timeout=TOOL_EXECUTION_TIMEOUT_SECONDS,
-                    )
-                except TimeoutError:
-                    logger.exception(
-                        "chat tool timeout thread_id=%s tool=%s timeout_seconds=%s",
-                        thread_id,
-                        function_call.name,
-                        TOOL_EXECUTION_TIMEOUT_SECONDS,
-                    )
-                    tool_result = {
-                        "ok": False,
-                        "reason": f"Tool timed out after {TOOL_EXECUTION_TIMEOUT_SECONDS} seconds.",
-                    }
-                except RefreshError as error:
-                    logger.warning(
-                        "chat stream tool google auth failed thread_id=%s tool=%s error=%s",
-                        thread_id,
-                        function_call.name,
-                        error,
-                    )
-                    tool_result = google_auth_error_result(error)
-                except Exception as error:  # noqa: BLE001
-                    logger.exception(
-                        "chat stream tool failed thread_id=%s tool=%s",
-                        thread_id,
-                        function_call.name,
-                    )
-                    tool_result = {
-                        "ok": False,
-                        "reason": str(error),
-                    }
                 logger.info(
                     "chat stream tool complete thread_id=%s tool=%s ok=%s",
                     thread_id,
@@ -407,6 +576,8 @@ async def stream_chat_completion_ui(
                         "output": json.dumps(tool_result, ensure_ascii=False),
                     }
                 )
+            if confirmation_requested:
+                break
             previous_response_id = completed_response_id
             response_input = outputs
             continue

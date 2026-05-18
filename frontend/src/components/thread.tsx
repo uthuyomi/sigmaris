@@ -7,6 +7,11 @@ import {
 } from "@/components/attachment";
 import { MarkdownText } from "@/components/markdown-text";
 import { promptTemplates } from "@/components/thread-prompt-templates";
+import {
+  parseLatestConfirmationAction,
+  removeConfirmationMarkers,
+  type ChatConfirmationAction,
+} from "@/lib/chat-confirmation";
 import { getDictionary, type AppLocale } from "@/lib/i18n";
 import {
   ComposerPrimitive,
@@ -18,10 +23,12 @@ import {
 import {
   ArrowDownIcon,
   ArrowUpIcon,
+  CheckIcon,
   CreditCardIcon,
   FileTextIcon,
   PlusIcon,
   SquareIcon,
+  XIcon,
 } from "lucide-react";
 import Link from "next/link";
 import { type FC, useCallback, useEffect, useRef, useState } from "react";
@@ -303,6 +310,33 @@ const ThreadMessage: FC = () => {
 };
 
 const AssistantMessage: FC = () => {
+  const composer = useComposerRuntime();
+  const isRunning = useAuiState((s) => s.thread.isRunning);
+  const currentMessageId = useAuiState((s) => s.message.id);
+  const latestAssistantMessageId = useAuiState((s) => {
+    for (let index = s.thread.messages.length - 1; index >= 0; index -= 1) {
+      const message = s.thread.messages[index];
+      if (message.role === "assistant") {
+        return message.id ?? "";
+      }
+    }
+    return "";
+  });
+  const messageText = useAuiState((s) =>
+    s.message.parts
+      .filter((part) => part.type === "text")
+      .map((part) => part.text)
+      .join(""),
+  );
+  const confirmationAction =
+    currentMessageId === latestAssistantMessageId
+      ? parseLatestConfirmationAction(messageText)
+      : null;
+  const sendConfirmation = (choice: "yes" | "no", action: ChatConfirmationAction) => {
+    const label = choice === "yes" ? "実行して" : "キャンセルして";
+    composer.setText(`SHIFT_PILOT_CONFIRM:${choice} ${action.tool}\n${action.title} を${label}。`);
+    window.setTimeout(() => composer.send(), 0);
+  };
   const sanitizeAssistantText = (text: string) =>
     text.replace(/^確認中\.\.\.\s*/u, "").replace(/^確認中…\s*/u, "");
 
@@ -312,11 +346,61 @@ const AssistantMessage: FC = () => {
         {({ part }) => {
           if (part.type === "text") {
             if (!part.text?.trim()) return null;
-            return <MarkdownText preprocess={sanitizeAssistantText} />;
+            return (
+              <MarkdownText
+                preprocess={(text) =>
+                  removeConfirmationMarkers(sanitizeAssistantText(text))
+                }
+              />
+            );
           }
           return null;
         }}
       </MessagePrimitive.Parts>
+      {confirmationAction ? (
+        <ConfirmationActionCard
+          action={confirmationAction}
+          disabled={isRunning}
+          onConfirm={() => sendConfirmation("yes", confirmationAction)}
+          onCancel={() => sendConfirmation("no", confirmationAction)}
+        />
+      ) : null}
+    </div>
+  );
+};
+
+const ConfirmationActionCard: FC<{
+  action: ChatConfirmationAction;
+  disabled: boolean;
+  onConfirm: () => void;
+  onCancel: () => void;
+}> = ({ action, disabled, onConfirm, onCancel }) => {
+  return (
+    <div className="mt-3 max-w-xl rounded-2xl border border-stone-900/10 bg-stone-50 px-4 py-3 text-stone-900 shadow-[0_18px_45px_-34px_rgba(28,25,23,0.55)] dark:border-white/10 dark:bg-white/6 dark:text-stone-100">
+      <div className="text-sm font-semibold leading-6">{action.title}</div>
+      <p className="mt-1 text-xs leading-5 text-stone-600 dark:text-stone-300">
+        {action.description}
+      </p>
+      <div className="mt-3 flex flex-wrap gap-2">
+        <button
+          type="button"
+          disabled={disabled}
+          onClick={onConfirm}
+          className="inline-flex min-h-10 items-center justify-center gap-2 rounded-xl bg-stone-950 px-4 text-sm font-semibold text-white transition hover:bg-stone-800 disabled:cursor-not-allowed disabled:opacity-45 dark:bg-white dark:text-stone-950 dark:hover:bg-stone-200"
+        >
+          <CheckIcon className="size-4" />
+          はい
+        </button>
+        <button
+          type="button"
+          disabled={disabled}
+          onClick={onCancel}
+          className="inline-flex min-h-10 items-center justify-center gap-2 rounded-xl border border-stone-900/10 bg-white px-4 text-sm font-medium text-stone-800 transition hover:bg-stone-100 disabled:cursor-not-allowed disabled:opacity-45 dark:border-white/10 dark:bg-transparent dark:text-stone-200 dark:hover:bg-white/10"
+        >
+          <XIcon className="size-4" />
+          いいえ
+        </button>
+      </div>
     </div>
   );
 };

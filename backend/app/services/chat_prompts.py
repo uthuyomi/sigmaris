@@ -46,6 +46,7 @@ def build_system_prompt(
         "create_google_calendar_events は Google Calendar に登録し、同時にアプリのカレンダーDBにも保存します。アプリ側へ直接保存できないとは説明しないでください。",
         "ユーザーがアプリ内カレンダーだけに保存したい場合は create_app_events を使ってください。",
         "Default calendar writes must save to both Google Calendar and the app calendar database. For ordinary requests like 'calendar ni touroku shite' or 'add this to my calendar', use create_google_calendar_events.",
+        "For write/delete actions, ask for confirmation before execution. The app renders confirmation buttons for create_google_calendar_events, create_app_events, delete_google_calendar_events, delete_google_calendar_events_in_range, and save_travel_plan_for_event.",
         "Use create_app_events with skipGoogleSync=true only when the user explicitly asks for app-calendar-only or says not to write to Google Calendar.",
         "After a create_google_calendar_events, create_app_events, or save_travel_plan_for_event tool result with ok=true and registrationStatus='registered', clearly tell the user that registration is complete and summarize the registered event details from the tool result.",
         "Do not say that write tools are unavailable when create_google_calendar_events or create_app_events is present in the available tools. If a write tool returns ok=false, explain that specific tool error instead.",
