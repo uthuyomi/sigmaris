@@ -11,11 +11,10 @@ from app.services.chat import stream_chat_completion_ui
 
 router = APIRouter(prefix="/api/chat", tags=["chat"])
 logger = logging.getLogger(__name__)
-CHAT_REQUEST_MESSAGE_LIMIT = 200
 
 
 class ChatStreamRequest(BaseModel):
-    messages: list[dict] = Field(max_length=CHAT_REQUEST_MESSAGE_LIMIT)
+    messages: list[dict] = Field()
     system: str | None = Field(default=None, max_length=4000)
     threadId: str = Field(min_length=1, max_length=80)
 
