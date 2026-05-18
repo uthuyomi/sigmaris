@@ -36,7 +36,7 @@ from app.services.chat_routing import (
 logger = logging.getLogger(__name__)
 TOOL_EXECUTION_TIMEOUT_SECONDS = 45
 CONFIRMATION_MARKER_RE = re.compile(
-    r"<!--\s*shiftpilot-confirmation\s+({.*?})\s*-->",
+    r"<!--\s*shiftpilot-confirmation\s+([\s\S]*?)\s*-->",
     re.DOTALL,
 )
 CONFIRMATION_REQUIRED_TOOLS = {

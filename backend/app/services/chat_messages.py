@@ -4,14 +4,20 @@ from __future__ import annotations
 
 import asyncio
 import json
+import re
 import uuid
 from collections.abc import AsyncIterator
 from typing import Any
 
+CONFIRMATION_MARKER_RE = re.compile(
+    r"<!--\s*shiftpilot-confirmation\s+[\s\S]*?\s*-->",
+    re.DOTALL,
+)
+
 
 def _extract_text(parts: list[dict[str, Any]]) -> str:
     text_parts = [
-        str(part.get("text", "")).strip()
+        CONFIRMATION_MARKER_RE.sub("", str(part.get("text", ""))).strip()
         for part in parts
         if part.get("type") == "text" and str(part.get("text", "")).strip()
     ]

@@ -5,7 +5,7 @@ export type ChatConfirmationAction = {
 };
 
 const CONFIRMATION_RE =
-  /<!--\s*shiftpilot-confirmation\s+({[\s\S]*?})\s*-->/g;
+  /<!--\s*shiftpilot-confirmation\s+([\s\S]*?)\s*-->/g;
 
 export const removeConfirmationMarkers = (text: string) =>
   text.replace(CONFIRMATION_RE, "").trimEnd();
