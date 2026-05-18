@@ -72,6 +72,69 @@ def _confirmation_choice(text: str) -> bool | None:
     return None
 
 
+def _visible_message_text(message: dict[str, Any]) -> str:
+    return CONFIRMATION_MARKER_RE.sub("", _extract_message_text(message)).strip()
+
+
+def _recent_visible_context(messages: list[dict[str, Any]], *, limit: int = 12) -> str:
+    lines = []
+    for message in messages[-limit:]:
+        text = _visible_message_text(message)
+        if text:
+            lines.append(f"{message.get('role', 'user')}: {text}")
+    return "\n".join(lines)
+
+
+def _conversation_requests_travel_reminder(messages: list[dict[str, Any]]) -> bool:
+    context = _recent_visible_context(messages, limit=16).lower()
+    keywords = (
+        "移動通知",
+        "移動予定通知",
+        "スマホ通知",
+        "マップ通知",
+        "googleマップ",
+        "google maps",
+        "出発時間",
+        "出発時刻",
+        "間に合う移動",
+        "travel reminder",
+    )
+    return any(keyword.lower() in context for keyword in keywords)
+
+
+def _confirmed_tool_followup_input(
+    *,
+    tool_name: str,
+    tool_result: dict[str, Any],
+    messages: list[dict[str, Any]],
+) -> list[dict[str, Any]] | None:
+    if tool_name not in {"create_google_calendar_events", "create_app_events"}:
+        return None
+    if not tool_result.get("ok") or tool_result.get("registrationStatus") != "registered":
+        return None
+    if not _conversation_requests_travel_reminder(messages):
+        return None
+
+    instruction = "\n".join(
+        [
+            "The user confirmed the calendar registration, and the registration tool completed successfully.",
+            "The original user request also asked to create a travel reminder / smartphone Google Maps notification for the registered event.",
+            "Continue from here. Use createdAppEvents[0].id from the tool result as the target eventId when possible.",
+            "Use read_home_context if the origin is home or if a saved preferred travel mode/address is needed.",
+            "Use plan_google_route if a route calculation is needed.",
+            "Then call save_travel_plan_for_event. Do not claim the travel reminder was created until save_travel_plan_for_event returns ok=true.",
+            "If required details are missing, ask only for those missing details.",
+            "",
+            "Recent conversation:",
+            _recent_visible_context(messages),
+            "",
+            f"Confirmed tool: {tool_name}",
+            f"Confirmed tool result JSON: {json.dumps(tool_result, ensure_ascii=False)}",
+        ]
+    )
+    return [{"role": "user", "content": [{"type": "input_text", "text": instruction}]}]
+
+
 def _looks_like_confirmation_update(text: str) -> bool:
     normalized = text.strip().lower()
     update_keywords = (
@@ -274,6 +337,7 @@ async def run_chat_completion(
     )
     google_tokens = headers_to_google_tokens(google_header_map)
     final_text = ""
+    confirmed_followup_input: list[dict[str, Any]] | None = None
     latest_user_text = _latest_user_text(messages)
     confirmation_choice = _confirmation_choice(latest_user_text)
     pending_confirmation = _find_latest_pending_confirmation(messages)
@@ -289,9 +353,17 @@ async def run_chat_completion(
             tool_name=tool_name,
             arguments=arguments,
         )
-        final_text = _summarize_tool_result(tool_name, tool_result)
+        confirmed_followup_input = _confirmed_tool_followup_input(
+            tool_name=tool_name,
+            tool_result=tool_result,
+            messages=messages,
+        )
+        if confirmed_followup_input:
+            final_text = "予定は登録できたよ。続けて移動予定通知を準備するね。"
+        else:
+            final_text = _summarize_tool_result(tool_name, tool_result)
 
-    if final_text.strip():
+    if final_text.strip() and not confirmed_followup_input:
         assistant_message = {
             "id": str(uuid.uuid4()),
             "role": "assistant",
@@ -317,7 +389,7 @@ async def run_chat_completion(
         if name in FUNCTION_TOOL_MAP
         and not (block_confirmation_tools and name in CONFIRMATION_REQUIRED_TOOLS)
     ]
-    response_input: list[dict[str, Any]] = [
+    response_input: list[dict[str, Any]] = confirmed_followup_input or [
         {
             "role": message["role"],
             "content": _to_response_content(message["role"], message["content"]),
@@ -467,6 +539,7 @@ async def stream_chat_completion_ui(
     )
     google_tokens = headers_to_google_tokens(google_header_map)
     final_text = ""
+    confirmed_followup_input: list[dict[str, Any]] | None = None
     latest_user_text = _latest_user_text(messages)
     confirmation_choice = _confirmation_choice(latest_user_text)
     pending_confirmation = _find_latest_pending_confirmation(messages)
@@ -484,11 +557,19 @@ async def stream_chat_completion_ui(
             tool_name=tool_name,
             arguments=arguments,
         )
-        final_text = _summarize_tool_result(tool_name, tool_result)
+        confirmed_followup_input = _confirmed_tool_followup_input(
+            tool_name=tool_name,
+            tool_result=tool_result,
+            messages=messages,
+        )
+        if confirmed_followup_input:
+            final_text = "予定は登録できたよ。続けて移動予定通知を準備するね。\n\n"
+        else:
+            final_text = _summarize_tool_result(tool_name, tool_result)
         payload = {"type": "text-delta", "id": text_part_id, "delta": final_text}
         yield f"data: {json.dumps(payload, ensure_ascii=False)}\n\n".encode("utf-8")
 
-    if final_text.strip():
+    if final_text.strip() and not confirmed_followup_input:
         assistant_message = {
             "id": message_id,
             "role": "assistant",
@@ -522,7 +603,7 @@ async def stream_chat_completion_ui(
         if name in FUNCTION_TOOL_MAP
         and not (block_confirmation_tools and name in CONFIRMATION_REQUIRED_TOOLS)
     ]
-    response_input: list[dict[str, Any]] = [
+    response_input: list[dict[str, Any]] = confirmed_followup_input or [
         {
             "role": message["role"],
             "content": _to_response_content(message["role"], message["content"]),
