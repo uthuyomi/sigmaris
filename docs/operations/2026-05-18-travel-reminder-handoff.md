@@ -9,7 +9,8 @@ path is:
 1. AI or UI creates a `travel_block` event.
 2. `cron-job.org` calls `/api/cron/travel-reminders` every minute.
 3. The Vercel API finds due travel blocks in Supabase.
-4. The API sends Web Push to saved `push_subscriptions`.
+4. The API sends Web Push to saved `push_subscriptions` when the travel block
+   departure time has arrived.
 5. The phone notification opens the saved Google Maps URL when tapped.
 
 The app cannot open Google Maps automatically without a tap because mobile OSes
@@ -83,8 +84,9 @@ If response is:
 {"events":0,"dueEvents":0,"sent":0}
 ```
 
-There is no future travel block starting inside the cron lookup window. Create a
-travel block whose departure/start time is a few minutes in the future.
+There is no travel block whose departure/start time has just arrived inside the
+cron lookup window. Create a travel block whose departure/start time is near the
+current time, then check the cron response after that departure time passes.
 
 If response is:
 
@@ -116,5 +118,6 @@ notification settings, OS battery/background restrictions, or notification UI.
 
 ## Important date note
 
-Past travel blocks are intentionally ignored. On 2026-05-18, a 2026-05-09
-travel block will never trigger. Test with a travel block in the near future.
+Old travel blocks are intentionally ignored. On 2026-05-18, a 2026-05-09 travel
+block will never trigger. Test with a travel block whose departure time is about
+to arrive, then wait for the next cron run.

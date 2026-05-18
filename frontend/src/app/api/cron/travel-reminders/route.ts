@@ -6,8 +6,7 @@ import { configureWebPush, hasWebPushConfig } from "@/lib/web-push";
 
 export const runtime = "nodejs";
 
-const REMINDER_LEAD_MINUTES = 5;
-const LOOKAHEAD_MINUTES = 6;
+const LOOKBACK_SECONDS = 90;
 
 type TravelBlockMetadata = {
   kind?: string;
@@ -87,14 +86,14 @@ export async function POST(request: Request) {
   const supabase = createAdminClient();
   const push = configureWebPush();
   const now = new Date();
-  const to = new Date(now.getTime() + LOOKAHEAD_MINUTES * 60_000);
+  const from = new Date(now.getTime() - LOOKBACK_SECONDS * 1000);
 
   const { data: eventRows, error: eventsError } = await supabase
     .from("events")
     .select("id,user_id,title,description,location_text,starts_at,ends_at,metadata")
     .neq("status", "cancelled")
-    .gte("starts_at", now.toISOString())
-    .lte("starts_at", to.toISOString())
+    .gte("starts_at", from.toISOString())
+    .lte("starts_at", now.toISOString())
     .contains("metadata", { kind: "travel_block" })
     .order("starts_at", { ascending: true })
     .limit(200);
@@ -113,8 +112,8 @@ export async function POST(request: Request) {
       subscriptions: 0,
       usersWithoutSubscriptions: 0,
       failedPushes: 0,
-      windowStart: now.toISOString(),
-      windowEnd: to.toISOString(),
+      windowStart: from.toISOString(),
+      windowEnd: now.toISOString(),
     });
   }
 
@@ -145,8 +144,8 @@ export async function POST(request: Request) {
       subscriptions: 0,
       usersWithoutSubscriptions: 0,
       failedPushes: 0,
-      windowStart: now.toISOString(),
-      windowEnd: to.toISOString(),
+      windowStart: from.toISOString(),
+      windowEnd: now.toISOString(),
     });
   }
 
@@ -190,7 +189,7 @@ export async function POST(request: Request) {
     }
 
     const payload = JSON.stringify({
-      title: `Leave in ${REMINDER_LEAD_MINUTES} min: ${metadata.destinationLabel ?? event.title}`,
+      title: `Departure time: ${metadata.destinationLabel ?? event.title}`,
       body: `${formatStartTime(event.starts_at)} departure. Tap to open Google Maps.`,
       tag: `${event.id}:${event.starts_at}`,
       navigationUrl,
@@ -246,8 +245,8 @@ export async function POST(request: Request) {
     failedPushes: pushFailures.length,
     expiredSubscriptions: expiredSubscriptionIds.length,
     pushFailures: pushFailures.slice(0, 5),
-    windowStart: now.toISOString(),
-    windowEnd: to.toISOString(),
+    windowStart: from.toISOString(),
+    windowEnd: now.toISOString(),
   });
 }
 
