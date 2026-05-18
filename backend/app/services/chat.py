@@ -244,6 +244,7 @@ async def run_chat_completion(
         router_instruction,
     )
     google_tokens = headers_to_google_tokens(google_header_map)
+    final_text = ""
     confirmation_choice = _confirmation_choice(_latest_user_text(messages))
     pending_confirmation = _find_latest_pending_confirmation(messages)
     if confirmation_choice is False and pending_confirmation:
@@ -429,6 +430,7 @@ async def stream_chat_completion_ui(
         router_instruction,
     )
     google_tokens = headers_to_google_tokens(google_header_map)
+    final_text = ""
     confirmation_choice = _confirmation_choice(_latest_user_text(messages))
     pending_confirmation = _find_latest_pending_confirmation(messages)
     if confirmation_choice is False and pending_confirmation:
