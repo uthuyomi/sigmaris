@@ -124,13 +124,16 @@ async def get_simple_route_plan(
     resolved_origin = await resolve_location(origin, "origin", mode)
     resolved_destination = await resolve_location(destination, "destination", mode)
     target_arrival = _floor_to_minute(datetime.fromisoformat(arrival_time_iso.replace("Z", "+00:00")))
+    now = datetime.now(UTC)
+    immediate_departure = target_arrival <= now
+    route_departure = _floor_to_minute(now + timedelta(minutes=1)) if immediate_departure else target_arrival
     route_mode = "bicycling" if mode == "bicycle" else "driving" if mode == "car" else "walking"
     _, leg = await _parse_directions_response(
         {
             "origin": resolved_origin.route_value,
             "destination": resolved_destination.route_value,
             "mode": route_mode,
-            "departure_time": str(int(target_arrival.timestamp())),
+            "departure_time": str(int(route_departure.timestamp())),
             "language": "ja",
             "region": "jp",
         },
@@ -138,7 +141,16 @@ async def get_simple_route_plan(
         resolved_destination,
     )
     duration_seconds = leg.get("duration_in_traffic", {}).get("value") or leg.get("duration", {}).get("value") or 0
-    recommended_departure = _floor_to_minute(target_arrival - timedelta(seconds=duration_seconds))
+    recommended_departure = (
+        route_departure
+        if immediate_departure
+        else _floor_to_minute(target_arrival - timedelta(seconds=duration_seconds))
+    )
+    estimated_arrival = (
+        _floor_to_minute(recommended_departure + timedelta(seconds=duration_seconds))
+        if immediate_departure
+        else target_arrival
+    )
     plan = _build_route_plan(
         mode=mode,
         leg=leg,
@@ -147,8 +159,8 @@ async def get_simple_route_plan(
     )
     plan.recommended_departure_time = recommended_departure.astimezone(JST).strftime("%H:%M")
     plan.recommended_departure_iso = recommended_departure.astimezone(UTC).isoformat()
-    plan.estimated_arrival_time = target_arrival.astimezone(JST).strftime("%H:%M")
-    plan.estimated_arrival_iso = target_arrival.astimezone(UTC).isoformat()
+    plan.estimated_arrival_time = estimated_arrival.astimezone(JST).strftime("%H:%M")
+    plan.estimated_arrival_iso = estimated_arrival.astimezone(UTC).isoformat()
     plan.duration_text = leg.get("duration_in_traffic", {}).get("text") or leg.get("duration", {}).get("text")
     plan.duration_seconds = duration_seconds
     return plan
