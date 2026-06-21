@@ -6,10 +6,12 @@ import logging
 from datetime import datetime, timezone
 from typing import Any
 
+from app.services.audit_log import AuditContext
 from app.services.supabase_rest import (
     get_current_user,
     rest_delete,
     rest_insert,
+    rest_rpc,
     rest_select,
     rest_update,
 )
@@ -134,29 +136,32 @@ async def create_event(
     source_type: str = "manual",
     external_event_id: str | None = None,
     metadata: dict[str, Any] | None = None,
+    audit_ctx: AuditContext | None = None,
 ) -> dict[str, Any]:
     user = await get_current_user(jwt)
-    return await rest_insert(
-        jwt,
-        "events",
-        {
-            "user_id": user["id"],
-            "title": title,
-            "description": description,
-            "location_text": location_text,
-            "starts_at": starts_at,
-            "ends_at": ends_at,
-            "source_type": source_type,
-            "external_event_id": external_event_id,
-            "metadata": metadata or {},
-        },
-        single=True,
-    )
+    event_data = {
+        "user_id": user["id"],
+        "title": title,
+        "description": description,
+        "location_text": location_text,
+        "starts_at": starts_at,
+        "ends_at": ends_at,
+        "source_type": source_type,
+        "external_event_id": external_event_id,
+        "metadata": metadata or {},
+    }
+    if audit_ctx is None:
+        return await rest_insert(jwt, "events", event_data, single=True)
+    return await rest_rpc(jwt, "create_event_with_audit", {
+        "p_event": event_data,
+        "p_audit": audit_ctx.to_jsonb(),
+    })
 
 
 async def create_events(
     jwt: str,
     events: list[dict[str, Any]],
+    audit_ctx: AuditContext | None = None,
 ) -> list[dict[str, Any]]:
     if not events:
         return []
@@ -215,7 +220,16 @@ async def create_events(
         len(events) - len(events_to_insert),
         len(payload),
     )
-    created = await rest_insert(jwt, "events", payload) if payload else []
+    if payload and audit_ctx is not None:
+        raw = await rest_rpc(jwt, "create_events_with_audit", {
+            "p_events": payload,
+            "p_audit": audit_ctx.to_jsonb(),
+        })
+        created = raw if isinstance(raw, list) else []
+    elif payload:
+        created = await rest_insert(jwt, "events", payload)
+    else:
+        created = []
     for (index, _), created_row in zip(events_to_insert, created or []):
         ordered_results[index] = created_row
 
@@ -238,19 +252,21 @@ async def update_event_external_link(
     external_event_id: str | None,
     calendar_connection_id: str | None = None,
     metadata: dict[str, Any] | None = None,
+    audit_ctx: AuditContext | None = None,
 ) -> dict[str, Any] | None:
-    payload = {
+    payload: dict[str, Any] = {
         "external_event_id": external_event_id,
         "metadata": metadata or {},
     }
     if calendar_connection_id is not None:
         payload["calendar_connection_id"] = calendar_connection_id
-    rows = await rest_update(
-        jwt,
-        "events",
-        payload,
-        {"id": f"eq.{event_id}"},
-    )
+    if audit_ctx is not None:
+        return await rest_rpc(jwt, "update_event_external_link_with_audit", {
+            "p_event_id": event_id,
+            "p_payload": payload,
+            "p_audit": audit_ctx.to_jsonb(),
+        })
+    rows = await rest_update(jwt, "events", payload, {"id": f"eq.{event_id}"})
     return rows[0] if rows else None
 
 

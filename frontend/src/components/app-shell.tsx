@@ -12,6 +12,7 @@ import {
   CalendarDaysIcon,
   MessageSquareMoreIcon,
   Settings2Icon,
+  SparklesIcon,
 } from "lucide-react";
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
@@ -36,6 +37,7 @@ type AppShellProps = PropsWithChildren<{
 }>;
 
 const navIconByPath = {
+  "/sigmaris": SparklesIcon,
   "/chat": MessageSquareMoreIcon,
   "/calendar": CalendarDaysIcon,
   "/settings": Settings2Icon,
@@ -66,6 +68,7 @@ export function AppShell({
   const dict = getDictionary(locale);
   const navItems = useMemo(
     () => [
+      { href: "/sigmaris", label: "Sigmaris" },
       { href: "/chat", label: dict.nav.chat },
       { href: "/calendar", label: dict.nav.calendar },
       { href: "/settings", label: dict.nav.settings },

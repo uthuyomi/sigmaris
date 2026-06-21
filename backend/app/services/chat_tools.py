@@ -6,6 +6,7 @@ from datetime import datetime, timedelta
 from typing import Any
 
 from app.schemas.google_tools import GoogleCalendarCreateEvent, GoogleProviderTokens
+from app.services.audit_log import AuditContext
 from app.services.billing import has_pro_plan
 from app.services.chat_tool_definitions import FUNCTION_TOOL_MAP, FUNCTION_TOOLS
 from app.services.app_data import (
@@ -87,12 +88,24 @@ def _registration_success_message(
     return f"REGISTERED: saved {app_count} event(s) to the app calendar."
 
 
+def _build_audit(audit_info: dict[str, str | None] | None, action: str) -> AuditContext | None:
+    if audit_info is None:
+        return None
+    return AuditContext(
+        action=action,
+        actor_type=audit_info.get("actor_type") or "api_direct",
+        actor_ref=audit_info.get("actor_ref"),
+        reason=audit_info.get("reason"),
+    )
+
+
 async def execute_tool(
     *,
     jwt: str,
     google_tokens: GoogleProviderTokens,
     name: str,
     arguments: dict[str, Any],
+    audit_info: dict[str, str | None] | None = None,
 ) -> dict[str, Any]:
     if name in PRO_ONLY_TOOLS and not await has_pro_plan(jwt):
         return {
@@ -143,6 +156,7 @@ async def execute_tool(
                 }
                 for event in events
             ],
+            audit_ctx=_build_audit(audit_info, "created"),
         )
         google_create_targets = [
             (index, event, app_event)
@@ -165,6 +179,7 @@ async def execute_tool(
                     "htmlLink": google_event.get("htmlLink"),
                     "syncStatus": "synced" if google_event.get("id") else "pending",
                 },
+                audit_ctx=_build_audit(audit_info, "synced"),
             )
         return {
             "ok": True,
@@ -195,6 +210,7 @@ async def execute_tool(
                 }
                 for event in arguments.get("events", [])
             ],
+            audit_ctx=_build_audit(audit_info, "created"),
         )
         should_sync_to_google = not arguments.get("skipGoogleSync") and _has_google_tokens(google_tokens)
         google_create_targets = [
@@ -229,6 +245,7 @@ async def execute_tool(
                         "htmlLink": google_event.get("htmlLink"),
                         "syncStatus": "synced" if google_event.get("id") else "pending",
                     },
+                    audit_ctx=_build_audit(audit_info, "synced"),
                 )
         return {
             "ok": True,
@@ -437,6 +454,7 @@ async def execute_tool(
                 "travelMode": arguments["travelMode"],
                 "mapsNavigationUrl": maps_navigation_url,
             },
+            audit_ctx=_build_audit(audit_info, "travel_plan_saved"),
         )
 
         await replace_travel_plan(

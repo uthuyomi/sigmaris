@@ -1,6 +1,7 @@
 # Fly.io Backend Deploy
 
-Deploy the ShiftPilotAI FastAPI backend from `backend/` as a Fly.io app.
+Deploy the ShiftPilotAI FastAPI backend from the repository root as a Fly.io app.
+The root build context is required because the image includes `docs/persona.md`.
 
 ## First Setup
 
@@ -14,7 +15,7 @@ If the `app` name in `fly.toml` is already taken, change it to a unique Fly.io a
 ## Secrets
 
 ```powershell
-fly secrets set `
+fly secrets set --config backend/fly.toml `
   FRONTEND_ORIGIN="https://your-frontend.vercel.app" `
   NEXT_PUBLIC_SUPABASE_URL="..." `
   NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY="..." `
@@ -24,7 +25,9 @@ fly secrets set `
   GOOGLE_CLIENT_SECRET="..." `
   GOOGLE_REDIRECT_URI="https://your-frontend.vercel.app/auth/callback" `
   GOOGLE_CALENDAR_ID="primary" `
-  GOOGLE_MAPS_API_KEY="..."
+  GOOGLE_MAPS_API_KEY="..." `
+  AGENT_SECRETS='{"sigmaris-orchestrator":"<strong-secret>"}' `
+  SCHEDULE_AGENT_SECRET="<same-strong-secret>"
 ```
 
 Set `OPENAI_IMPORT_MODEL` only if import extraction should use a separate model.
@@ -32,9 +35,9 @@ Set `OPENAI_IMPORT_MODEL` only if import extraction should use a separate model.
 ## Deploy
 
 ```powershell
-fly deploy
-fly status
-fly checks list
+fly deploy --config backend/fly.toml
+fly status --config backend/fly.toml
+fly checks list --config backend/fly.toml
 ```
 
 ## Frontend Env

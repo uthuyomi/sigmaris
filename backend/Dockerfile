@@ -6,8 +6,9 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 
 WORKDIR /app
 
-COPY pyproject.toml ./
-COPY app ./app
+COPY backend/pyproject.toml ./
+COPY backend/app ./app
+COPY docs/persona.md ./docs/persona.md
 
 RUN pip install --no-cache-dir --upgrade pip \
     && pip install --no-cache-dir .

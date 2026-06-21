@@ -270,6 +270,7 @@ async def _execute_chat_tool(
     thread_id: str,
     tool_name: str,
     arguments: dict[str, Any],
+    audit_info: dict[str, str | None] | None = None,
 ) -> dict[str, Any]:
     logger.info("chat stream tool execute thread_id=%s tool=%s", thread_id, tool_name)
     try:
@@ -279,6 +280,7 @@ async def _execute_chat_tool(
                 google_tokens=google_tokens,
                 name=tool_name,
                 arguments=arguments,
+                audit_info=audit_info,
             ),
             timeout=TOOL_EXECUTION_TIMEOUT_SECONDS,
         )
@@ -319,10 +321,13 @@ async def run_chat_completion(
     thread_id: str,
     messages: list[dict[str, Any]],
     system: str | None = None,
+    persist_messages: bool = True,
+    audit_info: dict[str, str | None] | None = None,
 ) -> tuple[str, list[dict[str, Any]], str]:
-    thread = await get_chat_thread(jwt, thread_id)
-    if not thread:
-        raise RuntimeError("Requested chat thread was not found.")
+    if persist_messages:
+        thread = await get_chat_thread(jwt, thread_id)
+        if not thread:
+            raise RuntimeError("Requested chat thread was not found.")
 
     profile_context = await get_profile_context(jwt)
     attachment_facts = build_attachment_facts(await extract_latest_image_contexts(messages))
@@ -360,6 +365,7 @@ async def run_chat_completion(
         router_instruction,
     )
     google_tokens = headers_to_google_tokens(google_header_map)
+    resolved_audit = audit_info or {"actor_type": "chat", "actor_ref": thread_id}
     final_text = ""
     confirmed_followup_input: list[dict[str, Any]] | None = None
     latest_user_text = _latest_user_text(messages)
@@ -378,6 +384,7 @@ async def run_chat_completion(
             thread_id=thread_id,
             tool_name=tool_name,
             arguments=arguments,
+            audit_info=resolved_audit,
         )
         confirmed_followup_input = _confirmed_tool_followup_input(
             tool_name=tool_name,
@@ -423,7 +430,6 @@ async def run_chat_completion(
         for message in model_messages
     ]
     previous_response_id: str | None = None
-    final_text = ""
 
     for _ in range(8):
         response = await client.responses.create(
@@ -461,13 +467,55 @@ async def run_chat_completion(
                         auto_continue_travel_reminder=auto_continue_travel_reminder,
                     )
                     break
-                tool_result = await _execute_chat_tool(
-                    jwt=jwt,
-                    google_tokens=google_tokens,
-                    thread_id=thread_id,
-                    tool_name=function_call.name,
-                    arguments=arguments,
+                logger.info(
+                    "chat stream tool execute thread_id=%s tool=%s",
+                    thread_id,
+                    function_call.name,
                 )
+                try:
+                    tool_result = await asyncio.wait_for(
+                        execute_tool(
+                            jwt=jwt,
+                            google_tokens=google_tokens,
+                            name=function_call.name,
+                            arguments=arguments,
+                            audit_info=resolved_audit,
+                        ),
+                        timeout=TOOL_EXECUTION_TIMEOUT_SECONDS,
+                    )
+                except TimeoutError:
+                    logger.exception(
+                        "chat tool timeout thread_id=%s tool=%s timeout_seconds=%s",
+                        thread_id,
+                        function_call.name,
+                        TOOL_EXECUTION_TIMEOUT_SECONDS,
+                    )
+                    tool_result = {
+                        "ok": False,
+                        "reason": (
+                            f"Tool timed out after {TOOL_EXECUTION_TIMEOUT_SECONDS} seconds. "
+                            "Some events may already have been saved; rerun the same request to "
+                            "continue, because existing app calendar events are skipped."
+                        ),
+                    }
+                except RefreshError as error:
+                    logger.warning(
+                        "chat tool google auth failed thread_id=%s tool=%s error=%s",
+                        thread_id,
+                        function_call.name,
+                        error,
+                    )
+                    tool_result = google_auth_error_result(error)
+                except Exception as error:  # noqa: BLE001
+                    logger.exception(
+                        "chat tool failed thread_id=%s tool=%s",
+                        thread_id,
+                        function_call.name,
+                    )
+                    tool_result = {
+                        "ok": False,
+                        "reason": str(error),
+                    }
                 logger.info(
                     "chat stream tool complete thread_id=%s tool=%s ok=%s",
                     thread_id,
@@ -513,7 +561,8 @@ async def run_chat_completion(
         },
     }
     messages_to_store = [*messages, assistant_message]
-    await replace_chat_messages(jwt, thread_id=thread_id, messages=messages_to_store)
+    if persist_messages:
+        await replace_chat_messages(jwt, thread_id=thread_id, messages=messages_to_store)
     return final_text, messages_to_store, assistant_message["id"]
 
 
@@ -572,6 +621,7 @@ async def stream_chat_completion_ui(
         router_instruction,
     )
     google_tokens = headers_to_google_tokens(google_header_map)
+    ui_audit_info: dict[str, str | None] = {"actor_type": "chat", "actor_ref": thread_id}
     final_text = ""
     confirmed_followup_input: list[dict[str, Any]] | None = None
     latest_user_text = _latest_user_text(messages)
@@ -592,6 +642,7 @@ async def stream_chat_completion_ui(
             thread_id=thread_id,
             tool_name=tool_name,
             arguments=arguments,
+            audit_info=ui_audit_info,
         )
         confirmed_followup_input = _confirmed_tool_followup_input(
             tool_name=tool_name,
@@ -726,13 +777,51 @@ async def stream_chat_completion_ui(
                     yield f"data: {json.dumps(payload, ensure_ascii=False)}\n\n".encode("utf-8")
                     confirmation_requested = True
                     break
-                tool_result = await _execute_chat_tool(
-                    jwt=jwt,
-                    google_tokens=google_tokens,
-                    thread_id=thread_id,
-                    tool_name=function_call.name,
-                    arguments=arguments,
+                logger.info(
+                    "chat stream tool execute thread_id=%s tool=%s",
+                    thread_id,
+                    function_call.name,
                 )
+                try:
+                    tool_result = await asyncio.wait_for(
+                        execute_tool(
+                            jwt=jwt,
+                            google_tokens=google_tokens,
+                            name=function_call.name,
+                            arguments=arguments,
+                            audit_info=ui_audit_info,
+                        ),
+                        timeout=TOOL_EXECUTION_TIMEOUT_SECONDS,
+                    )
+                except TimeoutError:
+                    logger.exception(
+                        "chat tool timeout thread_id=%s tool=%s timeout_seconds=%s",
+                        thread_id,
+                        function_call.name,
+                        TOOL_EXECUTION_TIMEOUT_SECONDS,
+                    )
+                    tool_result = {
+                        "ok": False,
+                        "reason": f"Tool timed out after {TOOL_EXECUTION_TIMEOUT_SECONDS} seconds.",
+                    }
+                except RefreshError as error:
+                    logger.warning(
+                        "chat stream tool google auth failed thread_id=%s tool=%s error=%s",
+                        thread_id,
+                        function_call.name,
+                        error,
+                    )
+                    tool_result = google_auth_error_result(error)
+                except Exception as error:  # noqa: BLE001
+                    logger.exception(
+                        "chat stream tool failed thread_id=%s tool=%s",
+                        thread_id,
+                        function_call.name,
+                    )
+                    tool_result = {
+                        "ok": False,
+                        "reason": str(error),
+                    }
                 logger.info(
                     "chat stream tool complete thread_id=%s tool=%s ok=%s",
                     thread_id,
@@ -795,5 +884,3 @@ async def stream_chat_completion_ui(
         {"type": "finish", "finishReason": "stop"},
     ):
         yield f"data: {json.dumps(chunk, ensure_ascii=False)}\n\n".encode("utf-8")
-
-

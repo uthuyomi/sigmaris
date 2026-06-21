@@ -19,6 +19,13 @@ class Settings(BaseSettings):
     next_public_supabase_url: str | None = None
     next_public_supabase_publishable_key: str | None = None
     pro_plan_override_emails: str | None = None
+    agent_secrets: str | None = None
+    schedule_agent_base_url: str = "http://127.0.0.1:8000"
+    schedule_agent_id: str = "sigmaris-orchestrator"
+    schedule_agent_secret: str | None = None
+    sigmaris_persona_path: str = "../docs/persona.md"
+    sigmaris_rewrite_model: str | None = None
+    sigmaris_guard_model: str | None = None
 
     model_config = SettingsConfigDict(
         env_file=(".env", "../frontend/.env.local"),

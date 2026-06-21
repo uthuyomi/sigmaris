@@ -139,3 +139,15 @@ async def rest_delete(jwt: str, table: str, params: dict[str, str]) -> None:
         params=params,
     )
     _raise_for_status(response)
+
+
+async def rest_rpc(jwt: str, function_name: str, payload: Any) -> Any:
+    base_url, _ = _require_supabase_config()
+    client = await _get_client()
+    response = await client.post(
+        f"{base_url}/rest/v1/rpc/{function_name}",
+        headers=_headers(jwt),
+        json=payload,
+    )
+    _raise_for_status(response)
+    return response.json()

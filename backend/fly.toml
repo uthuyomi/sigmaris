@@ -7,13 +7,16 @@ app = 'shift-pilot-ai'
 primary_region = 'nrt'
 
 [build]
-  dockerfile = 'Dockerfile'
+  dockerfile = 'backend/Dockerfile'
 
 [env]
   API_PREFIX = '/api'
   APP_ENV = 'production'
   GOOGLE_CALENDAR_ID = 'primary'
   OPENAI_MODEL = 'gpt-5-nano'
+  SCHEDULE_AGENT_BASE_URL = 'http://127.0.0.1:8080'
+  SCHEDULE_AGENT_ID = 'sigmaris-orchestrator'
+  SIGMARIS_PERSONA_PATH = '/app/docs/persona.md'
 
 [http_service]
   internal_port = 8080
