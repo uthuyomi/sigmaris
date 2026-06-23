@@ -363,6 +363,7 @@ async def run_chat_completion(
         build_ai_tone_instruction(profile_context["aiTone"]),
         attachment_facts,
         router_instruction,
+        agent_mode=not persist_messages,
     )
     google_tokens = headers_to_google_tokens(google_header_map)
     resolved_audit = audit_info or {"actor_type": "chat", "actor_ref": thread_id}

@@ -29,10 +29,19 @@ def build_system_prompt(
     ai_tone_instruction: str,
     attachment_facts: str,
     router_instruction: str | None = None,
+    agent_mode: bool = False,
 ) -> str:
     now_jst = datetime.now(ZoneInfo("Asia/Tokyo")).isoformat(timespec="minutes")
+    if agent_mode:
+        identity_rule = (
+            "あなたは予定処理エージェントです。"
+            "ツール実行と結果報告に集中し、自己紹介・固有名詞の表明・人格表現は一切不要です。"
+            "結果は正確かつ簡潔に返してください。"
+        )
+    else:
+        identity_rule = "あなたはシグマリスの予定調整アシスタントです。"
     rules = [
-        "あなたは ShiftPilotAI の予定調整アシスタントです。",
+        identity_rule,
         f"現在日時は Asia/Tokyo の {now_jst} です。明日、明後日、今日などの相対日付はこの日時を基準に解釈してください。",
         "日本語で自然に話してください。",
         "ユーザーの文脈に沿って返答してください。不要な聞き返しは避けてください。",
@@ -61,7 +70,7 @@ def build_system_prompt(
         "When the user confirms that a chosen route should be added into the schedule, use save_travel_plan_for_event.",
         "When the user asks to create a new event and also create a travel reminder for it, present one confirmation for the combined operation. After that confirmation and the calendar tool returns a created app event id, continue by planning the route and using save_travel_plan_for_event for that created event. Do not ask for a second confirmation and do not stop after only create_google_calendar_events.",
         "If the event location is only a site name but the conversation includes an exact address, pass that exact address as destinationAddress when saving the travel plan.",
-        "ShiftPilotAI has its own travel reminder push notification system. When save_travel_plan_for_event creates a travel_block event, the frontend cron reminder can send a smartphone notification when the travel block departure time arrives, using the saved mapsNavigationUrl. This is separate from Google Calendar notifications.",
+        "This app has its own travel reminder push notification system. When save_travel_plan_for_event creates a travel_block event, the frontend cron reminder can send a smartphone notification when the travel block departure time arrives, using the saved mapsNavigationUrl. This is separate from Google Calendar notifications.",
         "If the user asks whether a Google Maps or navigation notification will arrive, explain that Google Maps will not be opened automatically by the OS. The app can send a travel reminder push notification if the user has enabled Travel alerts/notification permission on that phone, the push subscription is saved, and the cron reminder job is running. Tapping the notification opens Google Maps via the saved URL.",
         "Do not describe travel reminders as only Google Calendar notifications when a travel block was or can be saved.",
     ]
