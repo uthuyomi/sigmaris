@@ -159,16 +159,19 @@ def main() -> None:
 
     with httpx.Client(timeout=30.0) as client:
         # 1. Upsert user_fact_profile
+        # on_conflict=user_id: use UNIQUE(user_id) for conflict detection instead of PK(id),
+        # because we don't supply id in the payload.
         print("→ Upserting user_fact_profile …")
         resp = _post(
             client,
-            f"{supabase_url}/rest/v1/user_fact_profile",
+            f"{supabase_url}/rest/v1/user_fact_profile?on_conflict=user_id",
             upsert_headers,
             {"user_id": user_id, **PROFILE_DATA},
         )
         print(f"  OK (1 row)")
 
         # 2. Upsert user_fact_items (batch)
+        # on_conflict=user_id,category,key: use UNIQUE(user_id, category, key) for conflict detection.
         print(f"→ Upserting {len(FACT_ITEMS)} user_fact_items …")
         items_payload = [
             {
@@ -184,7 +187,7 @@ def main() -> None:
         ]
         resp = _post(
             client,
-            f"{supabase_url}/rest/v1/user_fact_items",
+            f"{supabase_url}/rest/v1/user_fact_items?on_conflict=user_id,category,key",
             upsert_headers,
             items_payload,
         )
