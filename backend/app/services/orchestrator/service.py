@@ -50,16 +50,20 @@ async def run_orchestrator_chat(
         fact_profile = None
 
     reason = "User requested schedule assistance through the Sigmaris orchestrator."
-    if request_context and isinstance(request_context.get("reason"), str):
-        supplied_reason = request_context["reason"].strip()
-        if supplied_reason:
-            reason = supplied_reason[:500]
+    caller_agent_id = settings.schedule_agent_id
+    if request_context and isinstance(request_context, dict):
+        if isinstance(request_context.get("reason"), str):
+            supplied_reason = request_context["reason"].strip()
+            if supplied_reason:
+                reason = supplied_reason[:500]
+        if isinstance(request_context.get("caller_agent_id"), str):
+            caller_agent_id = request_context["caller_agent_id"][:80]
 
     audit_row = await start_invocation(
         jwt=jwt,
         invocation_id=invocation_id,
         user_id=user_id,
-        caller_agent_id=settings.schedule_agent_id,
+        caller_agent_id=caller_agent_id,
         target_agent_id=agent.agent_id,
         target_endpoint=agent.chat_endpoint,
         reason=reason,

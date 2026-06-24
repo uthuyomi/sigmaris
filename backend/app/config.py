@@ -26,6 +26,11 @@ class Settings(BaseSettings):
     sigmaris_persona_path: str = "../docs/persona.md"
     sigmaris_rewrite_model: str | None = None
     sigmaris_guard_model: str | None = None
+    sigmaris_timezone: str = "Asia/Tokyo"
+    sigmaris_user_jwt: str | None = None
+    pushover_user_key: str | None = None
+    pushover_app_token: str | None = None
+    proactive_enabled: bool = True
 
     model_config = SettingsConfigDict(
         env_file=(".env", "../frontend/.env.local"),

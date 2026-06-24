@@ -14,6 +14,11 @@ from pydantic import BaseModel, Field
 from app.config import settings
 from app.services.chat import run_chat_completion
 from app.services.chat_tools import execute_tool, headers_to_google_tokens
+from app.services.proactive.actions import (
+    run_evening_checkin,
+    run_morning_briefing,
+    run_weekly_review,
+)
 from app.services.user_fact_data import (
     get_fact_items,
     get_null_fields,
@@ -243,3 +248,40 @@ async def agent_facts_unknown(
     jwt = _require_jwt(authorization)
     missing = await get_null_fields(jwt)
     return {"ok": True, "unknown": missing, "count": len(missing)}
+
+
+# ─── /api/agent/proactive/ ────────────────────────────────────────────────────
+
+
+_ACTION_MAP = {
+    "morning_briefing": run_morning_briefing,
+    "evening_checkin": run_evening_checkin,
+    "weekly_review": run_weekly_review,
+}
+
+
+class ProactiveTriggerRequest(BaseModel):
+    action: str = Field(description="morning_briefing | evening_checkin | weekly_review")
+
+
+@router.post("/proactive/trigger")
+async def proactive_trigger(
+    payload: ProactiveTriggerRequest,
+    authorization: str | None = Header(default=None),
+) -> dict[str, Any]:
+    _require_jwt(authorization)
+
+    fn = _ACTION_MAP.get(payload.action)
+    if fn is None:
+        raise HTTPException(
+            status_code=400,
+            detail={"error": f"Unknown action '{payload.action}'. Valid: {list(_ACTION_MAP)}"},
+        )
+
+    result = await fn()
+    return {
+        "ok": result.ok,
+        "action": result.action,
+        "notified": result.notified,
+        "error": result.error,
+    }

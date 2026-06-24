@@ -14,6 +14,7 @@ from app.routes.google_tools import router as google_tools_router
 from app.routes.import_preview import router as import_preview_router
 from app.routes.mobility import router as mobility_router
 from app.routes.orchestrator import router as orchestrator_router
+from app.services.proactive.scheduler import shutdown_scheduler, startup_scheduler
 from app.services.supabase_rest import (
     shutdown_supabase_http_client,
     startup_supabase_http_client,
@@ -29,9 +30,11 @@ logging.basicConfig(
 @asynccontextmanager
 async def lifespan(_: FastAPI):
     await startup_supabase_http_client()
+    startup_scheduler()
     try:
         yield
     finally:
+        shutdown_scheduler()
         await shutdown_supabase_http_client()
 
 
