@@ -14,6 +14,12 @@ from pydantic import BaseModel, Field
 from app.config import settings
 from app.services.chat import run_chat_completion
 from app.services.chat_tools import execute_tool, headers_to_google_tokens
+from app.services.user_fact_data import (
+    get_fact_items,
+    get_null_fields,
+    get_user_profile,
+    upsert_fact_item,
+)
 
 router = APIRouter(prefix="/api/agent", tags=["agent"])
 logger = logging.getLogger(__name__)
@@ -163,3 +169,77 @@ async def agent_tools_execute(
         raise HTTPException(status_code=500, detail={"error": str(error)}) from error
 
     return {"ok": True, "result": result}
+
+
+# ─── /api/agent/facts/ ────────────────────────────────────────────────────────
+
+
+class FactItemUpsertRequest(BaseModel):
+    category: str = Field(min_length=1, max_length=40)
+    key: str = Field(min_length=1, max_length=100)
+    value: str | None = None
+    confidence: float = Field(default=1.0, ge=0.0, le=1.0)
+    source: str = Field(default="manual", max_length=20)
+    reason: str = Field(default="", max_length=500)
+    notes: str | None = Field(default=None, max_length=1000)
+    expires_at: str | None = None
+
+
+@router.get("/facts/profile")
+async def agent_facts_profile(
+    authorization: str | None = Header(default=None),
+    x_agent_id: str | None = Header(default=None),
+    x_agent_secret: str | None = Header(default=None),
+) -> dict[str, Any]:
+    _verify_agent(x_agent_id, x_agent_secret)
+    jwt = _require_jwt(authorization)
+    profile = await get_user_profile(jwt)
+    return {"ok": True, "profile": profile}
+
+
+@router.get("/facts/items")
+async def agent_facts_items(
+    category: str | None = None,
+    authorization: str | None = Header(default=None),
+    x_agent_id: str | None = Header(default=None),
+    x_agent_secret: str | None = Header(default=None),
+) -> dict[str, Any]:
+    _verify_agent(x_agent_id, x_agent_secret)
+    jwt = _require_jwt(authorization)
+    items = await get_fact_items(jwt, category=category)
+    return {"ok": True, "items": items, "count": len(items)}
+
+
+@router.post("/facts/items")
+async def agent_facts_upsert(
+    payload: FactItemUpsertRequest,
+    authorization: str | None = Header(default=None),
+    x_agent_id: str | None = Header(default=None),
+    x_agent_secret: str | None = Header(default=None),
+) -> dict[str, Any]:
+    _verify_agent(x_agent_id, x_agent_secret)
+    jwt = _require_jwt(authorization)
+    result = await upsert_fact_item(
+        jwt,
+        category=payload.category,
+        key=payload.key,
+        value=payload.value,
+        confidence=payload.confidence,
+        source=payload.source,
+        reason=payload.reason,
+        notes=payload.notes,
+        expires_at=payload.expires_at,
+    )
+    return {"ok": True, "result": result}
+
+
+@router.get("/facts/unknown")
+async def agent_facts_unknown(
+    authorization: str | None = Header(default=None),
+    x_agent_id: str | None = Header(default=None),
+    x_agent_secret: str | None = Header(default=None),
+) -> dict[str, Any]:
+    _verify_agent(x_agent_id, x_agent_secret)
+    jwt = _require_jwt(authorization)
+    missing = await get_null_fields(jwt)
+    return {"ok": True, "unknown": missing, "count": len(missing)}

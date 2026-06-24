@@ -11,6 +11,7 @@ from app.services.orchestrator.persona_loader import load_persona
 from app.services.orchestrator.persona_rewriter import rewrite_with_persona
 from app.services.orchestrator.schedule_agent_client import call_schedule_agent
 from app.services.supabase_rest import get_current_user
+from app.services.user_fact_data import build_profile_context, extract_call_name, get_user_profile
 
 
 def _user_display_name(user: dict[str, Any]) -> str | None:
@@ -42,6 +43,12 @@ async def run_orchestrator_chat(
 
     persona = load_persona()
     agent = get_schedule_agent()
+
+    try:
+        fact_profile = await get_user_profile(jwt)
+    except Exception:
+        fact_profile = None
+
     reason = "User requested schedule assistance through the Sigmaris orchestrator."
     if request_context and isinstance(request_context.get("reason"), str):
         supplied_reason = request_context["reason"].strip()
@@ -67,6 +74,9 @@ async def run_orchestrator_chat(
     )
     audit_row_id = str(audit_row["id"])
 
+    profile_context = build_profile_context(fact_profile)
+    call_name = extract_call_name(fact_profile) or _user_display_name(user)
+
     try:
         schedule_result = await call_schedule_agent(
             agent=agent,
@@ -77,11 +87,12 @@ async def run_orchestrator_chat(
             thread_id=thread_id,
             invocation_id=invocation_id,
             reason=f"orchestrator:{invocation_id}:{reason}",
+            user_profile_context=profile_context,
         )
         rewrite = await rewrite_with_persona(
             source=schedule_result.text,
             persona=persona,
-            user_name=_user_display_name(user),
+            user_name=call_name,
         )
     except Exception as error:
         duration_ms = int((time.monotonic() - started_at) * 1000)

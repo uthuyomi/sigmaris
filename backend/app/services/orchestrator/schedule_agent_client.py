@@ -9,6 +9,20 @@ from app.config import settings
 from app.services.orchestrator.agent_registry import AgentDefinition
 
 
+_BASE_SYSTEM_OVERRIDE = (
+    "Return the schedule analysis and execution result accurately and plainly. "
+    "Do not role-play Sigmaris and do not add a separate personality layer. "
+    "Preserve dates, times, counts, URLs, named entities, warnings, and success "
+    "or failure states explicitly so another service can render the final tone."
+)
+
+
+def _build_system_override(user_profile_context: str | None) -> str:
+    if user_profile_context:
+        return f"{user_profile_context}\n\n{_BASE_SYSTEM_OVERRIDE}"
+    return _BASE_SYSTEM_OVERRIDE
+
+
 @dataclass(frozen=True)
 class ScheduleAgentResult:
     text: str
@@ -26,6 +40,7 @@ async def call_schedule_agent(
     thread_id: str | None,
     invocation_id: str,
     reason: str,
+    user_profile_context: str | None = None,
 ) -> ScheduleAgentResult:
     if not settings.schedule_agent_secret:
         raise RuntimeError("SCHEDULE_AGENT_SECRET is not configured.")
@@ -52,12 +67,7 @@ async def call_schedule_agent(
             for message in messages
         ],
         "persist_thread": False,
-        "system_override": (
-            "Return the schedule analysis and execution result accurately and plainly. "
-            "Do not role-play Sigmaris and do not add a separate personality layer. "
-            "Preserve dates, times, counts, URLs, named entities, warnings, and success "
-            "or failure states explicitly so another service can render the final tone."
-        ),
+        "system_override": _build_system_override(user_profile_context),
         "context": {
             "reason": reason,
             "invocationId": invocation_id,
