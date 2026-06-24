@@ -178,7 +178,7 @@ def main() -> None:
                 "value": value,
                 "confidence": confidence,
                 "source": source,
-                **({"notes": notes} if notes else {}),
+                "notes": notes,
             }
             for cat, key, value, confidence, source, notes in FACT_ITEMS
         ]
