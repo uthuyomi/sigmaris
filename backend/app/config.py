@@ -43,6 +43,10 @@ class Settings(BaseSettings):
     x_access_token_secret: str | None = None
     x_enabled: bool = False
     sigmaris_launch_date: str | None = None
+    github_token: str | None = None
+    github_repo: str | None = None
+    self_improvement_enabled: bool = False
+    health_sync_enabled: bool = False
 
     model_config = SettingsConfigDict(
         env_file=(".env", "../frontend/.env.local"),

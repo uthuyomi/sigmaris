@@ -15,6 +15,9 @@ from app.config import settings
 from app.services.chat import run_chat_completion
 from app.services.chat_tools import execute_tool, headers_to_google_tokens
 from app.services.self_model import get_self_model, record_discrepancy, reflect, update_self_model
+from app.services.self_improvement import ImprovementProposal, SelfImprovementAgent
+from app.services.x_reply_classifier import XReplyClassifier
+from app.services.health_data import HealthDataCollector, _summarize_health_items
 from app.services.proactive.actions import (
     run_evening_checkin,
     run_morning_briefing,
@@ -355,3 +358,199 @@ async def self_reflect(
         logger.exception("self_reflect failed")
         raise HTTPException(status_code=500, detail={"error": str(exc)}) from exc
     return result
+
+
+# ─── /api/agent/self/improve + apply ─────────────────────────────────────────
+
+
+class ApplyProposalRequest(BaseModel):
+    proposal_type: str = Field(description="'persona' or 'code'")
+    target_file: str = Field(min_length=1, max_length=300)
+    description: str = Field(min_length=1, max_length=500)
+    proposed_change: str = Field(min_length=1, max_length=8000)
+    reasoning: str = Field(default="", max_length=2000)
+
+
+@router.post("/self/improve")
+async def self_improve(
+    x_agent_id: str | None = Header(default=None),
+    x_agent_secret: str | None = Header(default=None),
+) -> dict[str, Any]:
+    _verify_agent(x_agent_id, x_agent_secret)
+    agent = SelfImprovementAgent()
+    try:
+        proposals = await agent.analyze()
+    except Exception as exc:
+        logger.exception("self_improve.analyze failed")
+        raise HTTPException(status_code=500, detail={"error": str(exc)}) from exc
+    return {
+        "ok": True,
+        "proposals": [
+            {
+                "proposal_type": p.proposal_type,
+                "target_file": p.target_file,
+                "description": p.description,
+                "proposed_change": p.proposed_change,
+                "reasoning": p.reasoning,
+                "safe": p.safe,
+                "blocked_reason": p.blocked_reason,
+            }
+            for p in proposals
+        ],
+        "count": len(proposals),
+    }
+
+
+@router.post("/self/apply")
+async def self_apply(
+    payload: ApplyProposalRequest,
+    x_agent_id: str | None = Header(default=None),
+    x_agent_secret: str | None = Header(default=None),
+) -> dict[str, Any]:
+    _verify_agent(x_agent_id, x_agent_secret)
+    proposal = ImprovementProposal(
+        proposal_type=payload.proposal_type,  # type: ignore[arg-type]
+        target_file=payload.target_file,
+        description=payload.description,
+        proposed_change=payload.proposed_change,
+        reasoning=payload.reasoning,
+    )
+    agent = SelfImprovementAgent()
+    try:
+        result = await agent.apply_improvement(proposal)
+    except Exception as exc:
+        logger.exception("self_apply failed")
+        raise HTTPException(status_code=500, detail={"error": str(exc)}) from exc
+    if not result.ok and result.action == "blocked":
+        raise HTTPException(status_code=403, detail={"error": result.error})
+    return {
+        "ok": result.ok,
+        "action": result.action,
+        "proposal_type": result.proposal_type,
+        "detail": result.detail,
+        "error": result.error,
+    }
+
+
+# ─── /api/agent/x/ ───────────────────────────────────────────────────────────
+
+
+class XClassifyRequest(BaseModel):
+    reply_text: str = Field(min_length=1, max_length=500)
+
+
+class XRespondRequest(BaseModel):
+    reply_text: str = Field(min_length=1, max_length=500)
+    classification: str = Field(description="HIGH | MEDIUM | LOW")
+
+
+@router.post("/x/classify")
+async def x_classify(
+    payload: XClassifyRequest,
+    x_agent_id: str | None = Header(default=None),
+    x_agent_secret: str | None = Header(default=None),
+) -> dict[str, Any]:
+    _verify_agent(x_agent_id, x_agent_secret)
+    classifier = XReplyClassifier()
+    try:
+        result = await classifier.classify(payload.reply_text)
+    except Exception as exc:
+        logger.exception("x_classify failed")
+        raise HTTPException(status_code=500, detail={"error": str(exc)}) from exc
+    return {"ok": True, **result}
+
+
+@router.post("/x/respond")
+async def x_respond(
+    payload: XRespondRequest,
+    x_agent_id: str | None = Header(default=None),
+    x_agent_secret: str | None = Header(default=None),
+) -> dict[str, Any]:
+    _verify_agent(x_agent_id, x_agent_secret)
+    classification = payload.classification.upper()
+    if classification not in ("HIGH", "MEDIUM", "LOW"):
+        raise HTTPException(
+            status_code=400,
+            detail={"error": "classification must be HIGH, MEDIUM, or LOW"},
+        )
+    classifier = XReplyClassifier()
+    try:
+        result = await classifier.generate_response(
+            payload.reply_text,
+            classification,  # type: ignore[arg-type]
+        )
+    except Exception as exc:
+        logger.exception("x_respond failed")
+        raise HTTPException(status_code=500, detail={"error": str(exc)}) from exc
+    return {"ok": True, **result}
+
+
+# ─── /api/agent/health/ ──────────────────────────────────────────────────────
+
+
+@router.post("/health/sync")
+async def health_sync(
+    authorization: str | None = Header(default=None),
+    x_agent_id: str | None = Header(default=None),
+    x_agent_secret: str | None = Header(default=None),
+    x_google_access_token: str | None = Header(default=None),
+) -> dict[str, Any]:
+    _verify_agent(x_agent_id, x_agent_secret)
+    jwt = _require_jwt(authorization)
+
+    if not settings.health_sync_enabled:
+        raise HTTPException(
+            status_code=503,
+            detail={"error": "Health sync is disabled (HEALTH_SYNC_ENABLED=false)."},
+        )
+    if not x_google_access_token:
+        raise HTTPException(
+            status_code=400,
+            detail={"error": "X-Google-Access-Token header is required for health sync."},
+        )
+
+    from datetime import date as _date
+    collector = HealthDataCollector()
+    try:
+        summary = await collector.fetch_daily_summary(
+            target_date=_date.today(),
+            google_access_token=x_google_access_token,
+        )
+        stored = await collector.store_to_fact_memory(jwt, summary)
+    except Exception as exc:
+        logger.exception("health_sync failed")
+        raise HTTPException(status_code=500, detail={"error": str(exc)}) from exc
+
+    return {
+        "ok": True,
+        "date": summary.date,
+        "summary": {
+            "steps": summary.steps,
+            "resting_heart_rate": summary.resting_heart_rate,
+            "avg_heart_rate": summary.avg_heart_rate,
+            "calories_kcal": summary.calories_kcal,
+            "sleep_minutes": summary.sleep_minutes,
+            "sleep_quality": summary.sleep_quality,
+        },
+        "stored_count": len(stored),
+    }
+
+
+@router.get("/health/summary")
+async def health_summary(
+    authorization: str | None = Header(default=None),
+    x_agent_id: str | None = Header(default=None),
+    x_agent_secret: str | None = Header(default=None),
+) -> dict[str, Any]:
+    _verify_agent(x_agent_id, x_agent_secret)
+    jwt = _require_jwt(authorization)
+
+    items = await get_fact_items(jwt, category="health")
+    from datetime import date as _date, timedelta as _timedelta
+    cutoff = (_date.today() - _timedelta(days=7)).isoformat()
+    recent = [
+        item for item in items
+        if "_" in (item.get("key") or "") and item["key"].rsplit("_", 1)[-1] >= cutoff
+    ]
+    result = _summarize_health_items(recent)
+    return {"ok": True, **result, "count": len(result.get("days", []))}
