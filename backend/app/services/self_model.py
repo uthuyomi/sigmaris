@@ -256,7 +256,6 @@ discrepanciesに相違がなければ空リスト []。"""
             {"role": "user", "content": user},
         ],
         response_format={"type": "json_object"},
-        temperature=0.3,
         max_completion_tokens=1000,
     )
 
