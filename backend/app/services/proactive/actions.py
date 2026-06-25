@@ -4,8 +4,8 @@ import logging
 import uuid
 from dataclasses import dataclass, field
 
-from app.config import settings
 from app.services.orchestrator.service import run_orchestrator_chat
+from app.services.proactive.jwt_manager import get_sigmaris_jwt
 from app.services.proactive.notifier import get_notifier
 
 logger = logging.getLogger(__name__)
@@ -34,9 +34,10 @@ class ActionResult:
 
 
 async def _run_action(action_name: str, title: str, prompt: str) -> ActionResult:
-    jwt = settings.sigmaris_user_jwt
-    if not jwt:
-        return ActionResult(action=action_name, ok=False, error="SIGMARIS_USER_JWT not configured")
+    try:
+        jwt = await get_sigmaris_jwt()
+    except RuntimeError as exc:
+        return ActionResult(action=action_name, ok=False, error=str(exc))
 
     thread_id = f"proactive-{action_name}-{uuid.uuid4()}"
     try:

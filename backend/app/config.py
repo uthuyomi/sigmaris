@@ -28,6 +28,7 @@ class Settings(BaseSettings):
     sigmaris_guard_model: str | None = None
     sigmaris_timezone: str = "Asia/Tokyo"
     sigmaris_user_jwt: str | None = None
+    sigmaris_refresh_token: str | None = None
     pushover_user_key: str | None = None
     pushover_app_token: str | None = None
     proactive_enabled: bool = True
