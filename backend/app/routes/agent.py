@@ -14,6 +14,7 @@ from pydantic import BaseModel, Field
 from app.config import settings
 from app.services.chat import run_chat_completion
 from app.services.chat_tools import execute_tool, headers_to_google_tokens
+from app.services.self_model import get_self_model, record_discrepancy, reflect, update_self_model
 from app.services.proactive.actions import (
     run_evening_checkin,
     run_morning_briefing,
@@ -285,3 +286,72 @@ async def proactive_trigger(
         "notified": result.notified,
         "error": result.error,
     }
+
+
+# ─── /api/agent/self/ ────────────────────────────────────────────────────────
+
+
+@router.get("/self/model")
+async def self_model_get(
+    x_agent_id: str | None = Header(default=None),
+    x_agent_secret: str | None = Header(default=None),
+) -> dict[str, Any]:
+    _verify_agent(x_agent_id, x_agent_secret)
+    model = await get_self_model()
+    return {"ok": True, "model": model}
+
+
+class SelfModelUpdateRequest(BaseModel):
+    identity_statement: str = Field(min_length=1, max_length=2000)
+    goals: list[Any] = Field(default_factory=list)
+    patterns: list[Any] = Field(default_factory=list)
+
+
+@router.post("/self/model")
+async def self_model_update(
+    payload: SelfModelUpdateRequest,
+    x_agent_id: str | None = Header(default=None),
+    x_agent_secret: str | None = Header(default=None),
+) -> dict[str, Any]:
+    _verify_agent(x_agent_id, x_agent_secret)
+    updated = await update_self_model(
+        identity_statement=payload.identity_statement,
+        goals=payload.goals,
+        patterns=payload.patterns,
+    )
+    return {"ok": True, "model": updated}
+
+
+class DiscrepancyRequest(BaseModel):
+    expected: str = Field(min_length=1, max_length=500)
+    actual: str = Field(min_length=1, max_length=500)
+    note: str = Field(default="", max_length=1000)
+
+
+@router.post("/self/discrepancy")
+async def self_discrepancy_record(
+    payload: DiscrepancyRequest,
+    x_agent_id: str | None = Header(default=None),
+    x_agent_secret: str | None = Header(default=None),
+) -> dict[str, Any]:
+    _verify_agent(x_agent_id, x_agent_secret)
+    rec = await record_discrepancy(
+        expected=payload.expected,
+        actual=payload.actual,
+        note=payload.note,
+    )
+    return {"ok": True, "discrepancy": rec}
+
+
+@router.post("/self/reflect")
+async def self_reflect(
+    x_agent_id: str | None = Header(default=None),
+    x_agent_secret: str | None = Header(default=None),
+) -> dict[str, Any]:
+    _verify_agent(x_agent_id, x_agent_secret)
+    try:
+        result = await reflect()
+    except Exception as exc:
+        logger.exception("self_reflect failed")
+        raise HTTPException(status_code=500, detail={"error": str(exc)}) from exc
+    return result

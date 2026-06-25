@@ -11,7 +11,22 @@ from app.services.orchestrator.persona_loader import load_persona
 from app.services.orchestrator.persona_rewriter import rewrite_with_persona
 from app.services.orchestrator.schedule_agent_client import call_schedule_agent
 from app.services.supabase_rest import get_current_user
+from app.services.self_model import get_self_model
 from app.services.user_fact_data import build_profile_context, extract_call_name, get_user_profile
+
+
+def _build_self_model_context(model: dict | None) -> str | None:
+    if not model:
+        return None
+    identity = model.get("identity_statement", "").strip()
+    if not identity:
+        return None
+    goals = model.get("current_goals") or []
+    lines = [f"[シグマリス自己認識]\n{identity}"]
+    if goals:
+        goal_str = "・".join(str(g) for g in goals[:5])
+        lines.append(f"現在の目標: {goal_str}")
+    return "\n".join(lines)
 
 
 def _user_display_name(user: dict[str, Any]) -> str | None:
@@ -49,6 +64,11 @@ async def run_orchestrator_chat(
     except Exception:
         fact_profile = None
 
+    try:
+        self_model = await get_self_model()
+    except Exception:
+        self_model = None
+
     reason = "User requested schedule assistance through the Sigmaris orchestrator."
     caller_agent_id = settings.schedule_agent_id
     if request_context and isinstance(request_context, dict):
@@ -80,6 +100,7 @@ async def run_orchestrator_chat(
 
     profile_context = build_profile_context(fact_profile)
     call_name = extract_call_name(fact_profile) or _user_display_name(user)
+    self_model_context = _build_self_model_context(self_model)
 
     try:
         schedule_result = await call_schedule_agent(
@@ -92,6 +113,7 @@ async def run_orchestrator_chat(
             invocation_id=invocation_id,
             reason=f"orchestrator:{invocation_id}:{reason}",
             user_profile_context=profile_context,
+            self_model_context=self_model_context,
         )
         rewrite = await rewrite_with_persona(
             source=schedule_result.text,

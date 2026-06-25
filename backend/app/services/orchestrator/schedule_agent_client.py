@@ -17,10 +17,17 @@ _BASE_SYSTEM_OVERRIDE = (
 )
 
 
-def _build_system_override(user_profile_context: str | None) -> str:
+def _build_system_override(
+    user_profile_context: str | None,
+    self_model_context: str | None = None,
+) -> str:
+    parts = []
     if user_profile_context:
-        return f"{user_profile_context}\n\n{_BASE_SYSTEM_OVERRIDE}"
-    return _BASE_SYSTEM_OVERRIDE
+        parts.append(user_profile_context)
+    if self_model_context:
+        parts.append(self_model_context)
+    parts.append(_BASE_SYSTEM_OVERRIDE)
+    return "\n\n".join(parts)
 
 
 @dataclass(frozen=True)
@@ -41,6 +48,7 @@ async def call_schedule_agent(
     invocation_id: str,
     reason: str,
     user_profile_context: str | None = None,
+    self_model_context: str | None = None,
 ) -> ScheduleAgentResult:
     if not settings.schedule_agent_secret:
         raise RuntimeError("SCHEDULE_AGENT_SECRET is not configured.")
@@ -67,7 +75,7 @@ async def call_schedule_agent(
             for message in messages
         ],
         "persist_thread": False,
-        "system_override": _build_system_override(user_profile_context),
+        "system_override": _build_system_override(user_profile_context, self_model_context),
         "context": {
             "reason": reason,
             "invocationId": invocation_id,
