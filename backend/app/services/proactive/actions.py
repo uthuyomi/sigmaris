@@ -7,6 +7,7 @@ from dataclasses import dataclass, field
 from app.services.orchestrator.service import run_orchestrator_chat
 from app.services.proactive.jwt_manager import get_sigmaris_jwt
 from app.services.proactive.notifier import get_notifier
+from app.services.x_publisher import format_sigmaris_post, get_publisher
 
 logger = logging.getLogger(__name__)
 
@@ -65,7 +66,14 @@ async def _run_action(action_name: str, title: str, prompt: str) -> ActionResult
 
 async def run_morning_briefing() -> ActionResult:
     logger.info("Running morning briefing")
-    return await _run_action("morning_briefing", "シグマリス 朝のブリーフィング", _MORNING_PROMPT)
+    result = await _run_action("morning_briefing", "シグマリス 朝のブリーフィング", _MORNING_PROMPT)
+    if result.ok:
+        publisher = get_publisher()
+        text = format_sigmaris_post("今日も海星さんのサポートを始めます。", "daily_log")
+        posted = await publisher.post_tweet(text)
+        if posted:
+            result.tags.append("x_posted")
+    return result
 
 
 async def run_evening_checkin() -> ActionResult:

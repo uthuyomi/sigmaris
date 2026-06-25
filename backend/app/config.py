@@ -34,6 +34,15 @@ class Settings(BaseSettings):
     pushover_user_key: str | None = None
     pushover_app_token: str | None = None
     proactive_enabled: bool = True
+    local_llm_enabled: bool = False
+    ollama_base_url: str = "http://localhost:11434"
+    ollama_model: str = "qwen2.5:14b"
+    x_api_key: str | None = None
+    x_api_secret: str | None = None
+    x_access_token: str | None = None
+    x_access_token_secret: str | None = None
+    x_enabled: bool = False
+    sigmaris_launch_date: str | None = None
 
     model_config = SettingsConfigDict(
         env_file=(".env", "../frontend/.env.local"),
