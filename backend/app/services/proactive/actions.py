@@ -7,7 +7,7 @@ from dataclasses import dataclass, field
 from app.services.orchestrator.service import run_orchestrator_chat
 from app.services.proactive.jwt_manager import get_sigmaris_jwt
 from app.services.proactive.notifier import get_notifier
-from app.services.x_publisher import format_sigmaris_post, get_publisher
+from app.services.x_publisher import get_publisher
 
 logger = logging.getLogger(__name__)
 
@@ -64,15 +64,43 @@ async def _run_action(action_name: str, title: str, prompt: str) -> ActionResult
     return ActionResult(action=action_name, ok=True, notified=notified)
 
 
+async def _try_smart_x_post(result: ActionResult) -> None:
+    """Decide whether to post today, generate content, check similarity, then post."""
+    from app.services.x_post_generator import (
+        generate_post,
+        record_post,
+        should_post_today,
+    )
+
+    post_type, reason = await should_post_today()
+
+    if post_type is None:
+        logger.info("x_post: skip — %s", reason)
+        result.tags.append(f"x_skip:{reason[:60]}")
+        return
+
+    post_text = await generate_post(post_type)
+    if not post_text:
+        logger.warning("x_post: generation failed for type=%s", post_type)
+        result.tags.append("x_generate_failed")
+        return
+
+    publisher = get_publisher()
+    posted = await publisher.post_tweet(post_text)
+    if posted:
+        await record_post(post_text, post_type)
+        result.tags.append(f"x_posted:{post_type}")
+        logger.info("x_post: posted type=%s len=%d", post_type, len(post_text))
+    else:
+        result.tags.append("x_post_failed")
+        logger.warning("x_post: publisher returned False for type=%s — no retry until tomorrow", post_type)
+
+
 async def run_morning_briefing() -> ActionResult:
     logger.info("Running morning briefing")
     result = await _run_action("morning_briefing", "シグマリス 朝のブリーフィング", _MORNING_PROMPT)
     if result.ok:
-        publisher = get_publisher()
-        text = format_sigmaris_post("今日も海星さんのサポートを始めます。", "daily_log")
-        posted = await publisher.post_tweet(text)
-        if posted:
-            result.tags.append("x_posted")
+        await _try_smart_x_post(result)
     return result
 
 

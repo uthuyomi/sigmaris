@@ -47,6 +47,8 @@ class Settings(BaseSettings):
     github_repo: str | None = None
     self_improvement_enabled: bool = False
     health_sync_enabled: bool = False
+    news_api_key: str | None = None
+    research_enabled: bool = False
 
     model_config = SettingsConfigDict(
         env_file=(".env", "../frontend/.env.local"),

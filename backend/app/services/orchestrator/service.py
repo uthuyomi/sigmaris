@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import time
 import uuid
 from typing import Any
@@ -150,6 +151,14 @@ async def run_orchestrator_chat(
         },
         error_code=None,
         duration_ms=duration_ms,
+    )
+
+    # Fire-and-forget: extract memorable facts from this conversation turn.
+    from app.services.memory_extractor import extract_from_conversation  # noqa: PLC0415
+    full_messages = list(messages) + [{"role": "assistant", "content": rewrite.text}]
+    asyncio.create_task(
+        extract_from_conversation(messages=full_messages, jwt=jwt),
+        name=f"memory_extract:{invocation_id}",
     )
 
     return {

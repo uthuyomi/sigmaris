@@ -13,6 +13,7 @@ from app.services.proactive.actions import (
     run_morning_briefing,
     run_weekly_review,
 )
+from app.services.research_agent import run_research
 
 logger = logging.getLogger(__name__)
 
@@ -25,6 +26,14 @@ async def _safe(fn: Callable[[], Awaitable[ActionResult]], name: str) -> None:
         logger.info("Proactive job %s done: ok=%s notified=%s", name, result.ok, result.notified)
     except Exception:
         logger.exception("Proactive job %s raised unexpectedly", name)
+
+
+async def _research() -> None:
+    try:
+        result = await run_research()
+        logger.info("Research job done: %s", result)
+    except Exception:
+        logger.exception("Research job raised unexpectedly")
 
 
 async def _morning() -> None:
@@ -49,6 +58,7 @@ def startup_scheduler() -> None:
     tz = settings.sigmaris_timezone
     _scheduler = AsyncIOScheduler(timezone=tz)
 
+    _scheduler.add_job(_research, CronTrigger(hour=7, minute=0, timezone=tz), id="research", replace_existing=True)
     _scheduler.add_job(_morning, CronTrigger(hour=8, minute=0, timezone=tz), id="morning_briefing", replace_existing=True)
     _scheduler.add_job(_evening, CronTrigger(hour=22, minute=0, timezone=tz), id="evening_checkin", replace_existing=True)
     _scheduler.add_job(_weekly, CronTrigger(day_of_week="sun", hour=20, minute=0, timezone=tz), id="weekly_review", replace_existing=True)
