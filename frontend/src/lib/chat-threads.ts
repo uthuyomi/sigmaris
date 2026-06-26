@@ -3,7 +3,9 @@
 import type { UIMessage } from "ai";
 import { createClient } from "@/lib/supabase/server";
 
-const DEFAULT_THREAD_TITLE = "New chat";
+const DEFAULT_THREAD_TITLE = "新しいチャット";
+const LEGACY_DEFAULT_THREAD_TITLE = "New chat";
+const THREAD_TITLE_MAX_LENGTH = 20;
 
 const compactPartsForStorage = (parts: UIMessage["parts"]) => {
   return parts.map((part) => {
@@ -24,12 +26,12 @@ const deriveThreadTitle = (messages: UIMessage[]) => {
 
   const textPart = firstUserMessage.parts.find((part) => part.type === "text");
   if (textPart && textPart.text.trim()) {
-    return textPart.text.trim().slice(0, 40);
+    return textPart.text.trim().slice(0, THREAD_TITLE_MAX_LENGTH);
   }
 
   const filePart = firstUserMessage.parts.find((part) => part.type === "file");
   if (filePart?.filename) {
-    return filePart.filename.slice(0, 40);
+    return filePart.filename.slice(0, THREAD_TITLE_MAX_LENGTH);
   }
 
   return DEFAULT_THREAD_TITLE;
@@ -50,13 +52,17 @@ export const listChatThreads = async (userId: string) => {
   return data ?? [];
 };
 
-export const createChatThread = async (userId: string, title = DEFAULT_THREAD_TITLE) => {
+export const createChatThread = async (
+  userId: string,
+  options: { id?: string; title?: string } = {},
+) => {
   const supabase = await createClient();
   const { data, error } = await supabase
     .from("chat_threads")
     .insert({
+      ...(options.id ? { id: options.id } : {}),
       user_id: userId,
-      title,
+      title: options.title ?? DEFAULT_THREAD_TITLE,
     })
     .select("id,title,created_at,updated_at")
     .single();
@@ -166,7 +172,9 @@ export const replaceChatMessages = async (userId: string, threadId: string, mess
   if (!currentThread) return;
 
   const nextTitle =
-    currentThread.title === DEFAULT_THREAD_TITLE ? deriveThreadTitle(messages) : currentThread.title;
+    currentThread.title === DEFAULT_THREAD_TITLE || currentThread.title === LEGACY_DEFAULT_THREAD_TITLE
+      ? deriveThreadTitle(messages)
+      : currentThread.title;
 
   const { error: updateError } = await supabase
     .from("chat_threads")

@@ -6,29 +6,25 @@ import {
   UserMessageAttachments,
 } from "@/components/attachment";
 import { MarkdownText } from "@/components/markdown-text";
-import { promptTemplates } from "@/components/thread-prompt-templates";
 import { ToolFallback } from "@/components/tool-fallback";
 import {
   parseLatestConfirmationAction,
   removeConfirmationMarkers,
   type ChatConfirmationAction,
 } from "@/lib/chat-confirmation";
-import { getDictionary, type AppLocale } from "@/lib/i18n";
+import type { AppLocale } from "@/lib/i18n";
 import {
   ComposerPrimitive,
   MessagePrimitive,
   ThreadPrimitive,
   useAuiState,
-  useComposerRuntime,
   useThreadRuntime,
 } from "@assistant-ui/react";
 import {
   ArrowDownIcon,
   ArrowUpIcon,
-  BotIcon,
   CheckIcon,
   CreditCardIcon,
-  FileTextIcon,
   PlusIcon,
   SquareIcon,
   XIcon,
@@ -45,7 +41,6 @@ type ThreadProps = {
 };
 
 export const Thread: FC<ThreadProps> = ({ locale, freeChatUsage, initialUserMessageCount }) => {
-  const dict = getDictionary(locale);
   const viewportRef = useRef<HTMLDivElement | null>(null);
   const touchStartRef = useRef<{ x: number; y: number } | null>(null);
   const showScrollButtonRef = useRef(false);
@@ -201,12 +196,12 @@ export const Thread: FC<ThreadProps> = ({ locale, freeChatUsage, initialUserMess
   }, [showPendingStatus]);
 
   return (
-    <ThreadPrimitive.Root className="chat-thread-surface flex h-full min-h-0 min-w-0 max-w-full touch-pan-y flex-col overflow-hidden overscroll-x-none bg-white dark:bg-[#212121]">
+    <ThreadPrimitive.Root className="chat-thread-surface flex h-full min-h-0 min-w-0 max-w-full touch-pan-y flex-col overflow-hidden overscroll-x-none bg-[#212121] text-[#ececec]">
       <div className="relative min-h-0 min-w-0 flex-1 overflow-hidden">
         <ThreadPrimitive.Viewport
           ref={viewportRef}
           data-scrollbar-hidden="true"
-          className="no-scrollbar scrollbar-hidden h-full min-w-0 max-w-full touch-pan-y overflow-x-hidden overflow-y-auto overscroll-x-none px-3 pt-5 pb-36 sm:px-6 sm:pb-40"
+          className="no-scrollbar scrollbar-hidden h-full min-w-0 max-w-full touch-pan-y overflow-x-hidden overflow-y-auto overscroll-x-none px-4 pt-5 pb-36 sm:px-6 sm:pb-40"
           style={{
             msOverflowStyle: "none",
             scrollbarWidth: "none",
@@ -223,8 +218,8 @@ export const Thread: FC<ThreadProps> = ({ locale, freeChatUsage, initialUserMess
           <button
             type="button"
             onClick={() => scrollToBottom()}
-            className="absolute bottom-36 left-1/2 z-20 inline-flex size-10 -translate-x-1/2 items-center justify-center rounded-full border border-stone-900/10 bg-white text-stone-900 shadow-[0_18px_35px_-24px_rgba(0,0,0,0.55)] transition hover:bg-stone-100 dark:border-white/10 dark:bg-[#2f2f2f] dark:text-white dark:hover:bg-[#3a3a3a]"
-            aria-label="下へ移動"
+            className="absolute bottom-36 left-1/2 z-20 inline-flex size-9 -translate-x-1/2 items-center justify-center rounded-full border border-white/10 bg-[#2f2f2f] text-[#ececec] shadow-[0_18px_35px_-24px_rgba(0,0,0,0.9)] transition hover:bg-[#3a3a3a]"
+            aria-label="最新メッセージへ移動"
           >
             <ArrowDownIcon className="size-5" />
           </button>
@@ -232,14 +227,14 @@ export const Thread: FC<ThreadProps> = ({ locale, freeChatUsage, initialUserMess
 
         {showPendingStatus ? (
           <div className="pointer-events-none absolute inset-x-0 bottom-32 z-20 flex justify-center px-4 sm:px-6">
-            <div className="rounded-full border border-stone-900/10 bg-white/95 px-4 py-2 text-xs tracking-wide text-stone-600 shadow-[0_20px_45px_-35px_rgba(0,0,0,0.6)] backdrop-blur dark:border-white/10 dark:bg-[#2f2f2f]/95 dark:text-stone-300">
+            <div className="rounded-full border border-white/10 bg-[#2f2f2f]/95 px-4 py-2 text-xs text-[#8e8ea0] shadow-[0_20px_45px_-35px_rgba(0,0,0,0.9)] backdrop-blur">
               {getPendingStatusLabel(statusStep)}
             </div>
           </div>
         ) : null}
 
         <div className="pointer-events-none absolute inset-x-0 bottom-0 z-10 px-3 pb-[calc(0.75rem+env(safe-area-inset-bottom))] pt-10 sm:px-6 sm:pb-6">
-          <div className="pointer-events-none absolute inset-x-0 bottom-0 h-28 bg-[linear-gradient(180deg,rgba(255,255,255,0),rgba(255,255,255,0.92)_48%,rgba(255,255,255,1)_100%)] dark:bg-[linear-gradient(180deg,rgba(33,33,33,0),rgba(33,33,33,0.92)_48%,rgba(33,33,33,1)_100%)]" />
+          <div className="pointer-events-none absolute inset-x-0 bottom-0 h-28 bg-[linear-gradient(180deg,rgba(33,33,33,0),rgba(33,33,33,0.92)_48%,rgba(33,33,33,1)_100%)]" />
           <div className="pointer-events-auto relative">
             {freeChatUsage ? (
               <ChatLimitNotice
@@ -249,7 +244,7 @@ export const Thread: FC<ThreadProps> = ({ locale, freeChatUsage, initialUserMess
               />
             ) : null}
             <Composer
-              placeholder={dict.chat.inputPlaceholder}
+              placeholder="シグマリスにメッセージする"
               disabled={chatLimitReached}
             />
           </div>
@@ -259,42 +254,21 @@ export const Thread: FC<ThreadProps> = ({ locale, freeChatUsage, initialUserMess
   );
 };
 
-const ThreadWelcome: FC<Pick<ThreadProps, "locale">> = ({ locale }) => {
-  const dict = getDictionary(locale);
+const ThreadWelcome: FC<Pick<ThreadProps, "locale">> = () => {
   const isEmpty = useAuiState((s) => s.thread.isEmpty);
-  const composerText = useAuiState((s) => s.composer.text);
-  const composer = useComposerRuntime();
   if (!isEmpty) return null;
 
-  const insertTemplate = (template: PromptTemplate) => {
-    const nextText = composerText.trim()
-      ? `${composerText.trimEnd()}\n\n${template.text}`
-      : template.text;
-
-    composer.setText(nextText);
-  };
-
   return (
-    <div className="mx-auto my-auto flex min-h-full w-full max-w-3xl flex-col justify-center px-2 pb-28 text-center">
-      <h1 className="text-2xl font-semibold text-stone-950 dark:text-stone-50 sm:text-3xl">
-        {dict.chat.welcomeTitle}
-      </h1>
-      <p className="mt-3 text-sm leading-7 text-stone-500 dark:text-stone-400 sm:text-base sm:leading-8">
-        {dict.chat.welcomeBody}
-      </p>
-
-      <div className="mt-8 grid grid-cols-1 gap-2.5 sm:grid-cols-2">
-        {promptTemplates.slice(0, 4).map((template) => (
-          <button
-            key={template.id}
-            type="button"
-            onClick={() => insertTemplate(template)}
-            className="inline-flex min-h-12 max-w-full items-center justify-center rounded-2xl border border-stone-900/10 bg-stone-50 px-4 py-2.5 text-sm font-medium text-stone-800 transition hover:border-stone-900/18 hover:bg-white focus:outline-none focus:ring-2 focus:ring-stone-900/15 dark:border-white/10 dark:bg-white/6 dark:text-stone-200 dark:hover:border-white/18 dark:hover:bg-white/10"
-          >
-            <span className="truncate">{template.label}</span>
-          </button>
-        ))}
+    <div className="mx-auto my-auto flex min-h-full w-full max-w-[800px] flex-col items-center justify-center px-2 pb-28 text-center">
+      <div className="mb-6 flex size-16 items-center justify-center rounded-2xl bg-[#9b59b6] text-3xl font-semibold text-white shadow-[0_24px_80px_-42px_rgba(155,89,182,0.95)]">
+        Σ
       </div>
+      <h1 className="text-3xl font-semibold tracking-normal text-[#ececec] sm:text-4xl">
+        シグマリス
+      </h1>
+      <p className="mt-3 text-sm leading-7 text-[#8e8ea0] sm:text-base">
+        何でも話しかけてください
+      </p>
     </div>
   );
 };
@@ -304,7 +278,7 @@ const ThreadMessage: FC = () => {
 
   return (
     <MessagePrimitive.Root
-      className="mx-auto w-full max-w-3xl min-w-0 overflow-hidden py-2 sm:py-3"
+      className="mx-auto w-full max-w-[800px] min-w-0 overflow-visible py-3 sm:py-4"
       data-role={role}
     >
       {role === "user" ? <UserMessage /> : <AssistantMessage />}
@@ -316,6 +290,7 @@ const AssistantMessage: FC = () => {
   const thread = useThreadRuntime();
   const [isSendingConfirmation, setIsSendingConfirmation] = useState(false);
   const currentMessageId = useAuiState((s) => s.message.id);
+  const isRunning = useAuiState((s) => s.thread.isRunning);
   const latestAssistantMessageId = useAuiState((s) => {
     for (let index = s.thread.messages.length - 1; index >= 0; index -= 1) {
       const message = s.thread.messages[index];
@@ -349,9 +324,9 @@ const AssistantMessage: FC = () => {
     text.replace(/^確認中\.\.\.\s*/u, "").replace(/^確認中…\s*/u, "");
 
   return (
-    <div className="grid w-full min-w-0 grid-cols-[32px_minmax(0,1fr)] gap-3 overflow-hidden px-1 py-3 text-sm leading-7 text-stone-900 [overflow-wrap:anywhere] dark:text-stone-100 sm:grid-cols-[36px_minmax(0,1fr)] sm:px-3">
-      <div className="mt-1 inline-flex size-8 items-center justify-center rounded-full bg-stone-950 text-white dark:bg-white dark:text-stone-950 sm:size-9">
-        <BotIcon className="size-4" />
+    <div className="grid w-full min-w-0 grid-cols-[28px_minmax(0,1fr)] gap-4 overflow-visible px-0 py-2 text-[15px] leading-7 text-[#ececec] [overflow-wrap:anywhere] sm:grid-cols-[32px_minmax(0,1fr)]">
+      <div className="mt-1 inline-flex size-7 items-center justify-center rounded-full bg-[#9b59b6] text-sm font-semibold text-white sm:size-8">
+        Σ
       </div>
       <div className="min-w-0">
         <MessagePrimitive.Parts
@@ -368,6 +343,9 @@ const AssistantMessage: FC = () => {
             },
           }}
         />
+        {isRunning && currentMessageId === latestAssistantMessageId ? (
+          <span className="ml-0.5 inline-block h-5 w-2 translate-y-1 animate-pulse rounded-sm bg-[#ececec]" />
+        ) : null}
         {confirmationAction ? (
           <ConfirmationActionCard
             action={confirmationAction}
@@ -388,9 +366,9 @@ const ConfirmationActionCard: FC<{
   onCancel: () => void;
 }> = ({ action, disabled, onConfirm, onCancel }) => {
   return (
-    <div className="mt-3 max-w-xl rounded-2xl border border-stone-900/10 bg-stone-50 px-4 py-3 text-stone-900 shadow-[0_18px_45px_-34px_rgba(28,25,23,0.55)] dark:border-white/10 dark:bg-white/6 dark:text-stone-100">
+    <div className="mt-3 max-w-xl rounded-2xl border border-white/10 bg-[#2f2f2f] px-4 py-3 text-[#ececec] shadow-[0_18px_45px_-34px_rgba(0,0,0,0.75)]">
       <div className="text-sm font-semibold leading-6">{action.title}</div>
-      <p className="mt-1 text-xs leading-5 text-stone-600 dark:text-stone-300">
+      <p className="mt-1 text-xs leading-5 text-[#8e8ea0]">
         {action.description}
       </p>
       <div className="mt-3 flex flex-wrap gap-2">
@@ -398,7 +376,7 @@ const ConfirmationActionCard: FC<{
           type="button"
           disabled={disabled}
           onClick={onConfirm}
-          className="inline-flex min-h-10 items-center justify-center gap-2 rounded-xl bg-stone-950 px-4 text-sm font-semibold text-white transition hover:bg-stone-800 disabled:cursor-not-allowed disabled:opacity-45 dark:bg-white dark:text-stone-950 dark:hover:bg-stone-200"
+          className="inline-flex min-h-10 items-center justify-center gap-2 rounded-xl bg-[#9b59b6] px-4 text-sm font-semibold text-white transition hover:bg-[#8e44ad] disabled:cursor-not-allowed disabled:opacity-45"
         >
           <CheckIcon className="size-4" />
           はい
@@ -407,7 +385,7 @@ const ConfirmationActionCard: FC<{
           type="button"
           disabled={disabled}
           onClick={onCancel}
-          className="inline-flex min-h-10 items-center justify-center gap-2 rounded-xl border border-stone-900/10 bg-white px-4 text-sm font-medium text-stone-800 transition hover:bg-stone-100 disabled:cursor-not-allowed disabled:opacity-45 dark:border-white/10 dark:bg-transparent dark:text-stone-200 dark:hover:bg-white/10"
+          className="inline-flex min-h-10 items-center justify-center gap-2 rounded-xl border border-white/10 bg-transparent px-4 text-sm font-medium text-[#ececec] transition hover:bg-white/10 disabled:cursor-not-allowed disabled:opacity-45"
         >
           <XIcon className="size-4" />
           いいえ
@@ -418,19 +396,19 @@ const ConfirmationActionCard: FC<{
 };
 
 const getPendingStatusLabel = (step: number) => {
-  if (step >= 3) return "ルート整理中";
-  if (step >= 2) return "地図検索中";
-  if (step >= 1) return "予定確認中";
-  return "処理中";
+  if (step >= 3) return "シグマリスが整理しています";
+  if (step >= 2) return "シグマリスが確認しています";
+  if (step >= 1) return "シグマリスが考えています";
+  return "シグマリスが入力中";
 };
 
 const UserMessage: FC = () => {
   return (
-    <div className="ml-auto flex max-w-[92%] min-w-0 flex-col gap-2 sm:max-w-[78%]">
+    <div className="ml-auto flex max-w-[70%] min-w-0 flex-col gap-2">
       <MessagePrimitive.Attachments
         components={{ Attachment: UserMessageAttachments }}
       />
-      <div className="ml-auto min-w-0 overflow-hidden break-words rounded-[22px] bg-[#f4f4f4] px-4 py-3 text-sm leading-7 text-stone-950 [overflow-wrap:anywhere] dark:bg-[#2f2f2f] dark:text-stone-100">
+      <div className="ml-auto min-w-0 overflow-hidden break-words rounded-[1.2rem] bg-[#2f2f2f] px-4 py-3 text-[15px] leading-7 text-[#ececec] [overflow-wrap:anywhere]">
         <MessagePrimitive.Parts />
       </div>
     </div>
@@ -445,10 +423,10 @@ const ChatLimitNotice: FC<{ limit: number; remaining: number; reached: boolean }
   const price = PRO_MONTHLY_PRICE_JPY.toLocaleString("ja-JP");
 
   return (
-    <div className="mb-3 rounded-2xl border border-amber-400/80 bg-amber-50 px-4 py-3 text-sm text-amber-950 shadow-[0_22px_60px_-34px_rgba(120,53,15,0.9)] ring-1 ring-amber-200/80 dark:border-amber-300/35 dark:bg-amber-300/12 dark:text-amber-50 dark:ring-amber-300/15">
+    <div className="mb-3 rounded-2xl border border-amber-300/35 bg-amber-300/12 px-4 py-3 text-sm text-amber-50 shadow-[0_22px_60px_-34px_rgba(0,0,0,0.9)] ring-1 ring-amber-300/15">
       <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
         <div className="min-w-0">
-          <div className="mb-1 inline-flex rounded-full bg-amber-200/80 px-2.5 py-1 text-[11px] font-bold uppercase tracking-wide text-amber-950 dark:bg-amber-200/20 dark:text-amber-100">
+          <div className="mb-1 inline-flex rounded-full bg-amber-200/20 px-2.5 py-1 text-[11px] font-bold uppercase tracking-wide text-amber-100">
             Free limit
           </div>
           <p className="text-base font-semibold leading-6">
@@ -456,15 +434,15 @@ const ChatLimitNotice: FC<{ limit: number; remaining: number; reached: boolean }
               ? `無料チャット上限 ${limit} 回に達しました。`
               : `無料チャットは残り ${remaining} / ${limit} 回です。`}
           </p>
-          <p className="mt-1 text-xs leading-5 text-amber-900/85 dark:text-amber-100/80">
+          <p className="mt-1 text-xs leading-5 text-amber-100/80">
             {reached
-              ? `このまま続ける場合は、ShiftPilotAI Proが月額${price}円です。`
+              ? `このまま続ける場合は、シグマリス Proが月額${price}円です。`
               : `上限後も使う場合は、Proプランが月額${price}円です。`}
           </p>
         </div>
         <Link
           href="/settings"
-          className="inline-flex min-h-11 shrink-0 items-center justify-center gap-2 rounded-xl bg-stone-950 px-5 text-sm font-semibold text-white shadow-[0_16px_35px_-24px_rgba(0,0,0,0.9)] transition hover:bg-stone-800 focus:outline-none focus:ring-2 focus:ring-stone-900/20 dark:bg-white dark:text-stone-950 dark:hover:bg-stone-200"
+          className="inline-flex min-h-11 shrink-0 items-center justify-center gap-2 rounded-xl bg-white px-5 text-sm font-semibold text-[#212121] shadow-[0_16px_35px_-24px_rgba(0,0,0,0.9)] transition hover:bg-[#f2f2f2] focus:outline-none focus:ring-2 focus:ring-[#9b59b6]/40"
         >
           <CreditCardIcon className="size-4" />
           Proプランを見る
@@ -476,116 +454,34 @@ const ChatLimitNotice: FC<{ limit: number; remaining: number; reached: boolean }
 
 const Composer: FC<{ placeholder: string; disabled: boolean }> = ({ placeholder, disabled }) => {
   const isRunning = useAuiState((s) => s.thread.isRunning);
-  const latestAssistantMessageKey = useAuiState((s) => {
-    for (let index = s.thread.messages.length - 1; index >= 0; index -= 1) {
-      const message = s.thread.messages[index];
-      if (message.role === "assistant") {
-        return `${message.id ?? index}:${message.parts.length}`;
-      }
-    }
-    return "";
-  });
-  const composer = useComposerRuntime();
   const composerText = useAuiState((s) => s.composer.text);
   const inputRef = useRef<HTMLTextAreaElement | null>(null);
-  const latestAssistantMessageKeyRef = useRef(latestAssistantMessageKey);
-  const [selectedTemplateId, setSelectedTemplateId] =
-    useState<PromptTemplateId>(promptTemplates[0].id);
-  const [showTemplatePreview, setShowTemplatePreview] = useState(false);
-
-  const selectedTemplate =
-    promptTemplates.find((template) => template.id === selectedTemplateId) ??
-    promptTemplates[0];
+  const canSend = composerText.trim().length > 0 && !disabled;
 
   useEffect(() => {
-    if (latestAssistantMessageKeyRef.current === latestAssistantMessageKey)
-      return;
+    const input = inputRef.current;
+    if (!input) return;
 
-    latestAssistantMessageKeyRef.current = latestAssistantMessageKey;
-    if (latestAssistantMessageKey) {
-      window.setTimeout(() => {
-        setShowTemplatePreview(false);
-      }, 0);
-    }
-  }, [latestAssistantMessageKey]);
-
-  const handleInsertTemplate = () => {
-    const nextText = composerText.trim()
-      ? `${composerText.trimEnd()}\n\n${selectedTemplate.text}`
-      : selectedTemplate.text;
-
-    composer.setText(nextText);
-    setShowTemplatePreview(false);
-    requestAnimationFrame(() => {
-      inputRef.current?.focus();
-    });
-  };
+    input.style.height = "auto";
+    input.style.height = `${Math.min(input.scrollHeight, 200)}px`;
+    input.style.overflowY = input.scrollHeight > 200 ? "auto" : "hidden";
+  }, [composerText]);
 
   return (
-    <ComposerPrimitive.Root className="mx-auto w-full max-w-3xl min-w-0">
-      <div className="min-w-0 overflow-hidden rounded-[26px] border border-stone-900/12 bg-white p-2 text-stone-950 shadow-[0_18px_50px_-32px_rgba(0,0,0,0.55)] dark:border-white/12 dark:bg-[#2f2f2f] dark:text-stone-100 sm:p-3">
+    <ComposerPrimitive.Root className="mx-auto w-full max-w-[800px] min-w-0">
+      <div className="min-w-0 overflow-hidden rounded-[1.5rem] bg-[#2f2f2f] px-3 py-2 text-[#ececec] shadow-[0_18px_50px_-32px_rgba(0,0,0,0.9)] ring-1 ring-white/10 focus-within:ring-white/20">
         <ComposerPrimitive.Attachments
           components={{
             Attachment: ComposerAttachments,
           }}
         />
 
-        <div className="hidden flex-col gap-2 sm:flex-row sm:items-center">
-          <label className="sr-only" htmlFor="prompt-template-select">
-            プロンプトテンプレート
-          </label>
-          <select
-            id="prompt-template-select"
-            value={selectedTemplateId}
-            disabled={disabled}
-            onChange={(event) => {
-              setSelectedTemplateId(event.target.value as PromptTemplateId);
-              setShowTemplatePreview(true);
-            }}
-            onFocus={() => setShowTemplatePreview(true)}
-            className="min-h-10 flex-1 rounded-xl border border-stone-900/10 bg-stone-50 px-3 text-sm text-stone-900 outline-none transition hover:bg-stone-100 focus:border-stone-900/30 dark:border-white/10 dark:bg-white/6 dark:text-stone-100 dark:hover:bg-white/10"
-            aria-describedby={
-              showTemplatePreview ? "prompt-template-preview" : undefined
-            }
-          >
-            {promptTemplates.map((template) => (
-              <option
-                key={template.id}
-                value={template.id}
-                className="bg-white text-stone-900"
-              >
-                {template.label}
-              </option>
-            ))}
-          </select>
-          <button
-            type="button"
-            onClick={handleInsertTemplate}
-            disabled={disabled}
-            className="inline-flex min-h-10 items-center justify-center gap-2 rounded-xl border border-stone-900/10 bg-stone-50 px-4 text-sm font-medium text-stone-800 transition hover:bg-stone-100 focus:outline-none focus:ring-2 focus:ring-stone-900/15 dark:border-white/10 dark:bg-white/6 dark:text-stone-200 dark:hover:bg-white/10"
-            aria-describedby={
-              showTemplatePreview ? "prompt-template-preview" : undefined
-            }
-          >
-            <FileTextIcon className="size-4" />
-            挿入
-          </button>
-        </div>
-
-        {showTemplatePreview ? (
-          <div
-            id="prompt-template-preview"
-            className="mt-2 max-h-28 overflow-y-auto whitespace-pre-wrap rounded-2xl border border-stone-900/10 bg-stone-50 px-3 py-2 text-xs leading-5 text-stone-600 dark:border-white/10 dark:bg-white/6 dark:text-stone-300"
-          >
-            {selectedTemplate.text}
-          </div>
-        ) : null}
-
-        <div className="flex items-end gap-2">
+        <div className="flex min-h-12 items-end gap-2">
           <ComposerPrimitive.AddAttachment
             multiple
             disabled={disabled}
-            className="inline-flex size-10 shrink-0 items-center justify-center rounded-full text-stone-500 transition hover:bg-stone-100 dark:text-stone-400 dark:hover:bg-white/10 sm:size-11"
+            className="mb-0.5 inline-flex size-9 shrink-0 items-center justify-center rounded-full text-[#b4b4b4] transition hover:bg-white/10 hover:text-[#ececec] disabled:cursor-not-allowed disabled:opacity-40"
+            aria-label="ファイルを追加"
           >
             <PlusIcon className="size-5" />
           </ComposerPrimitive.AddAttachment>
@@ -594,19 +490,26 @@ const Composer: FC<{ placeholder: string; disabled: boolean }> = ({ placeholder,
             ref={inputRef}
             placeholder={placeholder}
             disabled={disabled}
-            className="min-h-11 w-full resize-none bg-transparent px-2 py-2 text-sm outline-none placeholder:text-stone-400"
+            submitMode="enter"
+            minRows={1}
+            maxRows={8}
+            className="max-h-[200px] min-h-11 w-full resize-none overflow-y-hidden bg-transparent px-1 py-2.5 text-[15px] leading-6 text-[#ececec] outline-none placeholder:text-[#8e8ea0]"
             rows={1}
             aria-label="メッセージ"
           />
 
           {isRunning ? (
-            <ComposerPrimitive.Cancel className="inline-flex size-10 shrink-0 items-center justify-center rounded-full bg-stone-900 text-white transition hover:bg-stone-700 sm:size-11">
+            <ComposerPrimitive.Cancel
+              className="mb-1 inline-flex size-8 shrink-0 items-center justify-center rounded-full bg-[#ececec] text-[#212121] transition hover:bg-white"
+              aria-label="生成を停止"
+            >
               <SquareIcon className="size-4 fill-current" />
             </ComposerPrimitive.Cancel>
           ) : (
             <ComposerPrimitive.Send
-              disabled={disabled}
-              className="inline-flex size-10 shrink-0 items-center justify-center rounded-full bg-stone-900 text-white transition hover:bg-stone-700 disabled:cursor-not-allowed disabled:opacity-40 sm:size-11"
+              disabled={!canSend}
+              className="mb-1 inline-flex size-8 shrink-0 items-center justify-center rounded-full bg-[#9b59b6] text-white transition hover:bg-[#8e44ad] disabled:cursor-not-allowed disabled:bg-[#4a4a4a] disabled:text-[#8e8ea0]"
+              aria-label="送信"
             >
               <ArrowUpIcon className="size-4" />
             </ComposerPrimitive.Send>
@@ -616,6 +519,3 @@ const Composer: FC<{ placeholder: string; disabled: boolean }> = ({ placeholder,
     </ComposerPrimitive.Root>
   );
 };
-
-type PromptTemplate = (typeof promptTemplates)[number];
-type PromptTemplateId = (typeof promptTemplates)[number]["id"];

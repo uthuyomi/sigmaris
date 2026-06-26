@@ -11,6 +11,8 @@ import {
   type CreateUIMessage,
   type UIMessage,
 } from "ai";
+import { useRouter } from "next/navigation";
+import { useEffect, useRef } from "react";
 import { Thread } from "@/components/thread";
 import type { ChatUsageStatus } from "@/lib/chat-usage";
 import type { AppLocale } from "@/lib/i18n";
@@ -69,6 +71,8 @@ type AssistantProps = {
 };
 
 export const Assistant = ({ threadId, initialMessages, locale, freeChatUsage }: AssistantProps) => {
+  const router = useRouter();
+  const wasRunningRef = useRef(false);
   const initialUserMessageCount = initialMessages.filter((message) => message.role === "user").length;
   const chat = useChat({
     id: threadId,
@@ -81,6 +85,19 @@ export const Assistant = ({ threadId, initialMessages, locale, freeChatUsage }: 
     }),
     sendAutomaticallyWhen: lastAssistantMessageIsCompleteWithToolCalls,
   });
+
+  useEffect(() => {
+    const isRunning = chat.status === "submitted" || chat.status === "streaming";
+    if (isRunning) {
+      wasRunningRef.current = true;
+      return;
+    }
+
+    if (chat.status === "ready" && wasRunningRef.current) {
+      wasRunningRef.current = false;
+      router.refresh();
+    }
+  }, [chat.status, router]);
 
   const runtime = useAISDKRuntime(chat, {
     toCreateMessage,

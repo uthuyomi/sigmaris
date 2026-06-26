@@ -19,7 +19,7 @@ const googleScopes = [
 type AuthControlsProps = {
   redirectPath?: string;
   locale: AppLocale;
-  mode?: "compact" | "hero" | "icon";
+  mode?: "compact" | "hero" | "icon" | "sigmaris";
 };
 
 export function AuthControls({
@@ -160,7 +160,9 @@ export function AuthControls({
   }
 
   const buttonClass =
-    mode === "hero"
+    mode === "sigmaris"
+      ? "inline-flex min-h-12 w-full items-center justify-center gap-3 rounded-full bg-white px-5 text-sm font-semibold text-[#212121] transition hover:bg-[#f2f2f2] disabled:opacity-50"
+      : mode === "hero"
       ? "inline-flex items-center gap-2 rounded-full bg-stone-900 px-6 py-3 text-base font-semibold text-stone-50 disabled:opacity-50"
       : "inline-flex items-center gap-2 rounded-full bg-stone-900 px-4 py-2 text-sm font-medium text-stone-50 disabled:opacity-50";
 
@@ -183,12 +185,18 @@ export function AuthControls({
   }
 
   return (
-    <div className="flex flex-col items-start gap-2">
+    <div className={mode === "sigmaris" ? "flex w-full flex-col items-stretch gap-3" : "flex flex-col items-start gap-2"}>
       <button type="button" onClick={signInWithGoogle} disabled={loading} className={buttonClass}>
-        <LogInIcon className="size-4" />
-        {loading ? dict.auth.signingIn : dict.auth.signIn}
+        {mode === "sigmaris" ? (
+          <span className="flex size-5 items-center justify-center rounded-full bg-white font-sans text-base font-bold text-[#4285f4]">
+            G
+          </span>
+        ) : (
+          <LogInIcon className="size-4" />
+        )}
+        {loading ? dict.auth.signingIn : mode === "sigmaris" ? "Googleでログイン" : dict.auth.signIn}
       </button>
-      {error ? <p className="text-xs text-red-600">{error}</p> : null}
+      {error ? <p className={mode === "sigmaris" ? "text-center text-xs text-red-300" : "text-xs text-red-600"}>{error}</p> : null}
     </div>
   );
 }

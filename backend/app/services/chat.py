@@ -263,6 +263,65 @@ def _summarize_tool_result(tool_name: str, result: dict[str, Any]) -> str:
     return user_facing or "実行したよ。"
 
 
+def _build_tool_ui_part(
+    *,
+    tool_call_id: str,
+    tool_name: str,
+    arguments: dict[str, Any],
+    result: dict[str, Any],
+) -> dict[str, Any]:
+    if result.get("ok") is False:
+        return {
+            "type": "dynamic-tool",
+            "toolName": tool_name,
+            "toolCallId": tool_call_id,
+            "state": "output-error",
+            "input": arguments,
+            "errorText": str(result.get("reason") or result.get("error") or "Tool execution failed."),
+        }
+
+    return {
+        "type": "dynamic-tool",
+        "toolName": tool_name,
+        "toolCallId": tool_call_id,
+        "state": "output-available",
+        "input": arguments,
+        "output": result,
+    }
+
+
+def _tool_ui_chunks(
+    *,
+    tool_call_id: str,
+    tool_name: str,
+    arguments: dict[str, Any],
+    result: dict[str, Any],
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    input_chunk = {
+        "type": "tool-input-available",
+        "toolCallId": tool_call_id,
+        "toolName": tool_name,
+        "input": arguments,
+        "dynamic": True,
+    }
+    if result.get("ok") is False:
+        output_chunk = {
+            "type": "tool-output-error",
+            "toolCallId": tool_call_id,
+            "errorText": str(result.get("reason") or result.get("error") or "Tool execution failed."),
+            "dynamic": True,
+        }
+    else:
+        output_chunk = {
+            "type": "tool-output-available",
+            "toolCallId": tool_call_id,
+            "output": result,
+            "dynamic": True,
+        }
+
+    return input_chunk, output_chunk
+
+
 async def _execute_chat_tool(
     *,
     jwt: str,
@@ -624,6 +683,7 @@ async def stream_chat_completion_ui(
     google_tokens = headers_to_google_tokens(google_header_map)
     ui_audit_info: dict[str, str | None] = {"actor_type": "chat", "actor_ref": thread_id}
     final_text = ""
+    tool_parts: list[dict[str, Any]] = []
     confirmed_followup_input: list[dict[str, Any]] | None = None
     latest_user_text = _latest_user_text(messages)
     confirmation_choice = _confirmation_choice(latest_user_text)
@@ -637,6 +697,7 @@ async def stream_chat_completion_ui(
         auto_confirm_tools = _auto_confirm_tools_for_confirmation(pending_confirmation)
         tool_name = str(pending_confirmation["tool"])
         arguments = pending_confirmation["arguments"]
+        tool_call_id = f"confirmed-{uuid.uuid4()}"
         tool_result = await _execute_chat_tool(
             jwt=jwt,
             google_tokens=google_tokens,
@@ -645,6 +706,21 @@ async def stream_chat_completion_ui(
             arguments=arguments,
             audit_info=ui_audit_info,
         )
+        tool_parts.append(
+            _build_tool_ui_part(
+                tool_call_id=tool_call_id,
+                tool_name=tool_name,
+                arguments=arguments,
+                result=tool_result,
+            )
+        )
+        for chunk in _tool_ui_chunks(
+            tool_call_id=tool_call_id,
+            tool_name=tool_name,
+            arguments=arguments,
+            result=tool_result,
+        ):
+            yield f"data: {json.dumps(chunk, ensure_ascii=False)}\n\n".encode("utf-8")
         confirmed_followup_input = _confirmed_tool_followup_input(
             tool_name=tool_name,
             tool_result=tool_result,
@@ -661,7 +737,7 @@ async def stream_chat_completion_ui(
         assistant_message = {
             "id": message_id,
             "role": "assistant",
-            "parts": [{"type": "text", "text": final_text}],
+            "parts": [*tool_parts, {"type": "text", "text": final_text}],
             "metadata": {
                 "routeIntent": route["intent"],
                 "routeReason": route["reason"],
@@ -783,6 +859,7 @@ async def stream_chat_completion_ui(
                     thread_id,
                     function_call.name,
                 )
+                tool_call_id = str(getattr(function_call, "call_id", "") or uuid.uuid4())
                 try:
                     tool_result = await asyncio.wait_for(
                         execute_tool(
@@ -823,6 +900,21 @@ async def stream_chat_completion_ui(
                         "ok": False,
                         "reason": str(error),
                     }
+                tool_parts.append(
+                    _build_tool_ui_part(
+                        tool_call_id=tool_call_id,
+                        tool_name=function_call.name,
+                        arguments=arguments,
+                        result=tool_result,
+                    )
+                )
+                for chunk in _tool_ui_chunks(
+                    tool_call_id=tool_call_id,
+                    tool_name=function_call.name,
+                    arguments=arguments,
+                    result=tool_result,
+                ):
+                    yield f"data: {json.dumps(chunk, ensure_ascii=False)}\n\n".encode("utf-8")
                 logger.info(
                     "chat stream tool complete thread_id=%s tool=%s ok=%s",
                     thread_id,
@@ -865,7 +957,7 @@ async def stream_chat_completion_ui(
     assistant_message = {
         "id": message_id,
         "role": "assistant",
-        "parts": [{"type": "text", "text": final_text}],
+        "parts": [*tool_parts, {"type": "text", "text": final_text}],
         "metadata": {
             "routeIntent": route["intent"],
             "routeReason": route["reason"],

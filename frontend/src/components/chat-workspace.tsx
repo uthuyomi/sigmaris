@@ -2,13 +2,14 @@
 
 import type { UIMessage } from "ai";
 import {
-  BotIcon,
+  MenuIcon,
   PanelLeftCloseIcon,
   PanelLeftOpenIcon,
+  XIcon,
 } from "lucide-react";
 import { useEffect, useState } from "react";
 import { Assistant } from "@/app/assistant";
-import { ChatThreadSidebar } from "@/components/chat-thread-sidebar";
+import { SigmarisSidebar } from "@/components/sigmaris-sidebar";
 import type { ChatUsageStatus } from "@/lib/chat-usage";
 import type { AppLocale } from "@/lib/i18n";
 import { cn } from "@/lib/utils";
@@ -35,13 +36,12 @@ export function ChatWorkspace({
   activeThreadId,
   activeThreadTitle,
   initialMessages,
-  assistantLabel,
   freeChatUsage,
 }: ChatWorkspaceProps) {
   const [sidebarOpen, setSidebarOpen] = useState(false);
 
   useEffect(() => {
-    const media = window.matchMedia("(min-width: 1024px)");
+    const media = window.matchMedia("(min-width: 768px)");
     const syncSidebar = () => setSidebarOpen(media.matches);
 
     syncSidebar();
@@ -50,17 +50,29 @@ export function ChatWorkspace({
     return () => media.removeEventListener("change", syncSidebar);
   }, []);
 
+  useEffect(() => {
+    if (!sidebarOpen || !window.matchMedia("(max-width: 767px)").matches) {
+      return;
+    }
+
+    const previousOverflow = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+
+    return () => {
+      document.body.style.overflow = previousOverflow;
+    };
+  }, [sidebarOpen]);
+
   return (
-    <section className="relative flex h-full min-h-0 touch-pan-y overflow-hidden overscroll-x-none bg-white dark:bg-[#212121]">
+    <section className="relative flex h-full min-h-0 touch-pan-y overflow-hidden overscroll-x-none bg-[#212121] text-[#ececec]">
       <div
         className={cn(
-          "hidden min-h-0 shrink-0 overflow-hidden border-r border-stone-900/10 bg-[#f7f7f8] transition-[width] duration-200 ease-out dark:border-white/10 dark:bg-[#171717] lg:block",
-          sidebarOpen ? "w-[300px]" : "w-0",
+          "hidden min-h-0 shrink-0 overflow-hidden bg-[#171717] transition-[width] duration-200 ease-out md:block",
+          sidebarOpen ? "w-[260px]" : "w-0",
         )}
         aria-hidden={!sidebarOpen}
       >
-        <ChatThreadSidebar
-          locale={locale}
+        <SigmarisSidebar
           threads={threads}
           activeThreadId={activeThreadId}
           onNavigate={() => undefined}
@@ -68,13 +80,15 @@ export function ChatWorkspace({
       </div>
 
       {sidebarOpen ? (
-        <div className="absolute inset-0 z-30 bg-stone-950/40 backdrop-blur-[1px] lg:hidden" onClick={() => setSidebarOpen(false)}>
+        <div
+          className="fixed inset-0 z-50 bg-black/55 backdrop-blur-[1px] md:hidden"
+          onClick={() => setSidebarOpen(false)}
+        >
           <div
-            className="h-full w-[min(86vw,320px)] border-r border-stone-900/10 bg-[#f7f7f8] shadow-[24px_0_80px_-48px_rgba(28,25,23,0.95)] dark:border-white/10 dark:bg-[#171717]"
+            className="h-[100dvh] w-[min(86vw,320px)] animate-[sigmaris-drawer-in_160ms_ease-out] overflow-hidden bg-[#171717] pb-[env(safe-area-inset-bottom)] shadow-[24px_0_80px_-48px_rgba(0,0,0,0.95)]"
             onClick={(event) => event.stopPropagation()}
           >
-            <ChatThreadSidebar
-              locale={locale}
+            <SigmarisSidebar
               threads={threads}
               activeThreadId={activeThreadId}
               onNavigate={() => setSidebarOpen(false)}
@@ -83,25 +97,31 @@ export function ChatWorkspace({
         </div>
       ) : null}
 
-      <section className="flex min-w-0 flex-1 flex-col bg-white dark:bg-[#212121]">
-        <div className="flex min-h-14 items-center gap-3 border-b border-stone-900/10 bg-white/95 px-3 text-stone-900 backdrop-blur dark:border-white/10 dark:bg-[#212121]/95 dark:text-stone-100 sm:px-4">
+      <section className="flex min-w-0 flex-1 flex-col bg-[#212121]">
+        <div className="flex min-h-12 shrink-0 items-center gap-2 border-b border-white/0 bg-[#212121]/95 px-2 text-[#ececec] backdrop-blur sm:min-h-14 sm:gap-3 sm:px-4">
           <button
             type="button"
             onClick={() => setSidebarOpen((open) => !open)}
-            className="inline-flex size-10 shrink-0 items-center justify-center rounded-xl text-stone-600 transition hover:bg-stone-100 hover:text-stone-950 focus:outline-none focus:ring-2 focus:ring-stone-900/15 dark:text-stone-300 dark:hover:bg-white/10 dark:hover:text-white"
-            aria-label={sidebarOpen ? "Close thread list" : "Open thread list"}
+            className="inline-flex size-10 shrink-0 items-center justify-center rounded-lg text-[#ececec] transition hover:bg-[#2f2f2f] focus:outline-none focus:ring-2 focus:ring-[#9b59b6]/40"
+            aria-label={sidebarOpen ? "サイドバーを閉じる" : "サイドバーを開く"}
             aria-pressed={sidebarOpen}
           >
-            {sidebarOpen ? <PanelLeftCloseIcon className="size-5" /> : <PanelLeftOpenIcon className="size-5" />}
+            {sidebarOpen ? (
+              <>
+                <XIcon className="size-5 md:hidden" />
+                <PanelLeftCloseIcon className="hidden size-5 md:block" />
+              </>
+            ) : (
+              <>
+                <MenuIcon className="size-5 md:hidden" />
+                <PanelLeftOpenIcon className="hidden size-5 md:block" />
+              </>
+            )}
           </button>
-          <div className="inline-flex size-8 shrink-0 items-center justify-center rounded-full bg-stone-950 text-white dark:bg-white dark:text-stone-950">
-            <BotIcon className="size-4" />
-          </div>
-          <div className="min-w-0">
-            <p className="text-[11px] font-medium uppercase tracking-[0.18em] text-stone-400">
-              {assistantLabel}
-            </p>
-            <h2 className="truncate text-sm font-semibold sm:text-base">{activeThreadTitle}</h2>
+          <div className="min-w-0 flex-1">
+            <h2 className="truncate text-sm font-semibold sm:text-base">
+              {activeThreadTitle || "シグマリス"}
+            </h2>
           </div>
         </div>
 

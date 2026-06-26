@@ -2,14 +2,13 @@ import type { MetadataRoute } from "next";
 
 export default function manifest(): MetadataRoute.Manifest {
   return {
-    name: "ShiftPilotAI",
-    short_name: "ShiftPilotAI",
-    description:
-      "AI scheduler that turns shift table screenshots and Google Sheets into calendar events with travel-time planning.",
+    name: "シグマリス",
+    short_name: "シグマリス",
+    description: "あなたの家庭支援AI",
     start_url: "/launch",
     scope: "/",
     display: "standalone",
-    background_color: "#f7f2e8",
+    background_color: "#212121",
     theme_color: "#212121",
     orientation: "portrait",
     icons: [

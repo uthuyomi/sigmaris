@@ -186,12 +186,15 @@ export function AppShell({
         fitViewport && "h-[100dvh] overflow-hidden",
       )}
     >
-      <div
-        className={cn(
-          "mx-auto flex min-h-screen w-full max-w-[min(1500px,100dvw)] flex-col overflow-x-hidden px-3 pb-[calc(4.75rem+env(safe-area-inset-bottom))] pt-3 sm:px-4 lg:px-5 lg:pb-4",
-          fitViewport && "h-full min-h-0 overflow-hidden",
-        )}
-      >
+      {fitViewport ? (
+        <section className="h-full min-h-0 min-w-0 overflow-hidden">
+          {children}
+        </section>
+      ) : (
+        <>
+          <div
+            className="mx-auto flex min-h-screen w-full max-w-[min(1500px,100dvw)] flex-col overflow-x-hidden px-3 pb-[calc(4.75rem+env(safe-area-inset-bottom))] pt-3 sm:px-4 lg:px-5 lg:pb-4"
+          >
         <header className="mb-3 rounded-2xl border border-stone-900/10 bg-white px-3 py-3 shadow-[0_14px_45px_-34px_rgba(28,25,23,0.45)] dark:border-white/10 dark:bg-[#2f2f2f] sm:px-4">
           <div className="flex items-center justify-between gap-3">
             <div className="flex min-w-0 items-center gap-3">
@@ -250,14 +253,14 @@ export function AppShell({
         </header>
 
         <section
-          className={cn("min-w-0 flex-1 touch-pan-y overflow-hidden overscroll-x-none", fitViewport && "min-h-0")}
+          className="min-w-0 flex-1 touch-pan-y overflow-hidden overscroll-x-none"
           onTouchStart={handleTouchStart}
           onTouchEnd={handleTouchEnd}
         >
           <div className={contentAnimationClass}>{children}</div>
         </section>
-      </div>
-      <nav className="fixed inset-x-0 bottom-0 z-50 border-t border-stone-900/10 bg-white/95 px-3 pb-[calc(0.5rem+env(safe-area-inset-bottom))] pt-2 shadow-[0_-18px_45px_-34px_rgba(28,25,23,0.55)] backdrop-blur dark:border-white/10 dark:bg-[#212121]/95 lg:hidden">
+          </div>
+          <nav className="fixed inset-x-0 bottom-0 z-50 border-t border-stone-900/10 bg-white/95 px-3 pb-[calc(0.5rem+env(safe-area-inset-bottom))] pt-2 shadow-[0_-18px_45px_-34px_rgba(28,25,23,0.55)] backdrop-blur dark:border-white/10 dark:bg-[#212121]/95 lg:hidden">
         <div className="mx-auto grid max-w-md grid-cols-3 gap-1">
           {navItems.map((item) => {
             const active = pathname === item.href || pathname.startsWith(`${item.href}/`);
@@ -283,6 +286,8 @@ export function AppShell({
           })}
         </div>
       </nav>
+        </>
+      )}
     </main>
   );
 }

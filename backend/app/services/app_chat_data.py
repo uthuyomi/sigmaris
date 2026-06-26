@@ -9,7 +9,9 @@ from app.services.app_profile_data import get_profile_context
 from app.services.supabase_rest import rest_delete, rest_insert, rest_select, rest_update
 
 
-DEFAULT_THREAD_TITLE = "New chat"
+DEFAULT_THREAD_TITLE = "新しいチャット"
+LEGACY_DEFAULT_THREAD_TITLE = "New chat"
+THREAD_TITLE_MAX_LENGTH = 20
 
 
 def compact_parts(parts: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -30,10 +32,10 @@ def derive_thread_title(messages: list[dict[str, Any]]) -> str:
             continue
         for part in message.get("parts", []):
             if part.get("type") == "text" and str(part.get("text", "")).strip():
-                return str(part["text"]).strip()[:40]
+                return str(part["text"]).strip()[:THREAD_TITLE_MAX_LENGTH]
         for part in message.get("parts", []):
             if part.get("type") == "file" and part.get("filename"):
-                return str(part["filename"])[:40]
+                return str(part["filename"])[:THREAD_TITLE_MAX_LENGTH]
     return DEFAULT_THREAD_TITLE
 
 
@@ -83,10 +85,11 @@ async def replace_chat_messages(
 
     current_thread = await get_chat_thread(jwt, thread_id)
     if current_thread:
+        current_title = current_thread.get("title")
         next_title = (
             derive_thread_title(messages)
-            if current_thread.get("title") == DEFAULT_THREAD_TITLE
-            else current_thread.get("title")
+            if current_title in {DEFAULT_THREAD_TITLE, LEGACY_DEFAULT_THREAD_TITLE}
+            else current_title
         )
         await rest_update(
             jwt,
