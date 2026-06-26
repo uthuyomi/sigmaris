@@ -14,7 +14,29 @@ from app.services.orchestrator.response_guard import replace_forbidden_assistant
 from app.services.orchestrator.schedule_agent_client import call_schedule_agent
 from app.services.supabase_rest import get_current_user
 from app.services.self_model import get_self_model
-from app.services.user_fact_data import build_profile_context, extract_call_name, get_user_profile
+from app.services.user_fact_data import (
+    build_facts_context,
+    build_profile_context,
+    extract_call_name,
+    get_fact_items,
+    get_user_profile,
+)
+
+
+async def _safe_load(fn, *args, **kwargs):
+    """Call fn(*args, **kwargs) and return None on any exception."""
+    try:
+        return await fn(*args, **kwargs)
+    except Exception:
+        return None
+
+
+async def _safe_load_no_args(fn):
+    """Call fn() (no args) and return None on any exception."""
+    try:
+        return await fn()
+    except Exception:
+        return None
 
 
 def _build_self_model_context(model: dict | None) -> str | None:
@@ -61,15 +83,12 @@ async def run_orchestrator_chat(
     persona = load_persona()
     agent = get_schedule_agent()
 
-    try:
-        fact_profile = await get_user_profile(jwt)
-    except Exception:
-        fact_profile = None
-
-    try:
-        self_model = await get_self_model()
-    except Exception:
-        self_model = None
+    fact_profile, fact_items, self_model = await asyncio.gather(
+        _safe_load(get_user_profile, jwt),
+        _safe_load(get_fact_items, jwt, active_only=True),
+        _safe_load_no_args(get_self_model),
+        return_exceptions=False,
+    )
 
     reason = "User requested schedule assistance through the Sigmaris orchestrator."
     caller_agent_id = settings.schedule_agent_id
@@ -101,6 +120,11 @@ async def run_orchestrator_chat(
     audit_row_id = str(audit_row["id"])
 
     profile_context = build_profile_context(fact_profile)
+    facts_ctx = build_facts_context(fact_items or [], top_n=20)
+    if facts_ctx and profile_context:
+        profile_context = profile_context + "\n\n" + facts_ctx
+    elif facts_ctx:
+        profile_context = facts_ctx
     call_name = extract_call_name(fact_profile) or _user_display_name(user)
     self_model_context = _build_self_model_context(self_model)
 
@@ -154,6 +178,16 @@ async def run_orchestrator_chat(
         error_code=None,
         duration_ms=duration_ms,
     )
+
+    # Append active inquiry question if available (max one per turn)
+    try:
+        from app.services.active_inquiry import get_inquiry_question  # noqa: PLC0415
+        full_messages_so_far = list(messages) + [{"role": "assistant", "content": response_text}]
+        inquiry = await get_inquiry_question(jwt, full_messages_so_far)
+        if inquiry:
+            response_text = response_text + "\n\n" + inquiry
+    except Exception:
+        pass  # Never block the response for inquiry failures
 
     # Fire-and-forget: extract memorable facts from this conversation turn.
     from app.services.memory_extractor import extract_from_conversation  # noqa: PLC0415

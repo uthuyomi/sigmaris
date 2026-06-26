@@ -204,16 +204,33 @@ class HealthDataCollector:
     # ─── store ────────────────────────────────────────────────────────────────
 
     async def store_to_fact_memory(self, jwt: str, summary: DailyHealthSummary) -> list[dict]:
+        """Store daily health summary to fact memory.
+
+        Sleep minutes + quality are combined into a single human-readable entry
+        (e.g. 'sleep_2026-01-01' = '7.5時間 品質:good') to keep the memory
+        layer easy to read. Other metrics are stored individually.
+        The DB trigger automatically sets privacy_level='private' and
+        importance_score=0.9 for category='health'.
+        """
         stored: list[dict] = []
-        items: list[tuple[str, str | None]] = [
+
+        # Build individual metric entries
+        scalar_items: list[tuple[str, str | None]] = [
             ("steps", str(summary.steps) if summary.steps is not None else None),
             ("resting_heart_rate", str(summary.resting_heart_rate) if summary.resting_heart_rate is not None else None),
             ("avg_heart_rate", str(summary.avg_heart_rate) if summary.avg_heart_rate is not None else None),
             ("calories_kcal", str(summary.calories_kcal) if summary.calories_kcal is not None else None),
-            ("sleep_minutes", str(summary.sleep_minutes) if summary.sleep_minutes is not None else None),
-            ("sleep_quality", summary.sleep_quality),
         ]
-        for key, value in items:
+
+        # Combined sleep entry: "7.5時間 品質:good"
+        if summary.sleep_minutes is not None:
+            sleep_hours = summary.sleep_minutes / 60.0
+            sleep_val = f"{sleep_hours:.1f}時間"
+            if summary.sleep_quality:
+                sleep_val += f" 品質:{summary.sleep_quality}"
+            scalar_items.append(("sleep", sleep_val))
+
+        for key, value in scalar_items:
             if value is None:
                 continue
             try:

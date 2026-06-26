@@ -1,0 +1,224 @@
+from __future__ import annotations
+
+import json
+import logging
+from datetime import datetime, timedelta, timezone
+from typing import Any
+
+from app.services.local_llm import TaskType, get_llm_router
+from app.services.supabase_rest import rest_delete, rest_insert, rest_select, rest_update
+
+logger = logging.getLogger(__name__)
+
+# (decay_days, decay_factor) — None means no decay
+_DECAY_RULES: dict[str, tuple[int | None, float]] = {
+    "profile":       (None, 1.0),
+    "lifestyle":     (90,   0.7),
+    "health":        (30,   0.5),
+    "finance":       (60,   0.6),
+    "devices":       (180,  0.8),
+    "goals":         (60,   0.7),
+    "relationships": (120,  0.7),
+    "preferences":   (90,   0.8),
+    "environment":   (180,  0.9),
+}
+
+# importance_score × confidence below this → logical delete
+_FORGET_THRESHOLD = 0.1
+# physical delete this many days after is_deleted=true is set
+_PHYSICAL_DELETE_DAYS = 30
+# LLM contradiction check budget per run (cost control)
+_MAX_CONTRADICTION_CHECKS = 5
+
+
+async def validate_all_facts(jwt: str) -> dict[str, Any]:
+    """
+    Full daily validation pass:
+    1. Decay confidence for facts older than their category threshold
+    2. Detect contradictions via LLM for recently changed facts
+    3. Mark logical deletion when importance × confidence < threshold
+    4. Physical delete rows logically deleted 30+ days ago
+    """
+    result: dict[str, Any] = {
+        "decayed": 0,
+        "contradictions": 0,
+        "logically_deleted": 0,
+        "physically_deleted": 0,
+        "errors": 0,
+    }
+
+    try:
+        facts = await rest_select(jwt, "user_fact_items", {
+            "select": "*",
+            "is_deleted": "eq.false",
+            "order": "category.asc,updated_at.asc",
+        })
+        if not isinstance(facts, list):
+            facts = []
+    except Exception:
+        logger.exception("memory_validator: failed to fetch facts")
+        return result
+
+    now = datetime.now(timezone.utc)
+
+    # ── Phase 1: Confidence decay ─────────────────────────────────────────────
+    for item in facts:
+        try:
+            category = item.get("category") or ""
+            rule = _DECAY_RULES.get(category)
+            if rule is None or rule[0] is None:
+                continue
+
+            decay_days, decay_factor = rule
+            updated_str = item.get("updated_at")
+            if not updated_str:
+                continue
+
+            updated_at = datetime.fromisoformat(updated_str.replace("Z", "+00:00"))
+            if (now - updated_at).days < decay_days:
+                continue
+
+            old_conf = float(item.get("confidence") or 1.0)
+            new_conf = round(old_conf * decay_factor, 4)
+            if abs(new_conf - old_conf) < 0.001:
+                continue
+
+            await rest_update(jwt, "user_fact_items", {"confidence": new_conf},
+                              {"id": f"eq.{item['id']}"})
+            item["confidence"] = new_conf
+            result["decayed"] += 1
+            logger.debug(
+                "memory_validator: decayed %s/%s %.3f→%.3f",
+                category, item.get("key"), old_conf, new_conf,
+            )
+        except Exception:
+            logger.exception("memory_validator: decay error item=%s", item.get("id"))
+            result["errors"] += 1
+
+    # ── Phase 2: Contradiction detection (LLM, budget-limited) ───────────────
+    recent_cutoff = (now - timedelta(days=7)).isoformat()
+    try:
+        history_rows = await rest_select(jwt, "user_fact_history", {
+            "select": "fact_item_id,old_value,new_value",
+            "created_at": f"gte.{recent_cutoff}",
+            "order": "created_at.desc",
+        })
+        if not isinstance(history_rows, list):
+            history_rows = []
+    except Exception:
+        logger.warning("memory_validator: could not fetch history")
+        history_rows = []
+
+    # Collect the most recent change per fact item (first occurrence wins since
+    # history is ordered desc)
+    changed: dict[str, dict[str, str]] = {}
+    for row in history_rows:
+        fid = row.get("fact_item_id")
+        if not fid or fid in changed:
+            continue
+        old_v = row.get("old_value")
+        new_v = row.get("new_value")
+        if old_v is not None and new_v is not None and old_v != new_v:
+            changed[fid] = {"old_value": str(old_v), "new_value": str(new_v)}
+
+    facts_by_id: dict[str, dict] = {
+        item["id"]: item for item in facts if item.get("id")
+    }
+    candidates = [
+        (fid, info) for fid, info in changed.items() if fid in facts_by_id
+    ][:_MAX_CONTRADICTION_CHECKS]
+
+    for fid, info in candidates:
+        fact = facts_by_id[fid]
+        try:
+            is_contradiction = await _check_contradiction(
+                category=fact.get("category") or "",
+                key=fact.get("key") or "",
+                old_value=info["old_value"],
+                new_value=info["new_value"],
+            )
+            if not is_contradiction:
+                continue
+
+            result["contradictions"] += 1
+            old_conf = float(fact.get("confidence") or 1.0)
+            reduced_conf = max(0.1, round(old_conf * 0.7, 4))
+            await rest_update(jwt, "user_fact_items",
+                              {"confidence": reduced_conf, "is_stale": True},
+                              {"id": f"eq.{fid}"})
+            fact["confidence"] = reduced_conf
+            logger.info(
+                "memory_validator: contradiction flagged %s/%s conf %.3f→%.3f",
+                fact.get("category"), fact.get("key"), old_conf, reduced_conf,
+            )
+        except Exception:
+            logger.exception("memory_validator: contradiction check error fid=%s", fid)
+            result["errors"] += 1
+
+    # ── Phase 3: Logical deletion ─────────────────────────────────────────────
+    for item in facts:
+        try:
+            importance = float(item.get("importance_score") or 0.5)
+            confidence = float(item.get("confidence") or 1.0)
+            if importance * confidence >= _FORGET_THRESHOLD:
+                continue
+            await rest_update(jwt, "user_fact_items",
+                              {"is_deleted": True, "deleted_at": now.isoformat()},
+                              {"id": f"eq.{item['id']}"})
+            result["logically_deleted"] += 1
+            logger.info(
+                "memory_validator: logically deleted %s/%s (%.3f×%.3f=%.3f)",
+                item.get("category"), item.get("key"),
+                importance, confidence, importance * confidence,
+            )
+        except Exception:
+            logger.exception("memory_validator: logical delete error item=%s", item.get("id"))
+            result["errors"] += 1
+
+    # ── Phase 4: Physical deletion ────────────────────────────────────────────
+    physical_cutoff = (now - timedelta(days=_PHYSICAL_DELETE_DAYS)).isoformat()
+    try:
+        await rest_delete(jwt, "user_fact_items", {
+            "is_deleted": "eq.true",
+            "deleted_at": f"lt.{physical_cutoff}",
+        })
+        result["physically_deleted"] = -1  # PostgREST DELETE returns no count
+    except Exception:
+        logger.exception("memory_validator: physical delete failed")
+        result["errors"] += 1
+
+    logger.info(
+        "memory_validator: complete — decayed=%d contradictions=%d "
+        "logically_deleted=%d errors=%d",
+        result["decayed"], result["contradictions"],
+        result["logically_deleted"], result["errors"],
+    )
+    return result
+
+
+async def _check_contradiction(
+    category: str,
+    key: str,
+    old_value: str,
+    new_value: str,
+) -> bool:
+    """Return True if old_value and new_value are contradictory for this fact."""
+    router = get_llm_router()
+    prompt = (
+        f"カテゴリ: {category}、キー: {key}\n"
+        f"旧情報: {old_value[:200]}\n"
+        f"新情報: {new_value[:200]}\n\n"
+        "これらは論理的に矛盾していますか？\n"
+        "矛盾している場合は「YES」のみ、矛盾していない（更新・補足）場合は「NO」のみ返してください。"
+    )
+    try:
+        answer = await router.chat(
+            TaskType.ROUTING,
+            [{"role": "user", "content": prompt}],
+            temperature=0.0,
+            max_tokens=5,
+        )
+        return answer.strip().upper().startswith("YES")
+    except Exception:
+        logger.exception("memory_validator: LLM contradiction check failed")
+        return False  # fail-open: assume no contradiction

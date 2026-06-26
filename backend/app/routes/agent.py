@@ -24,6 +24,8 @@ from app.services.proactive.actions import (
     run_morning_briefing,
     run_weekly_review,
 )
+from app.services.memory_validator import validate_all_facts
+from app.services.trend_analyzer import analyze_trends, get_active_trends
 from app.services.user_fact_data import (
     get_fact_items,
     get_null_fields,
@@ -253,6 +255,122 @@ async def agent_facts_unknown(
     jwt = _require_jwt(authorization)
     missing = await get_null_fields(jwt)
     return {"ok": True, "unknown": missing, "count": len(missing)}
+
+
+class FactExtractTestRequest(BaseModel):
+    messages: list[dict] = Field(min_length=1, max_length=50)
+
+
+@router.post("/facts/extract-test")
+async def agent_facts_extract_test(
+    payload: FactExtractTestRequest,
+    authorization: str | None = Header(default=None),
+    x_agent_id: str | None = Header(default=None),
+    x_agent_secret: str | None = Header(default=None),
+) -> dict[str, Any]:
+    """Debug endpoint: run memory extraction on supplied messages without saving."""
+    _verify_agent(x_agent_id, x_agent_secret)
+    _require_jwt(authorization)
+
+    from app.services.local_llm import TaskType, get_llm_router  # noqa: PLC0415
+    import json as _json  # noqa: PLC0415
+
+    _SYSTEM = (
+        "あなたは会話から事実を抽出するAIです。"
+        "必ず有効なJSONのみを返してください。"
+    )
+    _PROMPT_TPL = (
+        "以下の会話から、ユーザーについての記憶すべき事実を抽出してください。\n\n"
+        "対象カテゴリ: profile, health, lifestyle, environment, devices, "
+        "preferences, relationships, finance, goals\n\n"
+        "## 会話\n{conversation}\n\n"
+        "JSON形式で返してください:\n"
+        '{{ "facts": [ {{ "category": "...", "key": "...", "value": "...", '
+        '"confidence": 0.9, "reason": "..." }} ] }}\n'
+        "事実がなければ facts は空リスト。"
+    )
+
+    lines: list[str] = []
+    for m in payload.messages[-20:]:
+        role = "ユーザー" if m.get("role") == "user" else "シグマリス"
+        content = (m.get("content") or "").strip()[:500]
+        if content:
+            lines.append(f"{role}: {content}")
+    conversation = "\n".join(lines)
+
+    router = get_llm_router()
+    try:
+        raw = await router.chat(
+            TaskType.MEMORY_EXTRACTION,
+            [
+                {"role": "system", "content": _SYSTEM},
+                {"role": "user", "content": _PROMPT_TPL.format(conversation=conversation)},
+            ],
+            temperature=0.1,
+            max_tokens=1024,
+            json_mode=True,
+        )
+        parsed = _json.loads(raw)
+        facts = parsed.get("facts", [])
+    except Exception as exc:
+        logger.exception("facts/extract-test failed")
+        raise HTTPException(status_code=500, detail={"error": str(exc)}) from exc
+
+    return {"ok": True, "facts": facts, "count": len(facts)}
+
+
+@router.post("/facts/validate")
+async def agent_facts_validate(
+    authorization: str | None = Header(default=None),
+    x_agent_id: str | None = Header(default=None),
+    x_agent_secret: str | None = Header(default=None),
+) -> dict[str, Any]:
+    """Manually trigger memory validation (decay, contradiction, logical deletion)."""
+    _verify_agent(x_agent_id, x_agent_secret)
+    jwt = _require_jwt(authorization)
+    try:
+        result = await validate_all_facts(jwt)
+    except Exception as exc:
+        logger.exception("facts/validate failed")
+        raise HTTPException(status_code=500, detail={"error": str(exc)}) from exc
+    return {"ok": True, **result}
+
+
+# ─── /api/agent/trends/ ──────────────────────────────────────────────────────
+
+
+@router.post("/trends/analyze")
+async def agent_trends_analyze(
+    authorization: str | None = Header(default=None),
+    x_agent_id: str | None = Header(default=None),
+    x_agent_secret: str | None = Header(default=None),
+) -> dict[str, Any]:
+    """Manually trigger trend analysis and upsert into user_trend_items."""
+    _verify_agent(x_agent_id, x_agent_secret)
+    jwt = _require_jwt(authorization)
+    try:
+        result = await analyze_trends(jwt)
+    except Exception as exc:
+        logger.exception("trends/analyze failed")
+        raise HTTPException(status_code=500, detail={"error": str(exc)}) from exc
+    return {"ok": True, **result}
+
+
+@router.get("/trends/list")
+async def agent_trends_list(
+    authorization: str | None = Header(default=None),
+    x_agent_id: str | None = Header(default=None),
+    x_agent_secret: str | None = Header(default=None),
+) -> dict[str, Any]:
+    """Return all active trend items for the authenticated user."""
+    _verify_agent(x_agent_id, x_agent_secret)
+    jwt = _require_jwt(authorization)
+    try:
+        trends = await get_active_trends(jwt)
+    except Exception as exc:
+        logger.exception("trends/list failed")
+        raise HTTPException(status_code=500, detail={"error": str(exc)}) from exc
+    return {"ok": True, "trends": trends, "count": len(trends)}
 
 
 # ─── /api/agent/proactive/ ────────────────────────────────────────────────────

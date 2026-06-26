@@ -1,6 +1,13 @@
 from __future__ import annotations
 
+import logging
 import re
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    pass
+
+logger = logging.getLogger(__name__)
 
 # Email addresses
 _EMAIL_RE = re.compile(r'\b[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}\b')
@@ -75,3 +82,48 @@ def filter_private_info(text: str) -> tuple[bool, list[str]]:
         detected.append("IPアドレス")
 
     return len(detected) == 0, detected
+
+
+async def filter_private_facts(text: str, jwt: str) -> tuple[bool, list[str]]:
+    """Check tweet text against the user's private fact values stored in memory.
+
+    Fetches all user_fact_items where privacy_level='private' and checks whether
+    any of those values appear verbatim in the tweet text.
+
+    Returns (safe, blocked_reasons).
+    safe=True → none of the private values were found in text.
+
+    Requires migration 202606270019_trend_memory to be applied (adds privacy_level
+    column). Fails open: returns (True, []) on any error so that a DB issue never
+    blocks X posting.
+    """
+    try:
+        from app.services.supabase_rest import rest_select  # noqa: PLC0415
+        rows = await rest_select(jwt, "user_fact_items", {
+            "select": "category,key,value",
+            "privacy_level": "eq.private",
+            "is_deleted": "eq.false",
+            "value": "not.is.null",
+        })
+        if not isinstance(rows, list):
+            return True, []
+    except Exception:
+        logger.warning("x_privacy_filter: private-facts DB fetch failed (failing open)")
+        return True, []
+
+    blocked: list[str] = []
+    text_lower = text.lower()
+
+    for row in rows:
+        value = row.get("value")
+        if not isinstance(value, str) or len(value) < 4:
+            # Skip very short values (single digits, single chars) to avoid false positives
+            continue
+        if value.lower() in text_lower:
+            label = f"{row.get('category')}/{row.get('key')}"
+            blocked.append(label)
+            logger.warning(
+                "x_privacy_filter: private fact value matched in tweet: %s", label
+            )
+
+    return len(blocked) == 0, blocked

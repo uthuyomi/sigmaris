@@ -6,6 +6,20 @@ from typing import Any
 
 from app.services.supabase_rest import rest_rpc, rest_select
 
+# Category-level importance scores (mirrors DB trigger set_fact_category_defaults).
+# Used for Python-side sorting without requiring the DB column to exist.
+CATEGORY_IMPORTANCE: dict[str, float] = {
+    "goals":         1.0,
+    "health":        0.9,
+    "profile":       0.8,
+    "relationships": 0.8,
+    "finance":       0.7,
+    "lifestyle":     0.6,
+    "preferences":   0.5,
+    "devices":       0.4,
+    "environment":   0.4,
+}
+
 _PROFILE_SCALAR_FIELDS = [
     "name", "birthdate", "prefecture", "city", "address_detail",
     "email", "occupation", "income_range",
@@ -24,11 +38,19 @@ async def get_fact_items(
     jwt: str,
     *,
     category: str | None = None,
+    active_only: bool = False,
 ) -> list[dict[str, Any]]:
-    """Returns all user_fact_items, optionally filtered by category."""
+    """Returns user_fact_items, optionally filtered by category.
+
+    active_only=True adds is_deleted=eq.false,is_stale=eq.false filters.
+    Requires migration 202606270019_trend_memory to be applied.
+    """
     params: dict[str, str] = {"select": "*", "order": "category.asc,key.asc"}
     if category:
         params["category"] = f"eq.{category}"
+    if active_only:
+        params["is_deleted"] = "eq.false"
+        params["is_stale"] = "eq.false"
     result = await rest_select(jwt, "user_fact_items", params)
     return result if isinstance(result, list) else []
 
@@ -136,3 +158,45 @@ def extract_call_name(profile: dict[str, Any] | None) -> str | None:
         if isinstance(nickname, str) and nickname.strip():
             return nickname.strip()
     return None
+
+
+def build_facts_context(
+    items: list[dict[str, Any]],
+    *,
+    top_n: int = 20,
+) -> str | None:
+    """Format fact items for injection into the schedule-agent system prompt.
+
+    Sorts items by importance_score × confidence (descending) and includes the
+    top N items that have a non-null value. Falls back to CATEGORY_IMPORTANCE
+    when the importance_score column does not yet exist on the row.
+    """
+    scored: list[tuple[float, dict[str, Any]]] = []
+    for item in items:
+        if item.get("is_deleted") or item.get("is_stale"):
+            continue
+        value = item.get("value")
+        if value is None:
+            continue
+        importance = float(
+            item.get("importance_score")
+            or CATEGORY_IMPORTANCE.get(item.get("category") or "", 0.5)
+        )
+        confidence = float(item.get("confidence") or 1.0)
+        scored.append((importance * confidence, item))
+
+    scored.sort(key=lambda x: x[0], reverse=True)
+    top = scored[:top_n]
+
+    if not top:
+        return None
+
+    lines = ["[記憶した事実（重要度順）]"]
+    for _, item in top:
+        cat = item.get("category") or ""
+        key = item.get("key") or ""
+        val = (item.get("value") or "")[:200]
+        conf = float(item.get("confidence") or 1.0)
+        lines.append(f"- {cat}/{key}: {val}（確信度{conf:.1f}）")
+
+    return "\n".join(lines)

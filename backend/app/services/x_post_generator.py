@@ -15,7 +15,7 @@ from app.services.self_model import get_self_model
 from app.services.supabase_rest import _get_client, _require_supabase_config, get_current_user, rest_insert, rest_select
 from app.services.user_fact_data import build_profile_context, get_user_profile
 from app.services.x_content_filter import audit_tweet
-from app.services.x_privacy_filter import filter_private_info
+from app.services.x_privacy_filter import filter_private_facts, filter_private_info
 
 logger = logging.getLogger(__name__)
 
@@ -474,7 +474,18 @@ async def generate_post(post_type: str, *, max_tries: int = 3) -> str | None:
             logger.debug("x_post_generator: attempt %d has banned phrase, retrying", attempt)
             continue
 
-        # Privacy filter (regex-only, no LLM)
+        # Memory-based private-fact check (DB lookup, no LLM)
+        facts_ok, facts_blocked = await filter_private_facts(candidate, jwt)
+        if not facts_ok:
+            facts_reason = f"記憶プライベート情報検出: {', '.join(facts_blocked)}"
+            logger.debug("x_post_generator: attempt %d private_facts=%s", attempt, facts_blocked)
+            asyncio.create_task(
+                _log_filter_rejection(jwt, "private_facts_filter", facts_reason, candidate),
+                name=f"x_private_facts_log:{attempt}",
+            )
+            continue
+
+        # Regex-based privacy filter (no LLM, no external calls)
         privacy_ok, detected = filter_private_info(candidate)
         if not privacy_ok:
             privacy_reason = f"プライバシー検出: {', '.join(detected)}"
