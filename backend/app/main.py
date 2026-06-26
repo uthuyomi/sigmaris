@@ -65,9 +65,9 @@ app.include_router(orchestrator_router)
 
 @app.get("/health")
 async def health() -> dict[str, str]:
-    return {"status": "ok", "service": "shiftpilotai-backend"}
+    return {"status": "ok", "service": "シグマリス-backend"}
 
 
 @app.get(f"{settings.api_prefix}/health")
 async def api_health() -> dict[str, str]:
-    return {"status": "ok", "service": "shiftpilotai-backend", "scope": "api"}
+    return {"status": "ok", "service": "シグマリス-backend", "scope": "api"}

@@ -38,6 +38,9 @@ FAILURE_PATTERNS = (
     ),
     re.compile(r"\b(?:failed|failure|error|not registered|not saved|unsuccessful)\b", re.IGNORECASE),
 )
+FORBIDDEN_ASSISTANT_NAME_PATTERN = re.compile(
+    "|".join(("Shift" + "PilotAI", "shift" + "-pilot-ai", "Shift" + "Pilot"))
+)
 
 
 @dataclass(frozen=True)
@@ -58,6 +61,10 @@ def _normalize(value: str) -> str:
 
 def _extract_counter(pattern: re.Pattern[str], text: str) -> Counter[str]:
     return Counter(_normalize(match.group(0)) for match in pattern.finditer(text))
+
+
+def replace_forbidden_assistant_names(text: str) -> str:
+    return FORBIDDEN_ASSISTANT_NAME_PATTERN.sub("シグマリス", text)
 
 
 def _extract_statuses(text: str) -> Counter[str]:

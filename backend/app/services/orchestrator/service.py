@@ -10,6 +10,7 @@ from app.services.orchestrator.agent_registry import get_schedule_agent
 from app.services.orchestrator.audit import finish_invocation, start_invocation
 from app.services.orchestrator.persona_loader import load_persona
 from app.services.orchestrator.persona_rewriter import rewrite_with_persona
+from app.services.orchestrator.response_guard import replace_forbidden_assistant_names
 from app.services.orchestrator.schedule_agent_client import call_schedule_agent
 from app.services.supabase_rest import get_current_user
 from app.services.self_model import get_self_model
@@ -121,6 +122,7 @@ async def run_orchestrator_chat(
             persona=persona,
             user_name=call_name,
         )
+        response_text = replace_forbidden_assistant_names(rewrite.text)
     except Exception as error:
         duration_ms = int((time.monotonic() - started_at) * 1000)
         try:
@@ -147,7 +149,7 @@ async def run_orchestrator_chat(
             "scheduleMessageId": schedule_result.message_id,
             "usedFallback": rewrite.used_fallback,
             "guardViolations": list(rewrite.guard_violations),
-            "responseLength": len(rewrite.text),
+            "responseLength": len(response_text),
         },
         error_code=None,
         duration_ms=duration_ms,
@@ -155,7 +157,7 @@ async def run_orchestrator_chat(
 
     # Fire-and-forget: extract memorable facts from this conversation turn.
     from app.services.memory_extractor import extract_from_conversation  # noqa: PLC0415
-    full_messages = list(messages) + [{"role": "assistant", "content": rewrite.text}]
+    full_messages = list(messages) + [{"role": "assistant", "content": response_text}]
     asyncio.create_task(
         extract_from_conversation(messages=full_messages, jwt=jwt),
         name=f"memory_extract:{invocation_id}",
@@ -163,7 +165,7 @@ async def run_orchestrator_chat(
 
     return {
         "ok": True,
-        "text": rewrite.text,
+        "text": response_text,
         "thread_id": schedule_result.thread_id,
         "invocation_id": invocation_id,
         "agent_id": agent.agent_id,
