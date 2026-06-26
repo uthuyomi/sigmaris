@@ -4,6 +4,7 @@ import asyncio
 import json
 import logging
 import re
+import uuid
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
@@ -11,8 +12,10 @@ from app.config import settings
 from app.services.local_llm import TaskType, get_llm_router
 from app.services.proactive.jwt_manager import get_sigmaris_jwt
 from app.services.self_model import get_self_model
-from app.services.supabase_rest import _get_client, _require_supabase_config, rest_select
+from app.services.supabase_rest import _get_client, _require_supabase_config, get_current_user, rest_insert, rest_select
 from app.services.user_fact_data import build_profile_context, get_user_profile
+from app.services.x_content_filter import audit_tweet
+from app.services.x_privacy_filter import filter_private_info
 
 logger = logging.getLogger(__name__)
 
@@ -75,6 +78,39 @@ async def record_post(text: str, post_type: str) -> None:
     )
     if r.is_error:
         logger.warning("x_post_generator: record_post HTTP %s", r.status_code)
+
+
+async def _log_filter_rejection(jwt: str, actor_ref: str, reason: str, candidate: str) -> None:
+    """Fire-and-forget audit log entry when a filter rejects a tweet candidate."""
+    try:
+        user = await get_current_user(jwt)
+        user_id = user.get("id")
+        if not isinstance(user_id, str):
+            return
+        await rest_insert(
+            jwt,
+            "agent_invocation_audit_logs",
+            {
+                "invocation_id": str(uuid.uuid4()),
+                "user_id": user_id,
+                "caller_agent_id": "x_filter",
+                "target_agent_id": actor_ref,
+                "target_endpoint": "generate_post",
+                "reason": reason[:500],
+                "status": "failed",
+                "request_summary": {
+                    "actor_type": "x_filter",
+                    "actor_ref": actor_ref,
+                    "candidate_preview": candidate[:100],
+                },
+            },
+            single=True,
+        )
+    except Exception:
+        logger.warning(
+            "x_post_generator: audit log for filter rejection failed: actor=%s reason=%s",
+            actor_ref, reason,
+        )
 
 
 # ─── Condition checkers ───────────────────────────────────────────────────────
@@ -438,6 +474,30 @@ async def generate_post(post_type: str, *, max_tries: int = 3) -> str | None:
             logger.debug("x_post_generator: attempt %d has banned phrase, retrying", attempt)
             continue
 
+        # Privacy filter (regex-only, no LLM)
+        privacy_ok, detected = filter_private_info(candidate)
+        if not privacy_ok:
+            privacy_reason = f"プライバシー検出: {', '.join(detected)}"
+            logger.debug("x_post_generator: attempt %d privacy=%s", attempt, detected)
+            asyncio.create_task(
+                _log_filter_rejection(jwt, "privacy_filter", privacy_reason, candidate),
+                name=f"x_privacy_log:{attempt}",
+            )
+            continue
+
+        # Content audit (rule-based + LLM quality scoring, threshold 7/10)
+        audit_passed, audit_reason, score = await audit_tweet(candidate)
+        if not audit_passed:
+            logger.debug(
+                "x_post_generator: attempt %d content_audit fail score=%.1f reason=%s",
+                attempt, score, audit_reason,
+            )
+            asyncio.create_task(
+                _log_filter_rejection(jwt, "content_filter", audit_reason, candidate),
+                name=f"x_content_log:{attempt}",
+            )
+            continue
+
         sim = check_similarity(candidate, recent_texts)
         if sim >= 0.3:
             logger.debug(
@@ -447,8 +507,8 @@ async def generate_post(post_type: str, *, max_tries: int = 3) -> str | None:
             continue
 
         logger.info(
-            "x_post_generator: generated post_type=%s len=%d sim=%.2f",
-            post_type, len(candidate), sim,
+            "x_post_generator: generated post_type=%s len=%d sim=%.2f score=%.1f",
+            post_type, len(candidate), sim, score,
         )
         return candidate
 
