@@ -7,6 +7,7 @@ import {
 } from "@/components/attachment";
 import { MarkdownText } from "@/components/markdown-text";
 import { promptTemplates } from "@/components/thread-prompt-templates";
+import { ToolFallback } from "@/components/tool-fallback";
 import {
   parseLatestConfirmationAction,
   removeConfirmationMarkers,
@@ -24,6 +25,7 @@ import {
 import {
   ArrowDownIcon,
   ArrowUpIcon,
+  BotIcon,
   CheckIcon,
   CreditCardIcon,
   FileTextIcon,
@@ -204,7 +206,7 @@ export const Thread: FC<ThreadProps> = ({ locale, freeChatUsage, initialUserMess
         <ThreadPrimitive.Viewport
           ref={viewportRef}
           data-scrollbar-hidden="true"
-          className="no-scrollbar scrollbar-hidden h-full min-w-0 max-w-full touch-pan-y overflow-x-hidden overflow-y-auto overscroll-x-none px-3 pt-5 pb-44 sm:px-6 sm:pb-48"
+          className="no-scrollbar scrollbar-hidden h-full min-w-0 max-w-full touch-pan-y overflow-x-hidden overflow-y-auto overscroll-x-none px-3 pt-5 pb-36 sm:px-6 sm:pb-40"
           style={{
             msOverflowStyle: "none",
             scrollbarWidth: "none",
@@ -236,7 +238,7 @@ export const Thread: FC<ThreadProps> = ({ locale, freeChatUsage, initialUserMess
           </div>
         ) : null}
 
-        <div className="pointer-events-none absolute inset-x-0 bottom-0 z-10 px-3 pb-4 pt-10 sm:px-6 sm:pb-6">
+        <div className="pointer-events-none absolute inset-x-0 bottom-0 z-10 px-3 pb-[calc(0.75rem+env(safe-area-inset-bottom))] pt-10 sm:px-6 sm:pb-6">
           <div className="pointer-events-none absolute inset-x-0 bottom-0 h-28 bg-[linear-gradient(180deg,rgba(255,255,255,0),rgba(255,255,255,0.92)_48%,rgba(255,255,255,1)_100%)] dark:bg-[linear-gradient(180deg,rgba(33,33,33,0),rgba(33,33,33,0.92)_48%,rgba(33,33,33,1)_100%)]" />
           <div className="pointer-events-auto relative">
             {freeChatUsage ? (
@@ -281,13 +283,13 @@ const ThreadWelcome: FC<Pick<ThreadProps, "locale">> = ({ locale }) => {
         {dict.chat.welcomeBody}
       </p>
 
-      <div className="mt-8 flex flex-wrap justify-center gap-2.5">
-        {promptTemplates.map((template) => (
+      <div className="mt-8 grid grid-cols-1 gap-2.5 sm:grid-cols-2">
+        {promptTemplates.slice(0, 4).map((template) => (
           <button
             key={template.id}
             type="button"
             onClick={() => insertTemplate(template)}
-            className="inline-flex max-w-full items-center rounded-full border border-stone-900/10 bg-stone-50 px-4 py-2.5 text-sm font-medium text-stone-800 shadow-[0_14px_35px_-30px_rgba(28,25,23,0.75)] transition hover:-translate-y-0.5 hover:border-stone-900/18 hover:bg-white focus:outline-none focus:ring-2 focus:ring-stone-900/15 dark:border-white/10 dark:bg-white/6 dark:text-stone-200 dark:hover:border-white/18 dark:hover:bg-white/10"
+            className="inline-flex min-h-12 max-w-full items-center justify-center rounded-2xl border border-stone-900/10 bg-stone-50 px-4 py-2.5 text-sm font-medium text-stone-800 transition hover:border-stone-900/18 hover:bg-white focus:outline-none focus:ring-2 focus:ring-stone-900/15 dark:border-white/10 dark:bg-white/6 dark:text-stone-200 dark:hover:border-white/18 dark:hover:bg-white/10"
           >
             <span className="truncate">{template.label}</span>
           </button>
@@ -347,30 +349,34 @@ const AssistantMessage: FC = () => {
     text.replace(/^確認中\.\.\.\s*/u, "").replace(/^確認中…\s*/u, "");
 
   return (
-    <div className="w-full min-w-0 overflow-hidden break-words px-1 py-2 text-sm leading-7 text-stone-900 [overflow-wrap:anywhere] dark:text-stone-100 sm:px-3">
-      <MessagePrimitive.Parts>
-        {({ part }) => {
-          if (part.type === "text") {
-            if (!part.text?.trim()) return null;
-            return (
+    <div className="grid w-full min-w-0 grid-cols-[32px_minmax(0,1fr)] gap-3 overflow-hidden px-1 py-3 text-sm leading-7 text-stone-900 [overflow-wrap:anywhere] dark:text-stone-100 sm:grid-cols-[36px_minmax(0,1fr)] sm:px-3">
+      <div className="mt-1 inline-flex size-8 items-center justify-center rounded-full bg-stone-950 text-white dark:bg-white dark:text-stone-950 sm:size-9">
+        <BotIcon className="size-4" />
+      </div>
+      <div className="min-w-0">
+        <MessagePrimitive.Parts
+          components={{
+            Text: () => (
               <MarkdownText
                 preprocess={(text) =>
                   removeConfirmationMarkers(sanitizeAssistantText(text))
                 }
               />
-            );
-          }
-          return null;
-        }}
-      </MessagePrimitive.Parts>
-      {confirmationAction ? (
-        <ConfirmationActionCard
-          action={confirmationAction}
-          disabled={isSendingConfirmation}
-          onConfirm={() => sendConfirmation("yes", confirmationAction)}
-          onCancel={() => sendConfirmation("no", confirmationAction)}
+            ),
+            tools: {
+              Fallback: ToolFallback,
+            },
+          }}
         />
-      ) : null}
+        {confirmationAction ? (
+          <ConfirmationActionCard
+            action={confirmationAction}
+            disabled={isSendingConfirmation}
+            onConfirm={() => sendConfirmation("yes", confirmationAction)}
+            onCancel={() => sendConfirmation("no", confirmationAction)}
+          />
+        ) : null}
+      </div>
     </div>
   );
 };
@@ -524,7 +530,7 @@ const Composer: FC<{ placeholder: string; disabled: boolean }> = ({ placeholder,
           }}
         />
 
-        <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
+        <div className="hidden flex-col gap-2 sm:flex-row sm:items-center">
           <label className="sr-only" htmlFor="prompt-template-select">
             プロンプトテンプレート
           </label>
@@ -575,7 +581,7 @@ const Composer: FC<{ placeholder: string; disabled: boolean }> = ({ placeholder,
           </div>
         ) : null}
 
-        <div className="mt-2 flex items-end gap-2">
+        <div className="flex items-end gap-2">
           <ComposerPrimitive.AddAttachment
             multiple
             disabled={disabled}

@@ -1,7 +1,11 @@
 "use client";
 
 import type { UIMessage } from "ai";
-import { PanelLeftCloseIcon, PanelLeftOpenIcon } from "lucide-react";
+import {
+  BotIcon,
+  PanelLeftCloseIcon,
+  PanelLeftOpenIcon,
+} from "lucide-react";
 import { useEffect, useState } from "react";
 import { Assistant } from "@/app/assistant";
 import { ChatThreadSidebar } from "@/components/chat-thread-sidebar";
@@ -47,7 +51,7 @@ export function ChatWorkspace({
   }, []);
 
   return (
-    <section className="relative flex h-full min-h-0 touch-pan-y overflow-hidden overscroll-x-none rounded-2xl border border-stone-900/10 bg-white shadow-[0_18px_60px_-44px_rgba(28,25,23,0.35)] dark:border-white/10 dark:bg-[#212121]">
+    <section className="relative flex h-full min-h-0 touch-pan-y overflow-hidden overscroll-x-none bg-white dark:bg-[#212121]">
       <div
         className={cn(
           "hidden min-h-0 shrink-0 overflow-hidden border-r border-stone-900/10 bg-[#f7f7f8] transition-[width] duration-200 ease-out dark:border-white/10 dark:bg-[#171717] lg:block",
@@ -80,7 +84,7 @@ export function ChatWorkspace({
       ) : null}
 
       <section className="flex min-w-0 flex-1 flex-col bg-white dark:bg-[#212121]">
-        <div className="flex min-h-14 items-center gap-3 border-b border-stone-900/10 px-3 text-stone-900 dark:border-white/10 dark:text-stone-100 sm:px-4">
+        <div className="flex min-h-14 items-center gap-3 border-b border-stone-900/10 bg-white/95 px-3 text-stone-900 backdrop-blur dark:border-white/10 dark:bg-[#212121]/95 dark:text-stone-100 sm:px-4">
           <button
             type="button"
             onClick={() => setSidebarOpen((open) => !open)}
@@ -90,8 +94,11 @@ export function ChatWorkspace({
           >
             {sidebarOpen ? <PanelLeftCloseIcon className="size-5" /> : <PanelLeftOpenIcon className="size-5" />}
           </button>
+          <div className="inline-flex size-8 shrink-0 items-center justify-center rounded-full bg-stone-950 text-white dark:bg-white dark:text-stone-950">
+            <BotIcon className="size-4" />
+          </div>
           <div className="min-w-0">
-            <p className="text-[11px] font-medium uppercase tracking-[0.22em] text-stone-400">
+            <p className="text-[11px] font-medium uppercase tracking-[0.18em] text-stone-400">
               {assistantLabel}
             </p>
             <h2 className="truncate text-sm font-semibold sm:text-base">{activeThreadTitle}</h2>

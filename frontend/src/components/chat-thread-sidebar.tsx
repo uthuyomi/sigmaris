@@ -3,9 +3,18 @@
 
 
 import { getDictionary, type AppLocale } from "@/lib/i18n";
-import { Clock3Icon, PencilIcon, PlusIcon, Trash2Icon } from "lucide-react";
-import { useRouter } from "next/navigation";
-import { useTransition } from "react";
+import { cn } from "@/lib/utils";
+import {
+  BrainCircuitIcon,
+  Clock3Icon,
+  PencilIcon,
+  PlusIcon,
+  Settings2Icon,
+  Trash2Icon,
+} from "lucide-react";
+import Link from "next/link";
+import { usePathname, useRouter } from "next/navigation";
+import { useTransition, type ReactNode } from "react";
 
 type ChatThread = {
   id: string;
@@ -27,8 +36,10 @@ export function ChatThreadSidebar({
   onNavigate,
 }: ChatThreadSidebarProps) {
   const router = useRouter();
+  const pathname = usePathname();
   const [isPending, startTransition] = useTransition();
   const dict = getDictionary(locale);
+  const memoryLabel = locale === "ja" ? "記憶" : "Memory";
 
   const createThread = () => {
     startTransition(async () => {
@@ -153,6 +164,55 @@ export function ChatThreadSidebar({
           );
         })}
       </div>
+
+      <div className="mt-3 border-t border-stone-900/10 pt-3 dark:border-white/10">
+        <SidebarNavLink
+          href="/memory"
+          label={memoryLabel}
+          active={pathname === "/memory" || pathname.startsWith("/memory/")}
+          onNavigate={onNavigate}
+          icon={<BrainCircuitIcon className="size-4" />}
+        />
+        <SidebarNavLink
+          href="/settings"
+          label={dict.nav.settings}
+          active={pathname === "/settings" || pathname.startsWith("/settings/")}
+          onNavigate={onNavigate}
+          icon={<Settings2Icon className="size-4" />}
+        />
+      </div>
     </aside>
+  );
+}
+
+function SidebarNavLink({
+  href,
+  label,
+  active,
+  icon,
+  onNavigate,
+}: {
+  href: string;
+  label: string;
+  active: boolean;
+  icon: ReactNode;
+  onNavigate?: () => void;
+}) {
+  return (
+    <Link
+      href={href}
+      prefetch={false}
+      onClick={onNavigate}
+      aria-current={active ? "page" : undefined}
+      className={cn(
+        "mb-1 flex min-h-11 items-center gap-3 rounded-xl px-3 text-sm font-medium transition",
+        active
+          ? "bg-stone-200 text-stone-950 dark:bg-white/12 dark:text-white"
+          : "text-stone-700 hover:bg-stone-200/70 hover:text-stone-950 dark:text-stone-300 dark:hover:bg-white/8 dark:hover:text-white",
+      )}
+    >
+      {icon}
+      <span className="truncate">{label}</span>
+    </Link>
   );
 }

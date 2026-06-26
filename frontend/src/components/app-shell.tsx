@@ -3,16 +3,14 @@
 
 
 import { AuthControls } from "@/components/auth-controls";
-import { TravelReminderScheduler } from "@/components/travel-reminder-scheduler";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui";
 import { getDictionary, type AppLocale } from "@/lib/i18n";
 import type { AppTheme } from "@/lib/profile-settings";
 import { cn } from "@/lib/utils";
 import {
-  CalendarDaysIcon,
+  BrainCircuitIcon,
   MessageSquareMoreIcon,
   Settings2Icon,
-  SparklesIcon,
 } from "lucide-react";
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
@@ -37,9 +35,8 @@ type AppShellProps = PropsWithChildren<{
 }>;
 
 const navIconByPath = {
-  "/sigmaris": SparklesIcon,
   "/chat": MessageSquareMoreIcon,
-  "/calendar": CalendarDaysIcon,
+  "/memory": BrainCircuitIcon,
   "/settings": Settings2Icon,
 } as const;
 
@@ -66,16 +63,18 @@ export function AppShell({
   const [exitDirection, setExitDirection] = useState<SwipeDirection | null>(null);
   const [enterDirection, setEnterDirection] = useState<SwipeDirection | null>(null);
   const dict = getDictionary(locale);
+  const memoryLabel = locale === "ja" ? "記憶" : "Memory";
   const navItems = useMemo(
     () => [
-      { href: "/sigmaris", label: "Sigmaris" },
       { href: "/chat", label: dict.nav.chat },
-      { href: "/calendar", label: dict.nav.calendar },
+      { href: "/memory", label: memoryLabel },
       { href: "/settings", label: dict.nav.settings },
     ],
-    [dict.nav.calendar, dict.nav.chat, dict.nav.settings],
+    [dict.nav.chat, dict.nav.settings, memoryLabel],
   );
-  const activeNavItem = navItems.find((item) => item.href === pathname) ?? navItems[0];
+  const activeNavItem =
+    navItems.find((item) => pathname === item.href || pathname.startsWith(`${item.href}/`)) ??
+    navItems[0];
   const ActiveIcon = navIconByPath[activeNavItem.href as keyof typeof navIconByPath];
   const activeNavIndex = navItems.findIndex((item) => item.href === activeNavItem.href);
   const chatPageActive = pathname === "/chat";
@@ -187,10 +186,9 @@ export function AppShell({
         fitViewport && "h-[100dvh] overflow-hidden",
       )}
     >
-      <TravelReminderScheduler />
       <div
         className={cn(
-          "mx-auto flex min-h-screen w-full max-w-[min(1500px,100dvw)] flex-col overflow-x-hidden px-3 pb-4 pt-3 sm:px-4 lg:px-5",
+          "mx-auto flex min-h-screen w-full max-w-[min(1500px,100dvw)] flex-col overflow-x-hidden px-3 pb-[calc(4.75rem+env(safe-area-inset-bottom))] pt-3 sm:px-4 lg:px-5 lg:pb-4",
           fitViewport && "h-full min-h-0 overflow-hidden",
         )}
       >
@@ -217,9 +215,9 @@ export function AppShell({
               <div className="hidden items-center gap-2 sm:flex">
                 {actions}
               </div>
-              <nav className="flex items-center gap-1 rounded-xl bg-stone-100 p-1 dark:bg-white/8">
+              <nav className="hidden items-center gap-1 rounded-xl bg-stone-100 p-1 dark:bg-white/8 lg:flex">
                 {navItems.map((item) => {
-                  const active = pathname === item.href;
+                  const active = pathname === item.href || pathname.startsWith(`${item.href}/`);
                   const Icon = navIconByPath[item.href as keyof typeof navIconByPath];
 
                   return (
@@ -259,6 +257,32 @@ export function AppShell({
           <div className={contentAnimationClass}>{children}</div>
         </section>
       </div>
+      <nav className="fixed inset-x-0 bottom-0 z-50 border-t border-stone-900/10 bg-white/95 px-3 pb-[calc(0.5rem+env(safe-area-inset-bottom))] pt-2 shadow-[0_-18px_45px_-34px_rgba(28,25,23,0.55)] backdrop-blur dark:border-white/10 dark:bg-[#212121]/95 lg:hidden">
+        <div className="mx-auto grid max-w-md grid-cols-3 gap-1">
+          {navItems.map((item) => {
+            const active = pathname === item.href || pathname.startsWith(`${item.href}/`);
+            const Icon = navIconByPath[item.href as keyof typeof navIconByPath];
+
+            return (
+              <Link
+                key={item.href}
+                href={item.href}
+                prefetch={false}
+                aria-current={active ? "page" : undefined}
+                className={cn(
+                  "flex min-h-12 flex-col items-center justify-center gap-1 rounded-xl px-2 text-[11px] font-medium transition",
+                  active
+                    ? "bg-stone-950 text-white dark:bg-white dark:text-stone-950"
+                    : "text-stone-500 hover:bg-stone-100 hover:text-stone-950 dark:text-stone-400 dark:hover:bg-white/10 dark:hover:text-white",
+                )}
+              >
+                <Icon className="size-5" />
+                <span className="truncate">{item.label}</span>
+              </Link>
+            );
+          })}
+        </div>
+      </nav>
     </main>
   );
 }
