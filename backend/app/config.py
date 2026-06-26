@@ -49,6 +49,7 @@ class Settings(BaseSettings):
     health_sync_enabled: bool = False
     news_api_key: str | None = None
     research_enabled: bool = False
+    agent_registry_json: str | None = None
 
     model_config = SettingsConfigDict(
         env_file=(".env", "../frontend/.env.local"),

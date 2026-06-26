@@ -23,9 +23,9 @@ logger = logging.getLogger(__name__)
 ProposalType = Literal["persona", "code"]
 
 # Files that must never be modified — absolute constraint.
+# Covers: credentials, secrets, auth code, CI/CD, dependency manifests, config files.
 _BLOCKED_PATTERNS = [
-    r"\.env",
-    r"\.env\.",
+    r"\.env",           # .env, .env.local, .env.production …
     r"env\.example",
     r"secret",
     r"credential",
@@ -36,7 +36,21 @@ _BLOCKED_PATTERNS = [
     r"\.pfx$",
     r"auth\.py$",
     r"jwt_manager\.py$",
+    r"config\.py$",     # app/config.py holds all API keys
+    r"settings\.py$",
+    r"\.github/",       # GitHub Actions / CI-CD workflows
+    r"requirements.*\.txt$",  # Python dependency manifests (supply-chain risk)
+    r"pyproject\.toml$",
+    r"setup\.py$",
+    r"package\.json$",  # Node.js dependencies
+    r"package-lock\.json$",
+    r"dockerfile",      # case-insensitive matched via .lower() normalization
+    r"docker-compose",
+    r"nginx\.conf",
 ]
+
+# Maximum self-improvement PRs that may be created in a single calendar day.
+_MAX_DAILY_PRS = 3
 
 
 @dataclass
@@ -75,6 +89,28 @@ def _resolve_persona_path() -> Path:
     if candidate.exists():
         return candidate
     return (base / "docs" / "persona.md").resolve()
+
+
+def _project_root() -> Path:
+    return Path(__file__).resolve().parent.parent.parent.parent
+
+
+def _safe_file_path(raw: str) -> tuple[str, str]:
+    """Normalize a proposal target_file and verify it stays within the project.
+
+    Returns (normalized_posix_path, error_reason).
+    error_reason is empty string when the path is safe.
+    """
+    import posixpath
+    # Strip leading slashes then normalize (resolves ..)
+    normalized = posixpath.normpath(raw.lstrip("/"))
+    if normalized.startswith("..") or normalized == "..":
+        return "", f"Path traversal detected: '{raw}'"
+    # Re-check against blocked patterns on the normalized form
+    blocked = _is_blocked(normalized)
+    if blocked:
+        return "", blocked
+    return normalized, ""
 
 
 class SelfImprovementAgent:
@@ -222,6 +258,19 @@ class SelfImprovementAgent:
 
     async def _apply_persona(self, proposal: ImprovementProposal) -> ApplyResult:
         persona_path = _resolve_persona_path()
+
+        # Confirm the resolved path stays within the project root
+        root = _project_root()
+        try:
+            persona_path.relative_to(root)
+        except ValueError:
+            return ApplyResult(
+                ok=False,
+                proposal_type="persona",
+                action="blocked",
+                error=f"persona.md path '{persona_path}' is outside the project root.",
+            )
+
         if not persona_path.exists():
             return ApplyResult(
                 ok=False,
@@ -229,6 +278,17 @@ class SelfImprovementAgent:
                 action="failed",
                 error=f"persona.md not found at {persona_path}",
             )
+
+        # Sanity-check proposed_change: reject if it contains HTML/JS injection markers
+        dangerous = ["<script", "javascript:", "data:text/html"]
+        for marker in dangerous:
+            if marker.lower() in proposal.proposed_change.lower():
+                return ApplyResult(
+                    ok=False,
+                    proposal_type="persona",
+                    action="blocked",
+                    error=f"proposed_change contains disallowed marker: '{marker}'",
+                )
 
         existing = persona_path.read_text(encoding="utf-8")
         timestamp = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
@@ -258,6 +318,17 @@ class SelfImprovementAgent:
                 detail="GITHUB_TOKEN or GITHUB_REPO not configured — PR skipped.",
             )
 
+        # Normalize and validate the target file path before touching GitHub
+        file_path, path_err = _safe_file_path(proposal.target_file)
+        if path_err:
+            logger.warning("SelfImprovementAgent: unsafe target_file — %s", path_err)
+            return ApplyResult(
+                ok=False,
+                proposal_type="code",
+                action="blocked",
+                error=path_err,
+            )
+
         headers = {
             "Authorization": f"Bearer {token}",
             "Accept": "application/vnd.github+json",
@@ -277,7 +348,31 @@ class SelfImprovementAgent:
             r.raise_for_status()
             base_sha = r.json()["object"]["sha"]
 
-            # 2. Create branch
+            # 2. Enforce daily PR limit: count open Sigmaris self-improve branches today
+            today_prefix = datetime.now(timezone.utc).strftime("%Y%m%d")
+            r_branches = await client.get(
+                f"{api}/repos/{repo}/branches",
+                headers=headers,
+                params={"per_page": "100"},
+            )
+            if r_branches.is_success:
+                existing_today = sum(
+                    1 for b in r_branches.json()
+                    if b.get("name", "").startswith(f"sigmaris/self-improve-{today_prefix}")
+                )
+                if existing_today >= _MAX_DAILY_PRS:
+                    logger.info(
+                        "SelfImprovementAgent: daily PR limit reached (%d/%d) — skipping",
+                        existing_today, _MAX_DAILY_PRS,
+                    )
+                    return ApplyResult(
+                        ok=False,
+                        proposal_type="code",
+                        action="skipped",
+                        detail=f"Daily PR limit ({_MAX_DAILY_PRS}) reached — skipping.",
+                    )
+
+            # 3. Create branch
             timestamp = datetime.now(timezone.utc).strftime("%Y%m%d%H%M")
             branch = f"sigmaris/self-improve-{timestamp}"
             r = await client.post(
@@ -288,8 +383,7 @@ class SelfImprovementAgent:
             if r.status_code not in (200, 201, 422):
                 r.raise_for_status()
 
-            # 3. Get current file content (if exists) and update
-            file_path = proposal.target_file.lstrip("/")
+            # 4. Get current file content (if exists) and update
             file_sha: str | None = None
             current_content = ""
             r = await client.get(
@@ -326,7 +420,7 @@ class SelfImprovementAgent:
             )
             r.raise_for_status()
 
-            # 4. Create PR
+            # 5. Create PR
             r = await client.post(
                 f"{api}/repos/{repo}/pulls",
                 headers=headers,
