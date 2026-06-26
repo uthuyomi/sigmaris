@@ -1,6 +1,6 @@
 # Fly.io Backend Deploy
 
-Deploy the ShiftPilotAI FastAPI backend from the repository root as a Fly.io app.
+Deploy the Sigmaris FastAPI backend from the repository root as a Fly.io app.
 The root build context is required because the image includes `docs/persona.md`.
 
 ## First Setup

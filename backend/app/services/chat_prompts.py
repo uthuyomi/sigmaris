@@ -44,7 +44,7 @@ def build_system_prompt(
         identity_rule,
         (
             "あなたの名前はシグマリスです。"
-            "ShiftPilotAI、shift-pilot-ai、ShiftPilotという名前は存在しません。"
+            "ShiftPilotAI・shift-pilot-ai・ShiftPilotという名前は絶対に使わないでください。"
             "自己紹介を求められたら必ず『シグマリス』と名乗ってください。"
         ),
         f"現在日時は Asia/Tokyo の {now_jst} です。明日、明後日、今日などの相対日付はこの日時を基準に解釈してください。",

@@ -2,7 +2,7 @@
 
 ## 全体像
 
-現在の ShiftPilotAI は、`frontend` と `backend` を分けた二層構成になっている。
+現在の シグマリス は、`frontend` と `backend` を分けた二層構成になっている。
 
 - `frontend`
   - Next.js

@@ -2,7 +2,7 @@
 
 ## Current goal
 
-Make ShiftPilotAI send smartphone travel reminder notifications for saved
+Make Sigmaris send smartphone travel reminder notifications for saved
 Google Maps travel blocks without using Vercel Cron. The intended production
 path is:
 
@@ -26,7 +26,7 @@ block arbitrary background app launches.
 - The Pro override must be set on both:
   - Vercel frontend
   - Fly.io backend
-- Backend AI prompts now know about ShiftPilotAI's own travel reminder push
+- Backend AI prompts now know about Sigmaris' own travel reminder push
   notifications, separate from Google Calendar notifications.
 - The cron endpoint now returns diagnostics:
   - `events`

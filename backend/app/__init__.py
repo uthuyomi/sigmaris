@@ -1,3 +1,3 @@
 # 役割: backend アプリケーションパッケージを定義する。
 
-# ShiftPilotAI backend package
+# Sigmaris backend package

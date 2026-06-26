@@ -111,7 +111,7 @@ async def execute_tool(
         return {
             "ok": False,
             "status": "PRO_REQUIRED",
-            "reason": "This feature requires ShiftPilotAI Pro.",
+            "reason": "この機能はシグマリス Pro が必要です。",
         }
 
     if name == "list_google_calendar_events":

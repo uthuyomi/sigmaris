@@ -222,7 +222,7 @@ async def classify_chat_intent(
 
     prompt = "\n".join(
         [
-            "Classify the user request for ShiftPilotAI.",
+            "Classify the user request for Sigmaris.",
             'Return JSON only like {"intent":"...","reason":"..."}.',
             "Valid intents: general_chat, event_lookup, mobility_plan, schedule_import, calendar_write, sync_control.",
             "Use mobility_plan for route, departure, public-transit questions, walking, driving, bicycle, or home-to-destination guidance. Public-transit auto planning is unavailable; answer with that limitation and offer car, walking, or bicycle route planning.",

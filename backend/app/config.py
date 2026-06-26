@@ -4,7 +4,7 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 class Settings(BaseSettings):
-    app_name: str = "ShiftPilotAI Backend"
+    app_name: str = "Sigmaris Backend"
     app_env: str = "development"
     api_prefix: str = "/api"
     frontend_origin: str = "http://localhost:3000"
