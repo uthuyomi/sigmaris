@@ -719,6 +719,42 @@ async def x_test_post(
     return {"ok": posted, "text": _X_TEST_POST_TEXT}
 
 
+# ─── /api/agent/x/privacy-test ──────────────────────────────────────────────
+
+
+class PrivacyTestRequest(BaseModel):
+    text: str = Field(min_length=1, max_length=500)
+
+
+@router.post("/x/privacy-test")
+async def x_privacy_test(
+    payload: PrivacyTestRequest,
+    x_agent_id: str | None = Header(default=None),
+    x_agent_secret: str | None = Header(default=None),
+) -> dict[str, Any]:
+    """Test name conversion and privacy filter on a candidate tweet text."""
+    _verify_agent(x_agent_id, x_agent_secret)
+
+    from app.services.x_post_generator import _convert_names, _trim_preserving_hashtags  # noqa: PLC0415
+    from app.services.x_privacy_filter import filter_private_info  # noqa: PLC0415
+
+    original = payload.text
+    converted = _convert_names(original)
+    if len(converted) > 140:
+        converted = _trim_preserving_hashtags(converted)
+
+    safe, detected = filter_private_info(converted)
+
+    return {
+        "original": original,
+        "after_name_conversion": converted,
+        "privacy_check": {
+            "safe": safe,
+            "detected": detected,
+        },
+    }
+
+
 # ─── /api/agent/x/history ────────────────────────────────────────────────────
 
 

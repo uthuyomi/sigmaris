@@ -31,6 +31,35 @@ _BANNED_PHRASES = [
     "また明日", "また今日", "再び今日",
 ]
 
+# Personal name → X handle conversion (applied before posting / privacy checks)
+_HASHTAG_RE_LOCAL = re.compile(r'#\S+')
+_NAME_REPLACEMENTS: list[tuple[re.Pattern, str]] = [
+    (re.compile(r'安崎\s*海星'), "@Oyasu1999"),
+    (re.compile(r'海星さん'), "@Oyasu1999"),
+    (re.compile(r'かいせいさん'), "@Oyasu1999"),
+]
+
+
+def _convert_names(text: str) -> str:
+    """Replace personal name references with the user's X handle."""
+    for pattern, replacement in _NAME_REPLACEMENTS:
+        text = pattern.sub(replacement, text)
+    return text
+
+
+def _trim_preserving_hashtags(text: str) -> str:
+    """Trim text to 140 chars while keeping all hashtags at the end."""
+    if len(text) <= 140:
+        return text
+    hashtags = _HASHTAG_RE_LOCAL.findall(text)
+    body = _HASHTAG_RE_LOCAL.sub("", text).strip()
+    tag_str = (" " + " ".join(hashtags)) if hashtags else ""
+    max_body = 140 - len(tag_str)
+    if max_body <= 0:
+        return tag_str[:140].strip()
+    return body[:max_body].rstrip() + tag_str
+
+
 _DAILY_POST_LIMIT = 2
 _SAME_TYPE_DEDUP_DAYS = 3
 
@@ -556,9 +585,14 @@ async def generate_post(post_type: str, *, max_tries: int = 3) -> GeneratedPost 
             logger.debug("x_post_generator: attempt %d returned empty", attempt)
             continue
 
+        # Convert personal names to X handle before any length / privacy checks
+        candidate = _convert_names(candidate)
+        if len(candidate) > 140:
+            candidate = _trim_preserving_hashtags(candidate)
+
         if len(candidate) > 140:
             logger.debug(
-                "x_post_generator: attempt %d too long (%d chars), retrying",
+                "x_post_generator: attempt %d too long (%d chars) after trim, retrying",
                 attempt, len(candidate),
             )
             continue

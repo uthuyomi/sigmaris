@@ -59,7 +59,10 @@ def filter_private_info(text: str) -> tuple[bool, list[str]]:
     - General job titles ("Webエンジニア")
     - Hobbies and preferences
     - SNS handles (@sigmarisai)
-    - Surname-only or given-name-only (no full name detection without data)
+    - Personal names ("海星", "安崎", "安崎海星"):
+        Name conversion (→ @Oyasu1999) is handled upstream in x_post_generator
+        before this check runs. Blocking names here would be redundant and would
+        false-positive on mentions of the converted @handle text.
     """
     detected: list[str] = []
 
