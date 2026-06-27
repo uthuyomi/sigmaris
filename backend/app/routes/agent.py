@@ -387,9 +387,13 @@ _ACTION_MAP = {
     "weekly_review": run_weekly_review,
 }
 
+_VALID_ACTIONS = list(_ACTION_MAP) + ["research"]
+
 
 class ProactiveTriggerRequest(BaseModel):
-    action: str = Field(description="morning_briefing | evening_checkin | weekly_review")
+    action: str = Field(
+        description="morning_briefing | evening_checkin | weekly_review | research"
+    )
 
 
 @router.post("/proactive/trigger")
@@ -399,11 +403,21 @@ async def proactive_trigger(
 ) -> dict[str, Any]:
     _require_jwt(authorization)
 
+    # research action: does not go through orchestrator, returns raw result dict
+    if payload.action == "research":
+        from app.services.research_agent import run_research  # noqa: PLC0415
+        try:
+            result = await run_research()
+        except Exception as exc:
+            logger.exception("proactive/trigger research failed")
+            raise HTTPException(status_code=500, detail={"error": str(exc)}) from exc
+        return {"ok": True, "action": "research", "result": result}
+
     fn = _ACTION_MAP.get(payload.action)
     if fn is None:
         raise HTTPException(
             status_code=400,
-            detail={"error": f"Unknown action '{payload.action}'. Valid: {list(_ACTION_MAP)}"},
+            detail={"error": f"Unknown action '{payload.action}'. Valid: {_VALID_ACTIONS}"},
         )
 
     result = await fn()

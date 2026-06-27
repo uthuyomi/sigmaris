@@ -42,18 +42,25 @@ def _single(headers: dict[str, str]) -> dict[str, str]:
 
 
 async def get_self_model() -> dict[str, Any] | None:
+    """Return the latest self-model row, or None if the table is empty."""
     base_url, _ = _require_supabase_config()
     client = await _get_client()
-    headers = _single(_service_headers(prefer_return=False))
+    # Use plain list response (no single-object Accept header) to avoid PostgREST
+    # 406 when multiple rows exist; pick the highest-version row.
     r = await client.get(
         f"{base_url}/rest/v1/{_TABLE_MODEL}",
-        headers=headers,
-        params={"limit": "1"},
+        headers=_service_headers(prefer_return=False),
+        params={"order": "version.desc", "limit": "1"},
     )
-    if r.status_code == 406:
+    if r.is_error:
+        logger.warning("get_self_model: HTTP %s", r.status_code)
         return None
-    r.raise_for_status()
-    return r.json()
+    data = r.json()
+    if isinstance(data, list):
+        return data[0] if data else None
+    if isinstance(data, dict) and data.get("identity_statement"):
+        return data
+    return None
 
 
 async def update_self_model(
@@ -82,7 +89,7 @@ async def update_self_model(
         )
     else:
         payload = {
-            "version": existing["version"] + 1,
+            "version": (existing.get("version") or 0) + 1,
             "identity_statement": identity_statement,
             "current_goals": goals,
             "observed_patterns": patterns,
@@ -91,7 +98,7 @@ async def update_self_model(
         r = await client.patch(
             f"{base_url}/rest/v1/{_TABLE_MODEL}",
             headers=_single(_service_headers()),
-            params={"id": f"eq.{existing['id']}"},
+            params={"id": f"eq.{existing.get('id')}"},
             json=payload,
         )
 
@@ -138,9 +145,9 @@ async def reflect() -> dict[str, Any]:
 
     # 3. Current self model
     current = await get_self_model()
-    current_identity = current["identity_statement"] if current else ""
-    current_goals = current["current_goals"] if current else []
-    current_patterns = current["observed_patterns"] if current else []
+    current_identity = current.get("identity_statement", "") if current else ""
+    current_goals = current.get("current_goals") or [] if current else []
+    current_patterns = current.get("observed_patterns") or [] if current else []
 
     logger.info("reflect: %d audit logs, current_version=%s", len(logs), current.get("version") if current else None)
 
