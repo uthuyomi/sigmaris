@@ -26,6 +26,11 @@ from app.services.proactive.actions import (
 )
 from app.services.memory_validator import validate_all_facts
 from app.services.trend_analyzer import analyze_trends, get_active_trends
+from app.services.self_narrative import (
+    generate_narrative_chapter,
+    get_current_narrative,
+    get_narrative_history,
+)
 from app.services.user_fact_data import (
     get_fact_items,
     get_null_fields,
@@ -698,3 +703,78 @@ async def x_test_post(
     publisher = get_publisher()
     posted = await publisher.post_tweet(_X_TEST_POST_TEXT)
     return {"ok": posted, "text": _X_TEST_POST_TEXT}
+
+
+# ─── /api/agent/x/history ────────────────────────────────────────────────────
+
+
+@router.get("/x/history")
+async def x_post_history(
+    days: int = 30,
+    x_agent_id: str | None = Header(default=None),
+    x_agent_secret: str | None = Header(default=None),
+) -> dict[str, Any]:
+    """Return X post history for the last N days (default 30), including post_score."""
+    _verify_agent(x_agent_id, x_agent_secret)
+
+    from app.services.x_post_generator import _get_recent_posts  # noqa: PLC0415
+
+    days = max(1, min(days, 90))
+    try:
+        posts = await _get_recent_posts(days=days)
+    except Exception as exc:
+        logger.exception("x/history failed")
+        raise HTTPException(status_code=500, detail={"error": str(exc)}) from exc
+    return {"ok": True, "posts": posts, "count": len(posts)}
+
+
+# ─── /api/agent/narrative/ ───────────────────────────────────────────────────
+
+
+@router.post("/narrative/generate")
+async def narrative_generate(
+    x_agent_id: str | None = Header(default=None),
+    x_agent_secret: str | None = Header(default=None),
+) -> dict[str, Any]:
+    """Trigger weekly narrative chapter generation (service-role, no user JWT needed)."""
+    _verify_agent(x_agent_id, x_agent_secret)
+    try:
+        chapter = await generate_narrative_chapter()
+    except Exception as exc:
+        logger.exception("narrative/generate failed")
+        raise HTTPException(status_code=500, detail={"error": str(exc)}) from exc
+    if chapter is None:
+        raise HTTPException(status_code=500, detail={"error": "Chapter generation returned None"})
+    return {"ok": True, "chapter": chapter}
+
+
+@router.get("/narrative/current")
+async def narrative_current(
+    x_agent_id: str | None = Header(default=None),
+    x_agent_secret: str | None = Header(default=None),
+) -> dict[str, Any]:
+    """Return the most recent narrative chapter."""
+    _verify_agent(x_agent_id, x_agent_secret)
+    try:
+        chapter = await get_current_narrative()
+    except Exception as exc:
+        logger.exception("narrative/current failed")
+        raise HTTPException(status_code=500, detail={"error": str(exc)}) from exc
+    return {"ok": True, "chapter": chapter}
+
+
+@router.get("/narrative/history")
+async def narrative_history(
+    limit: int = 20,
+    x_agent_id: str | None = Header(default=None),
+    x_agent_secret: str | None = Header(default=None),
+) -> dict[str, Any]:
+    """Return all narrative chapters, newest first."""
+    _verify_agent(x_agent_id, x_agent_secret)
+    limit = max(1, min(limit, 100))
+    try:
+        chapters = await get_narrative_history(limit=limit)
+    except Exception as exc:
+        logger.exception("narrative/history failed")
+        raise HTTPException(status_code=500, detail={"error": str(exc)}) from exc
+    return {"ok": True, "chapters": chapters, "count": len(chapters)}

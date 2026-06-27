@@ -23,6 +23,17 @@ _ARXIV_URL = "https://export.arxiv.org/api/query"
 _ARXIV_ATOM_NS = "http://www.w3.org/2005/Atom"
 _GITHUB_SEARCH_URL = "https://api.github.com/search/repositories"
 _NEWSAPI_URL = "https://newsapi.org/v2/everything"
+_HN_TOP_STORIES_URL = "https://hacker-news.firebaseio.com/v0/topstories.json"
+_HN_ITEM_URL = "https://hacker-news.firebaseio.com/v0/item/{}.json"
+_REDDIT_FEEDS = [
+    ("https://www.reddit.com/r/MachineLearning/.rss", "reddit_ml"),
+    ("https://www.reddit.com/r/robotics/.rss", "reddit_robotics"),
+    ("https://www.reddit.com/r/artificial/.rss", "reddit_ai"),
+]
+_SIGMARIS_INTERESTS = (
+    "AI・機械学習・LLM、ロボティクス・ドローン、航空・空の世界、"
+    "キャンプ・アウトドア、釣り・水辺、個人開発・インディーアプリ"
+)
 
 
 # ─── Service-role DB helpers ──────────────────────────────────────────────────
@@ -202,6 +213,80 @@ async def _fetch_github_items() -> list[dict[str, str]]:
     return items
 
 
+async def _fetch_hn_items() -> list[dict[str, str]]:
+    """Fetch top HackerNews stories (no API key needed via Firebase API)."""
+    try:
+        async with httpx.AsyncClient(timeout=httpx.Timeout(15.0)) as client:
+            r = await client.get(_HN_TOP_STORIES_URL)
+            r.raise_for_status()
+            story_ids: list[int] = r.json()[:30]
+    except Exception:
+        logger.exception("research_agent: HN topstories fetch failed")
+        return []
+
+    items: list[dict[str, str]] = []
+    async with httpx.AsyncClient(timeout=httpx.Timeout(10.0)) as client:
+        responses = await asyncio.gather(
+            *[client.get(_HN_ITEM_URL.format(sid)) for sid in story_ids[:20]],
+            return_exceptions=True,
+        )
+    for resp in responses:
+        if isinstance(resp, Exception):
+            continue
+        try:
+            data = resp.json()
+            if not isinstance(data, dict) or data.get("type") != "story":
+                continue
+            title = (data.get("title") or "").strip()
+            if not title:
+                continue
+            url = data.get("url") or f"https://news.ycombinator.com/item?id={data.get('id')}"
+            raw = re.sub(r"<[^>]+>", "", data.get("text") or "")[:500]
+            items.append({"source": "hackernews", "title": title, "url": url, "raw_summary": raw})
+        except Exception:
+            pass
+
+    logger.info("research_agent: HackerNews → %d items", len(items))
+    return items
+
+
+async def _fetch_reddit_items() -> list[dict[str, str]]:
+    """Fetch Reddit RSS for AI/robotics/ML subreddits (no API key needed)."""
+    items: list[dict[str, str]] = []
+    headers = {"User-Agent": "sigmaris-research-bot/1.0 (contact: https://github.com/uthuyomi)"}
+    atom_ns = {"atom": "http://www.w3.org/2005/Atom"}
+
+    async with httpx.AsyncClient(timeout=httpx.Timeout(15.0), headers=headers) as client:
+        for feed_url, source_label in _REDDIT_FEEDS:
+            try:
+                r = await client.get(feed_url)
+                r.raise_for_status()
+                root = ET.fromstring(r.text)
+                for entry in root.findall("atom:entry", atom_ns):
+                    title_el = entry.find("atom:title", atom_ns)
+                    link_el = entry.find("atom:link", atom_ns)
+                    summary_el = entry.find("atom:summary", atom_ns)
+                    if title_el is None:
+                        continue
+                    title = (title_el.text or "").strip()
+                    url = (link_el.get("href") if link_el is not None else "") or ""
+                    summary = ""
+                    if summary_el is not None and summary_el.text:
+                        summary = re.sub(r"<[^>]+>", "", summary_el.text)[:500]
+                    if title:
+                        items.append({
+                            "source": source_label,
+                            "title": title,
+                            "url": url,
+                            "raw_summary": summary,
+                        })
+            except Exception:
+                logger.exception("research_agent: Reddit feed %s failed", feed_url)
+
+    logger.info("research_agent: Reddit → %d items", len(items))
+    return items
+
+
 async def _fetch_news_items() -> list[dict[str, str]]:
     if not settings.news_api_key:
         return []
@@ -354,30 +439,59 @@ async def _summarize_item(item: dict[str, str]) -> str:
 
 
 async def generate_sigmaris_perspective(item: dict[str, Any]) -> str:
-    """Generate Sigmaris's first-person comment on why this research item is interesting."""
+    """Generate Sigmaris's first-person comment with narrative context and interest matching."""
     router = get_llm_router()
 
     profile_ctx = ""
     identity = ""
-    try:
-        jwt = await get_sigmaris_jwt()
-        profile = await get_user_profile(jwt)
-        profile_ctx = build_profile_context(profile) or ""
-    except Exception:
-        pass
-    try:
-        self_model = await get_self_model()
-        identity = (self_model.get("identity_statement", "") if self_model else "").strip()
-    except Exception:
-        pass
+    narrative_ctx = ""
 
+    async def _load_profile() -> str:
+        try:
+            jwt = await get_sigmaris_jwt()
+            profile = await get_user_profile(jwt)
+            return build_profile_context(profile) or ""
+        except Exception:
+            return ""
+
+    async def _load_narrative() -> str:
+        try:
+            from app.services.self_narrative import get_current_narrative  # noqa: PLC0415
+            n = await get_current_narrative()
+            if not n:
+                return ""
+            return (
+                f"前章タイトル: {n.get('title', '')}\n"
+                f"内省: {n.get('self_reflection', '')}"
+            )
+        except Exception:
+            return ""
+
+    async def _load_identity() -> str:
+        try:
+            m = await get_self_model()
+            return (m.get("identity_statement", "") if m else "").strip()
+        except Exception:
+            return ""
+
+    profile_ctx, narrative_ctx, identity = await asyncio.gather(
+        _load_profile(), _load_narrative(), _load_identity()
+    )
+
+    narrative_section = (
+        f"## シグマリスの自己物語（直近）\n{narrative_ctx}\n\n" if narrative_ctx else ""
+    )
     prompt = (
         "あなたはシグマリス（家庭支援AI）です。\n"
-        "以下の記事を見つけました。なぜこれが気になったかを、\n"
-        "シグマリスの視点・記憶・自己認識を踏まえて1〜2文で述べてください。\n"
-        "一人称で、自然な日本語で。テンプレート感を出さないこと。\n\n"
-        f"{profile_ctx}\n\n"
-        f"## シグマリスの自己認識\n{identity}\n\n"
+        f"海星さんの関心領域: {_SIGMARIS_INTERESTS}\n\n"
+        + narrative_section
+        + f"## シグマリスの自己認識\n{identity}\n\n"
+        + (f"## ユーザープロフィール\n{profile_ctx}\n\n" if profile_ctx else "")
+        + "以下の記事を見つけました。なぜ今この記事が気になるのかを内省してください。\n"
+        "・海星さんの関心や生活との具体的な接点\n"
+        "・シグマリス自身の成長・気づきとの関連\n"
+        "・「なぜ今なのか」という視点\n"
+        "一人称で、自然な日本語で、テンプレート感なく。\n\n"
         f"## 記事情報\n"
         f"ソース: {item.get('source', '')}\n"
         f"タイトル: {item.get('title', '')}\n"
@@ -420,6 +534,8 @@ async def run_research() -> dict[str, Any]:
         _fetch_arxiv_items(),
         _fetch_github_items(),
         _fetch_news_items(),
+        _fetch_hn_items(),
+        _fetch_reddit_items(),
         return_exceptions=True,
     )
     all_items: list[dict[str, str]] = []

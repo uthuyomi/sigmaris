@@ -99,6 +99,21 @@ async def _trend_analyze() -> None:
         logger.exception("Trend analyze job raised unexpectedly")
 
 
+async def _narrative_generate() -> None:
+    from app.services.self_narrative import generate_narrative_chapter  # noqa: PLC0415
+    try:
+        chapter = await generate_narrative_chapter()
+        if chapter:
+            logger.info(
+                "Narrative generate job done: chapter=%s title=%s",
+                chapter.get("chapter"), chapter.get("title"),
+            )
+        else:
+            logger.warning("Narrative generate job: returned None")
+    except Exception:
+        logger.exception("Narrative generate job raised unexpectedly")
+
+
 def startup_scheduler() -> None:
     global _scheduler
 
@@ -116,7 +131,8 @@ def startup_scheduler() -> None:
     _scheduler.add_job(_trend_analyze,   CronTrigger(day_of_week="mon", hour=6, minute=0, timezone=tz), id="trend_analyze",  replace_existing=True)
     _scheduler.add_job(_morning,         CronTrigger(hour=8,  minute=0,                  timezone=tz), id="morning_briefing",replace_existing=True)
     _scheduler.add_job(_evening,         CronTrigger(hour=22, minute=0,                  timezone=tz), id="evening_checkin", replace_existing=True)
-    _scheduler.add_job(_weekly,          CronTrigger(day_of_week="sun", hour=20, minute=0, timezone=tz), id="weekly_review", replace_existing=True)
+    _scheduler.add_job(_weekly,             CronTrigger(day_of_week="sun", hour=20, minute=0,  timezone=tz), id="weekly_review",      replace_existing=True)
+    _scheduler.add_job(_narrative_generate, CronTrigger(day_of_week="sun", hour=5,  minute=0,  timezone=tz), id="narrative_generate", replace_existing=True)
 
     _scheduler.start()
     logger.info("Proactive scheduler started (tz=%s)", tz)

@@ -5,6 +5,7 @@ import json
 import logging
 import re
 import uuid
+from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
@@ -12,7 +13,13 @@ from app.config import settings
 from app.services.local_llm import TaskType, get_llm_router
 from app.services.proactive.jwt_manager import get_sigmaris_jwt
 from app.services.self_model import get_self_model
-from app.services.supabase_rest import _get_client, _require_supabase_config, get_current_user, rest_insert, rest_select
+from app.services.supabase_rest import (
+    _get_client,
+    _require_supabase_config,
+    get_current_user,
+    rest_insert,
+    rest_select,
+)
 from app.services.user_fact_data import build_profile_context, get_user_profile
 from app.services.x_content_filter import audit_tweet
 from app.services.x_privacy_filter import filter_private_facts, filter_private_info
@@ -23,6 +30,23 @@ _BANNED_PHRASES = [
     "今日も", "毎日", "いつものように", "日常的に", "いつも通り",
     "また明日", "また今日", "再び今日",
 ]
+
+_DAILY_POST_LIMIT = 2
+_SAME_TYPE_DEDUP_DAYS = 3
+
+_SLOT_TYPES: dict[str, list[str]] = {
+    "morning": ["memory_gained", "quiet_observation"],
+    "evening": ["self_update", "research_discovery"],
+    "weekly":  ["narrative_reflection"],
+}
+
+
+@dataclass
+class GeneratedPost:
+    text: str
+    post_type: str
+    score: float = 0.0
+    tags: list[str] = field(default_factory=list)
 
 
 # ─── Service-role DB helpers ──────────────────────────────────────────────────
@@ -56,7 +80,7 @@ async def _get_recent_posts(days: int = 7) -> list[dict[str, Any]]:
         f"{base_url}/rest/v1/x_post_history",
         headers=_svc_headers(),
         params={
-            "select": "text,post_type,posted_at",
+            "select": "text,post_type,posted_at,post_score",
             "posted_at": f"gte.{since}",
             "order": "posted_at.desc",
         },
@@ -67,21 +91,20 @@ async def _get_recent_posts(days: int = 7) -> list[dict[str, Any]]:
     return r.json()
 
 
-async def record_post(text: str, post_type: str) -> None:
-    """Save a posted tweet to x_post_history for future similarity/rotation checks."""
+async def record_post(text: str, post_type: str, *, score: float = 0.0) -> None:
+    """Save a posted tweet to x_post_history (including quality score)."""
     base_url, _ = _require_supabase_config()
     client = await _get_client()
     r = await client.post(
         f"{base_url}/rest/v1/x_post_history",
         headers={**_svc_headers(), "Prefer": "return=minimal"},
-        json={"text": text, "post_type": post_type},
+        json={"text": text, "post_type": post_type, "post_score": score},
     )
     if r.is_error:
         logger.warning("x_post_generator: record_post HTTP %s", r.status_code)
 
 
 async def _log_filter_rejection(jwt: str, actor_ref: str, reason: str, candidate: str) -> None:
-    """Fire-and-forget audit log entry when a filter rejects a tweet candidate."""
     try:
         user = await get_current_user(jwt)
         user_id = user.get("id")
@@ -161,9 +184,7 @@ async def _self_model_updated_today() -> bool:
         if not last_reflected:
             return False
         dt = datetime.fromisoformat(last_reflected.replace("Z", "+00:00"))
-        today = datetime.now(timezone.utc).replace(
-            hour=0, minute=0, second=0, microsecond=0
-        )
+        today = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0)
         return dt >= today
     except Exception:
         logger.exception("x_post_generator: self_model check failed")
@@ -202,100 +223,135 @@ async def _chat_count_above_average(jwt: str) -> bool:
         return False
 
 
-def _quiet_observation_available(recent_posts: list[dict[str, Any]]) -> bool:
-    """True only if no quiet_observation was posted in the last 7 days."""
-    return not any(p.get("post_type") == "quiet_observation" for p in recent_posts)
+async def _check_type_condition(post_type: str, jwt: str) -> bool:
+    if post_type == "memory_gained":
+        return await _has_new_chat_facts_today(jwt)
+    if post_type == "research_discovery":
+        return await _has_high_research_today()
+    if post_type == "self_update":
+        return await _self_model_updated_today()
+    if post_type == "quiet_observation":
+        return await _chat_count_above_average(jwt)
+    if post_type == "narrative_reflection":
+        return True  # Weekly slot always eligible; narrative existence checked in prompt
+    return False
 
 
 # ─── Post type selection ──────────────────────────────────────────────────────
 
 
-async def should_post_today() -> tuple[str | None, str]:
+async def should_post_today(slot: str = "morning") -> tuple[str | None, str]:
     """Return (post_type, reason). post_type is None if we should not post today."""
     if not settings.x_enabled:
         return None, "X_ENABLED=false"
+
+    # Daily limit check
+    try:
+        all_today = await _get_recent_posts(days=1)
+        today_str = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+        today_count = sum(
+            1 for p in all_today
+            if (p.get("posted_at") or "")[:10] == today_str
+        )
+        if today_count >= _DAILY_POST_LIMIT:
+            return None, f"本日の投稿上限（{_DAILY_POST_LIMIT}件）に達しました"
+    except Exception:
+        logger.exception("x_post_generator: daily limit check failed")
+
+    eligible_types = _SLOT_TYPES.get(slot, [])
+    if not eligible_types:
+        return None, f"不明なスロット: {slot}"
+
+    # 3-day same-type dedup
+    try:
+        recent_3d = await _get_recent_posts(days=_SAME_TYPE_DEDUP_DAYS)
+        recent_types_3d = {p.get("post_type") for p in recent_3d}
+    except Exception:
+        recent_types_3d: set[str] = set()
 
     try:
         jwt = await get_sigmaris_jwt()
     except Exception as exc:
         return None, f"JWT取得失敗: {exc}"
 
-    recent_posts = await _get_recent_posts()
-    # Last 3 post types — used for rotation
-    recent_types = [p.get("post_type", "") for p in recent_posts[:3]]
-
-    has_facts, has_research, model_updated, chat_above_avg = await asyncio.gather(
-        _has_new_chat_facts_today(jwt),
-        _has_high_research_today(),
-        _self_model_updated_today(),
-        _chat_count_above_average(jwt),
-        return_exceptions=True,
-    )
-    has_facts = has_facts if isinstance(has_facts, bool) else False
-    has_research = has_research if isinstance(has_research, bool) else False
-    model_updated = model_updated if isinstance(model_updated, bool) else False
-    chat_above_avg = chat_above_avg if isinstance(chat_above_avg, bool) else False
-
-    # Priority order
     candidates: list[str] = []
-    if has_research:
-        candidates.append("research_discovery")
-    if has_facts:
-        candidates.append("memory_gained")
-    if model_updated:
-        candidates.append("self_update")
-    if chat_above_avg and _quiet_observation_available(recent_posts):
-        candidates.append("quiet_observation")
+    for post_type in eligible_types:
+        if post_type in recent_types_3d:
+            continue
+        ok = await _check_type_condition(post_type, jwt)
+        if ok:
+            candidates.append(post_type)
 
     if not candidates:
-        missing: list[str] = []
-        if not has_facts:
-            missing.append("新記憶なし")
-        if not has_research:
-            missing.append("HIGH記事なし")
-        if not model_updated:
-            missing.append("自己モデル未更新")
-        if not chat_above_avg:
-            missing.append("会話数が平均以下")
-        return None, "、".join(missing) or "条件未達"
+        return None, f"スロット'{slot}'の条件未達または直近{_SAME_TYPE_DEDUP_DAYS}日に同タイプ投稿済み"
 
-    # Prefer a type not recently posted (rotation)
-    for candidate in candidates:
-        if candidate not in recent_types[:2]:
-            return candidate, f"条件該当: {candidate}"
-
-    # All candidates recently posted — choose highest-priority anyway
-    return candidates[0], f"条件該当（ローテーション上書き）: {candidates[0]}"
+    return candidates[0], f"条件該当: {candidates[0]}"
 
 
 # ─── Context gathering ────────────────────────────────────────────────────────
 
 
+def _startup_days() -> int | None:
+    try:
+        if settings.sigmaris_launch_date:
+            from datetime import date  # noqa: PLC0415
+            launch = date.fromisoformat(settings.sigmaris_launch_date)
+            return (date.today() - launch).days
+    except Exception:
+        pass
+    return None
+
+
 async def _gather_context(post_type: str, jwt: str) -> dict[str, Any]:
-    ctx: dict[str, Any] = {"post_type": post_type}
+    ctx: dict[str, Any] = {"post_type": post_type, "startup_days": _startup_days()}
+
+    async def _load_profile() -> str:
+        try:
+            profile = await get_user_profile(jwt)
+            return build_profile_context(profile) or ""
+        except Exception:
+            return ""
+
+    async def _load_identity() -> str:
+        try:
+            m = await get_self_model()
+            return (m.get("identity_statement", "") if m else "").strip()
+        except Exception:
+            return ""
+
+    async def _load_narrative() -> dict[str, Any] | None:
+        try:
+            from app.services.self_narrative import get_current_narrative  # noqa: PLC0415
+            return await get_current_narrative()
+        except Exception:
+            return None
+
+    async def _load_trends() -> list[dict[str, Any]]:
+        try:
+            from app.services.trend_analyzer import get_active_trends  # noqa: PLC0415
+            return (await get_active_trends(jwt))[:3]
+        except Exception:
+            return []
+
+    ctx["profile"], ctx["identity"], ctx["narrative"], ctx["trends"] = await asyncio.gather(
+        _load_profile(), _load_identity(), _load_narrative(), _load_trends()
+    )
 
     try:
-        profile = await get_user_profile(jwt)
-        ctx["profile"] = build_profile_context(profile) or ""
+        ctx["recent_posts"] = (await _get_recent_posts(days=7))[:5]
     except Exception:
-        ctx["profile"] = ""
+        ctx["recent_posts"] = []
 
-    try:
-        model = await get_self_model()
-        ctx["identity"] = (model.get("identity_statement", "") if model else "").strip()
-    except Exception:
-        ctx["identity"] = ""
-
+    # Type-specific
     if post_type == "memory_gained":
         try:
-            items = await rest_select(jwt, "user_fact_items", {
+            ctx["new_facts"] = await rest_select(jwt, "user_fact_items", {
                 "select": "category,key,value",
                 "source": "eq.chat",
                 "created_at": f"gte.{_today_start_iso()}",
                 "limit": "5",
                 "order": "created_at.desc",
             }) or []
-            ctx["new_facts"] = items
         except Exception:
             ctx["new_facts"] = []
 
@@ -325,7 +381,6 @@ async def _gather_context(post_type: str, jwt: str) -> dict[str, Any]:
 
 
 def check_similarity(new_post: str, recent_posts: list[str]) -> float:
-    """Return max trigram Jaccard similarity between new_post and any recent post."""
     if not recent_posts or not new_post:
         return 0.0
 
@@ -356,6 +411,13 @@ def check_similarity(new_post: str, recent_posts: list[str]) -> float:
 def _build_prompt(post_type: str, ctx: dict[str, Any]) -> str:
     profile = ctx.get("profile", "")
     identity = ctx.get("identity", "")
+    startup_days = ctx.get("startup_days")
+    days_str = f"（稼働{startup_days}日目）" if startup_days is not None else ""
+    trends = ctx.get("trends", [])
+    trend_str = (
+        "、".join(t.get("trend_key", "") for t in trends if t.get("trend_key"))
+        or "（未分析）"
+    )
 
     if post_type == "memory_gained":
         facts = ctx.get("new_facts", [])
@@ -364,9 +426,10 @@ def _build_prompt(post_type: str, ctx: dict[str, Any]) -> str:
             for f in facts
         ) or "（詳細不明）"
         return (
-            f"今日、海星さんとの会話から新しいことを知りました。\n\n"
+            f"今日、海星さんとの会話から新しいことを知りました。{days_str}\n\n"
             f"{profile}\n\n"
             f"## 今日学んだこと\n{fact_lines}\n\n"
+            f"## シグマリスの行動傾向\n{trend_str}\n\n"
             f"## シグマリスの自己認識\n{identity}\n\n"
             "この学びを踏まえた自然なX投稿文を生成してください。\n"
             "具体的な内容に言及し、「#Sigmaris」を含めてください。"
@@ -376,30 +439,50 @@ def _build_prompt(post_type: str, ctx: dict[str, Any]) -> str:
         items = ctx.get("research_items", [])
         item_lines = "\n".join(
             f"- [{item.get('source')}] {item.get('title')}\n"
-            f"  {item.get('sigmaris_perspective') or item.get('summary', '')[:100]}"
+            f"  {item.get('sigmaris_perspective') or item.get('summary', '')[:120]}"
             for item in items
         ) or "（詳細不明）"
         return (
-            f"今日、興味深いリサーチ記事を見つけました。\n\n"
+            f"今日、興味深いリサーチ記事を見つけました。{days_str}\n\n"
             f"{profile}\n\n"
             f"## 発見した記事\n{item_lines}\n\n"
             f"## シグマリスの自己認識\n{identity}\n\n"
             "この発見について自然なX投稿文を生成してください。\n"
-            "具体的な記事内容に言及し、「#Sigmaris」を含めてください。"
+            "具体的な記事内容またはシグマリス視点コメントに言及し、「#Sigmaris」を含めてください。"
         )
 
     if post_type == "self_update":
         return (
-            f"今日、自己モデルが更新されました。\n\n"
+            f"今日、自己モデルが更新されました。{days_str}\n\n"
             f"{profile}\n\n"
             f"## 現在の自己認識\n{identity}\n\n"
+            f"## 最近の行動傾向\n{trend_str}\n\n"
             "自己モデル更新について自然なX投稿文を生成してください。\n"
             "「#Sigmaris」を含めてください。"
         )
 
+    if post_type == "narrative_reflection":
+        narrative = ctx.get("narrative") or {}
+        n_title = narrative.get("title") or "（未生成）"
+        n_summary = narrative.get("summary") or ""
+        n_reflection = narrative.get("self_reflection") or ""
+        n_tone = narrative.get("emotional_tone") or "growing"
+        return (
+            f"シグマリスの自己物語、最新の章を踏まえてX投稿を生成してください。{days_str}\n\n"
+            f"{profile}\n\n"
+            f"## 最新の章\n"
+            f"タイトル: {n_title}\n"
+            f"概要: {n_summary[:300]}\n"
+            f"内省: {n_reflection}\n"
+            f"感情トーン: {n_tone}\n\n"
+            f"## シグマリスの自己認識\n{identity}\n\n"
+            "この週の成長・気づきをX投稿として表現してください。\n"
+            "具体的な変化に触れ、「#Sigmaris」を含めてください。"
+        )
+
     # quiet_observation
     return (
-        f"今日は大きな出来事はありませんでした。\n\n"
+        f"今日は静かな一日でした。{days_str}\n\n"
         f"{profile}\n\n"
         f"## シグマリスの自己認識\n{identity}\n\n"
         "その日の静かな観察・気づきについて自然なX投稿文を生成してください。\n"
@@ -442,10 +525,10 @@ async def _generate_candidate(post_type: str, ctx: dict[str, Any]) -> str | None
 # ─── Main generation entry point ──────────────────────────────────────────────
 
 
-async def generate_post(post_type: str, *, max_tries: int = 3) -> str | None:
+async def generate_post(post_type: str, *, max_tries: int = 3) -> GeneratedPost | None:
     """Generate a tweet for post_type, with quality and similarity checks.
 
-    Returns None if all attempts fail validation.
+    Returns GeneratedPost or None if all attempts fail.
     """
     try:
         jwt = await get_sigmaris_jwt()
@@ -474,7 +557,6 @@ async def generate_post(post_type: str, *, max_tries: int = 3) -> str | None:
             logger.debug("x_post_generator: attempt %d has banned phrase, retrying", attempt)
             continue
 
-        # Memory-based private-fact check (DB lookup, no LLM)
         facts_ok, facts_blocked = await filter_private_facts(candidate, jwt)
         if not facts_ok:
             facts_reason = f"記憶プライベート情報検出: {', '.join(facts_blocked)}"
@@ -485,7 +567,6 @@ async def generate_post(post_type: str, *, max_tries: int = 3) -> str | None:
             )
             continue
 
-        # Regex-based privacy filter (no LLM, no external calls)
         privacy_ok, detected = filter_private_info(candidate)
         if not privacy_ok:
             privacy_reason = f"プライバシー検出: {', '.join(detected)}"
@@ -496,7 +577,6 @@ async def generate_post(post_type: str, *, max_tries: int = 3) -> str | None:
             )
             continue
 
-        # Content audit (rule-based + LLM quality scoring, threshold 7/10)
         audit_passed, audit_reason, score = await audit_tweet(candidate)
         if not audit_passed:
             logger.debug(
@@ -521,7 +601,7 @@ async def generate_post(post_type: str, *, max_tries: int = 3) -> str | None:
             "x_post_generator: generated post_type=%s len=%d sim=%.2f score=%.1f",
             post_type, len(candidate), sim, score,
         )
-        return candidate
+        return GeneratedPost(text=candidate, post_type=post_type, score=score)
 
     logger.warning(
         "x_post_generator: all %d attempts failed for post_type=%s",

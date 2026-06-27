@@ -64,33 +64,34 @@ async def _run_action(action_name: str, title: str, prompt: str) -> ActionResult
     return ActionResult(action=action_name, ok=True, notified=notified)
 
 
-async def _try_smart_x_post(result: ActionResult) -> None:
+async def _try_smart_x_post(result: ActionResult, slot: str = "morning") -> None:
     """Decide whether to post today, generate content, check similarity, then post."""
     from app.services.x_post_generator import (
+        GeneratedPost,
         generate_post,
         record_post,
         should_post_today,
     )
 
-    post_type, reason = await should_post_today()
+    post_type, reason = await should_post_today(slot)
 
     if post_type is None:
-        logger.info("x_post: skip — %s", reason)
+        logger.info("x_post: skip slot=%s — %s", slot, reason)
         result.tags.append(f"x_skip:{reason[:60]}")
         return
 
-    post_text = await generate_post(post_type)
-    if not post_text:
-        logger.warning("x_post: generation failed for type=%s", post_type)
+    gp: GeneratedPost | None = await generate_post(post_type)
+    if not gp:
+        logger.warning("x_post: generation failed for type=%s slot=%s", post_type, slot)
         result.tags.append("x_generate_failed")
         return
 
     publisher = get_publisher()
-    posted = await publisher.post_tweet(post_text)
+    posted = await publisher.post_tweet(gp.text)
     if posted:
-        await record_post(post_text, post_type)
-        result.tags.append(f"x_posted:{post_type}")
-        logger.info("x_post: posted type=%s len=%d", post_type, len(post_text))
+        await record_post(gp.text, gp.post_type, score=gp.score)
+        result.tags.append(f"x_posted:{gp.post_type}")
+        logger.info("x_post: posted type=%s slot=%s len=%d score=%.1f", gp.post_type, slot, len(gp.text), gp.score)
     else:
         result.tags.append("x_post_failed")
         logger.warning("x_post: publisher returned False for type=%s — no retry until tomorrow", post_type)
@@ -100,15 +101,21 @@ async def run_morning_briefing() -> ActionResult:
     logger.info("Running morning briefing")
     result = await _run_action("morning_briefing", "シグマリス 朝のブリーフィング", _MORNING_PROMPT)
     if result.ok:
-        await _try_smart_x_post(result)
+        await _try_smart_x_post(result, slot="morning")
     return result
 
 
 async def run_evening_checkin() -> ActionResult:
     logger.info("Running evening check-in")
-    return await _run_action("evening_checkin", "シグマリス 夕方チェックイン", _EVENING_PROMPT)
+    result = await _run_action("evening_checkin", "シグマリス 夕方チェックイン", _EVENING_PROMPT)
+    if result.ok:
+        await _try_smart_x_post(result, slot="evening")
+    return result
 
 
 async def run_weekly_review() -> ActionResult:
     logger.info("Running weekly review")
-    return await _run_action("weekly_review", "シグマリス 週次レビュー", _WEEKLY_PROMPT)
+    result = await _run_action("weekly_review", "シグマリス 週次レビュー", _WEEKLY_PROMPT)
+    if result.ok:
+        await _try_smart_x_post(result, slot="weekly")
+    return result
