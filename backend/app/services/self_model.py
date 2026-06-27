@@ -84,7 +84,7 @@ async def update_self_model(
         }
         r = await client.post(
             f"{base_url}/rest/v1/{_TABLE_MODEL}",
-            headers=_single(_service_headers()),
+            headers=_service_headers(),
             json=payload,
         )
     else:
@@ -97,13 +97,17 @@ async def update_self_model(
         }
         r = await client.patch(
             f"{base_url}/rest/v1/{_TABLE_MODEL}",
-            headers=_single(_service_headers()),
+            headers=_service_headers(),
             params={"id": f"eq.{existing.get('id')}"},
             json=payload,
         )
 
     r.raise_for_status()
-    return r.json()
+    data = r.json()
+    # PostgREST returns a list with Prefer: return=representation
+    if isinstance(data, list):
+        return data[0] if data else {}
+    return data if isinstance(data, dict) else {}
 
 
 async def record_discrepancy(expected: str, actual: str, note: str) -> dict[str, Any]:
@@ -117,11 +121,14 @@ async def record_discrepancy(expected: str, actual: str, note: str) -> dict[str,
     }
     r = await client.post(
         f"{base_url}/rest/v1/{_TABLE_DISCREPANCIES}",
-        headers=_single(_service_headers()),
+        headers=_service_headers(),
         json=payload,
     )
     r.raise_for_status()
-    return r.json()
+    data = r.json()
+    if isinstance(data, list):
+        return data[0] if data else {}
+    return data if isinstance(data, dict) else {}
 
 
 async def reflect() -> dict[str, Any]:
@@ -160,11 +167,11 @@ async def reflect() -> dict[str, Any]:
         current_patterns=current_patterns,
     )
 
-    # 5. Update self model
+    # 5. Update self model (use .get() fallbacks in case LLM omits a key)
     updated = await update_self_model(
-        identity_statement=analysis["identity_statement"],
-        goals=analysis["updated_goals"],
-        patterns=analysis["updated_patterns"],
+        identity_statement=analysis.get("identity_statement") or current_identity,
+        goals=analysis.get("updated_goals") or current_goals,
+        patterns=analysis.get("updated_patterns") or current_patterns,
     )
 
     # 6. Record discrepancies
