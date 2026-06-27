@@ -9,21 +9,28 @@ from app.services.user_fact_data import get_fact_items, upsert_fact_item
 
 logger = logging.getLogger(__name__)
 
+# Must match user_fact_items_category_check in the DB migration.
+_VALID_CATEGORIES = frozenset({
+    "profile", "health", "lifestyle", "environment",
+    "devices", "preferences", "relationships", "finance", "goals",
+})
+
 _SYSTEM = """あなたは会話から事実を抽出するAIです。
 ユーザーの会話から記憶すべき事実を抽出します。
 必ず有効なJSONのみを返してください。"""
 
 _PROMPT = """以下の会話から、ユーザーについての記憶すべき事実を抽出してください。
 
-対象カテゴリ:
-- preference: 好み・嫌い
-- habit: 習慣・ルーティン
-- goal: 目標・希望
-- possession: 所有物・使用デバイス
-- relationship: 人間関係（家族・友人・同僚）
-- event: 起きた出来事・今後の予定
-- health: 健康状態
-- work: 仕事・職業関連
+categoryは以下の9つのみ使用可能。それ以外は使わないこと:
+- profile: 個人情報・氏名・職業・住所
+- health: 健康状態・医療・身体
+- lifestyle: 習慣・ルーティン・生活スタイル
+- environment: 居住環境・場所
+- devices: 使用デバイス・所有機器
+- preferences: 好み・嫌い・趣味
+- relationships: 人間関係・家族・友人
+- finance: 収入・支出・財務
+- goals: 目標・希望・将来計画
 
 確信度の基準:
 - 0.9: 明言（「私は〜が好き」「〜を持っている」等）
@@ -65,6 +72,7 @@ async def extract_from_conversation(
         return []
 
     router = get_llm_router()
+    logger.info("memory_extractor: task=MEMORY_EXTRACTION items=%d", len(messages))
     try:
         raw = await router.chat(
             TaskType.MEMORY_EXTRACTION,
@@ -102,6 +110,7 @@ async def extract_from_conversation(
     }
 
     upserted: list[dict[str, Any]] = []
+    skipped_invalid = 0
     for fact in facts:
         if not _is_valid(fact):
             continue
@@ -109,6 +118,11 @@ async def extract_from_conversation(
         cat = str(fact["category"]).strip()
         key = str(fact["key"]).strip()
         new_conf = float(fact.get("confidence", 0.5))
+
+        if cat not in _VALID_CATEGORIES:
+            logger.debug("memory_extractor: skip invalid category '%s' (key=%s)", cat, key)
+            skipped_invalid += 1
+            continue
 
         existing_conf = confidence_map.get((cat, key), 0.0)
         if existing_conf > new_conf:
@@ -133,8 +147,8 @@ async def extract_from_conversation(
             logger.exception("memory_extractor: upsert failed for %s/%s", cat, key)
 
     logger.info(
-        "memory_extractor: %d facts extracted, %d upserted",
-        len(facts), len(upserted),
+        "memory_extractor: task=MEMORY_EXTRACTION items=%d skipped=%d upserted=%d",
+        len(facts), skipped_invalid, len(upserted),
     )
     return upserted
 

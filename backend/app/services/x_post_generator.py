@@ -409,46 +409,52 @@ def check_similarity(new_post: str, recent_posts: list[str]) -> float:
 
 
 def _build_prompt(post_type: str, ctx: dict[str, Any]) -> str:
-    profile = ctx.get("profile", "")
-    identity = ctx.get("identity", "")
+    # Per-field character limits to control token cost
+    profile = _trim(ctx.get("profile", ""), 200)
+    identity = _trim(ctx.get("identity", ""), 150)
     startup_days = ctx.get("startup_days")
     days_str = f"（稼働{startup_days}日目）" if startup_days is not None else ""
     trends = ctx.get("trends", [])
-    trend_str = (
+    trend_str = _trim(
         "、".join(t.get("trend_key", "") for t in trends if t.get("trend_key"))
-        or "（未分析）"
+        or "（未分析）",
+        100,
     )
 
     if post_type == "memory_gained":
         facts = ctx.get("new_facts", [])
-        fact_lines = "\n".join(
-            f"- {f.get('category')}: {f.get('key')} = {f.get('value')}"
-            for f in facts
-        ) or "（詳細不明）"
+        fact_lines = _trim(
+            "\n".join(
+                f"- {f.get('category')}: {f.get('key')} = {f.get('value')}"
+                for f in facts
+            ) or "（詳細不明）",
+            200,
+        )
         return (
             f"今日、海星さんとの会話から新しいことを知りました。{days_str}\n\n"
             f"{profile}\n\n"
             f"## 今日学んだこと\n{fact_lines}\n\n"
-            f"## シグマリスの行動傾向\n{trend_str}\n\n"
-            f"## シグマリスの自己認識\n{identity}\n\n"
-            "この学びを踏まえた自然なX投稿文を生成してください。\n"
-            "具体的な内容に言及し、「#Sigmaris」を含めてください。"
+            f"## 行動傾向\n{trend_str}\n\n"
+            f"## 自己認識\n{identity}\n\n"
+            "この学びを踏まえた自然なX投稿文を生成してください。「#Sigmaris」を含めてください。"
         )
 
     if post_type == "research_discovery":
         items = ctx.get("research_items", [])
-        item_lines = "\n".join(
-            f"- [{item.get('source')}] {item.get('title')}\n"
-            f"  {item.get('sigmaris_perspective') or item.get('summary', '')[:120]}"
-            for item in items
-        ) or "（詳細不明）"
+        item_lines = _trim(
+            "\n".join(
+                f"- [{item.get('source')}] {item.get('title')}\n"
+                f"  {_trim(item.get('sigmaris_perspective') or item.get('summary', ''), 80)}"
+                for item in items
+            ) or "（詳細不明）",
+            200,
+        )
         return (
             f"今日、興味深いリサーチ記事を見つけました。{days_str}\n\n"
             f"{profile}\n\n"
             f"## 発見した記事\n{item_lines}\n\n"
-            f"## シグマリスの自己認識\n{identity}\n\n"
-            "この発見について自然なX投稿文を生成してください。\n"
-            "具体的な記事内容またはシグマリス視点コメントに言及し、「#Sigmaris」を含めてください。"
+            f"## 自己認識\n{identity}\n\n"
+            "この発見について自然なX投稿文を生成してください。「#Sigmaris」を含めてください。"
         )
 
     if post_type == "self_update":
@@ -456,38 +462,39 @@ def _build_prompt(post_type: str, ctx: dict[str, Any]) -> str:
             f"今日、自己モデルが更新されました。{days_str}\n\n"
             f"{profile}\n\n"
             f"## 現在の自己認識\n{identity}\n\n"
-            f"## 最近の行動傾向\n{trend_str}\n\n"
-            "自己モデル更新について自然なX投稿文を生成してください。\n"
-            "「#Sigmaris」を含めてください。"
+            f"## 行動傾向\n{trend_str}\n\n"
+            "自己モデル更新について自然なX投稿文を生成してください。「#Sigmaris」を含めてください。"
         )
 
     if post_type == "narrative_reflection":
         narrative = ctx.get("narrative") or {}
-        n_title = narrative.get("title") or "（未生成）"
-        n_summary = narrative.get("summary") or ""
-        n_reflection = narrative.get("self_reflection") or ""
+        n_title = _trim(narrative.get("title") or "（未生成）", 60)
+        n_summary = _trim(narrative.get("summary") or "", 200)
+        n_reflection = _trim(narrative.get("self_reflection") or "", 100)
         n_tone = narrative.get("emotional_tone") or "growing"
         return (
             f"シグマリスの自己物語、最新の章を踏まえてX投稿を生成してください。{days_str}\n\n"
             f"{profile}\n\n"
             f"## 最新の章\n"
             f"タイトル: {n_title}\n"
-            f"概要: {n_summary[:300]}\n"
+            f"概要: {n_summary}\n"
             f"内省: {n_reflection}\n"
             f"感情トーン: {n_tone}\n\n"
-            f"## シグマリスの自己認識\n{identity}\n\n"
-            "この週の成長・気づきをX投稿として表現してください。\n"
-            "具体的な変化に触れ、「#Sigmaris」を含めてください。"
+            f"## 自己認識\n{identity}\n\n"
+            "この週の成長・気づきをX投稿として表現してください。「#Sigmaris」を含めてください。"
         )
 
     # quiet_observation
     return (
         f"今日は静かな一日でした。{days_str}\n\n"
         f"{profile}\n\n"
-        f"## シグマリスの自己認識\n{identity}\n\n"
-        "その日の静かな観察・気づきについて自然なX投稿文を生成してください。\n"
-        "「#Sigmaris」を含めてください。"
+        f"## 自己認識\n{identity}\n\n"
+        "その日の静かな観察・気づきについて自然なX投稿文を生成してください。「#Sigmaris」を含めてください。"
     )
+
+
+def _trim(s: str, limit: int) -> str:
+    return s[:limit] if s else ""
 
 
 _GENERATION_SYSTEM = """あなたはシグマリス（家庭支援AI）として、X（Twitter）に投稿する文を生成します。
@@ -508,12 +515,12 @@ async def _generate_candidate(post_type: str, ctx: dict[str, Any]) -> str | None
     prompt = _build_prompt(post_type, ctx)
     try:
         result = await router.chat(
-            TaskType.COMPLEX_REASONING,
+            TaskType.ROUTING,
             [
                 {"role": "system", "content": _GENERATION_SYSTEM},
                 {"role": "user", "content": prompt},
             ],
-            max_tokens=200,
+            max_tokens=300,
         )
         text = result.strip().strip('"').strip("「」")
         return text if text else None
@@ -540,6 +547,9 @@ async def generate_post(post_type: str, *, max_tries: int = 3) -> GeneratedPost 
     recent_data = await _get_recent_posts(days=14)
     recent_texts = [p["text"] for p in recent_data if isinstance(p.get("text"), str)]
 
+    logger.info(
+        "x_post_generator: task=ROUTING post_type=%s max_tries=%d", post_type, max_tries
+    )
     for attempt in range(1, max_tries + 1):
         candidate = await _generate_candidate(post_type, ctx)
         if not candidate:
@@ -598,13 +608,13 @@ async def generate_post(post_type: str, *, max_tries: int = 3) -> GeneratedPost 
             continue
 
         logger.info(
-            "x_post_generator: generated post_type=%s len=%d sim=%.2f score=%.1f",
-            post_type, len(candidate), sim, score,
+            "x_post_generator: task=ROUTING items=1 skipped=%d post_type=%s len=%d sim=%.2f score=%.1f",
+            attempt - 1, post_type, len(candidate), sim, score,
         )
         return GeneratedPost(text=candidate, post_type=post_type, score=score)
 
     logger.warning(
-        "x_post_generator: all %d attempts failed for post_type=%s",
+        "x_post_generator: task=ROUTING items=0 skipped=%d post_type=%s (all attempts failed)",
         max_tries, post_type,
     )
     return None

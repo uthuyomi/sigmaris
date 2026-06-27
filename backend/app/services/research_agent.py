@@ -102,6 +102,54 @@ async def _db_get_today_titles() -> list[str]:
     return [row["title"] for row in r.json() if isinstance(row.get("title"), str)]
 
 
+_MAX_PERSPECTIVES_PER_DAY = 5
+
+
+async def _db_count_today_high() -> int:
+    """Count HIGH research_items created today (for duplicate-run skip check)."""
+    base_url, _ = _require_supabase_config()
+    client = await _get_client()
+    today_start = (
+        datetime.now(timezone.utc)
+        .replace(hour=0, minute=0, second=0, microsecond=0)
+        .isoformat()
+    )
+    r = await client.get(
+        f"{base_url}/rest/v1/research_items",
+        headers=_svc_headers(),
+        params={"select": "id", "relevance": "eq.HIGH", "created_at": f"gte.{today_start}"},
+    )
+    if r.is_error:
+        return 0
+    data = r.json()
+    return len(data) if isinstance(data, list) else 0
+
+
+async def _db_count_today_perspectives() -> int:
+    """Count HIGH items with non-null sigmaris_perspective created today."""
+    base_url, _ = _require_supabase_config()
+    client = await _get_client()
+    today_start = (
+        datetime.now(timezone.utc)
+        .replace(hour=0, minute=0, second=0, microsecond=0)
+        .isoformat()
+    )
+    r = await client.get(
+        f"{base_url}/rest/v1/research_items",
+        headers=_svc_headers(),
+        params={
+            "select": "id",
+            "relevance": "eq.HIGH",
+            "sigmaris_perspective": "not.is.null",
+            "created_at": f"gte.{today_start}",
+        },
+    )
+    if r.is_error:
+        return 0
+    data = r.json()
+    return len(data) if isinstance(data, list) else 0
+
+
 async def _db_delete_expired() -> None:
     base_url, _ = _require_supabase_config()
     client = await _get_client()
@@ -520,6 +568,18 @@ async def run_research() -> dict[str, Any]:
         logger.info("research_agent: RESEARCH_ENABLED=false, skipping")
         return {"ok": True, "skipped": True}
 
+    # Skip if already done today (10+ HIGH items already exist)
+    try:
+        today_high = await _db_count_today_high()
+        if today_high >= 10:
+            logger.info(
+                "research_agent: task=ROUTING items=0 skipped=all reason=already_done high_today=%d",
+                today_high,
+            )
+            return {"ok": True, "skipped": True, "reason": "already_done"}
+    except Exception:
+        logger.warning("research_agent: could not check today HIGH count, proceeding")
+
     user_ctx = "[ユーザープロフィール不明]"
     try:
         jwt = await get_sigmaris_jwt()
@@ -575,17 +635,40 @@ async def run_research() -> dict[str, Any]:
         if result:
             saved.append(result)
 
+    high_count = sum(1 for item in classified if item.get("relevance") == "HIGH")
+
+    # Perspective generation: max _MAX_PERSPECTIVES_PER_DAY per day (COMPLEX_REASONING)
+    try:
+        existing_perspectives = await _db_count_today_perspectives()
+    except Exception:
+        existing_perspectives = 0
+    perspective_budget = max(0, _MAX_PERSPECTIVES_PER_DAY - existing_perspectives)
+    perspectives_generated = 0
+
     for saved_item in saved:
-        if saved_item.get("relevance") == "HIGH":
+        if saved_item.get("relevance") != "HIGH":
+            continue
+        if perspectives_generated >= perspective_budget:
+            logger.info(
+                "research_agent: perspective limit reached (%d/day), skipping remaining",
+                _MAX_PERSPECTIVES_PER_DAY,
+            )
+            break
+        try:
             perspective = await generate_sigmaris_perspective(saved_item)
             if perspective:
                 await _db_update_perspective(str(saved_item["id"]), perspective)
                 saved_item["sigmaris_perspective"] = perspective
+                perspectives_generated += 1
+        except Exception:
+            logger.exception("research_agent: perspective generation raised for item %s", saved_item.get("id"))
 
-    high_count = sum(1 for item in classified if item.get("relevance") == "HIGH")
+    skipped_perspective = high_count - perspectives_generated
     logger.info(
-        "research_agent: saved %d items (%d HIGH) from %d fetched",
-        len(saved), high_count, len(all_items),
+        "research_agent: task=ROUTING items=%d skipped=%d "
+        "perspectives=COMPLEX_REASONING count=%d/%d",
+        len(saved), len(all_items) - len(unique_items),
+        perspectives_generated, _MAX_PERSPECTIVES_PER_DAY,
     )
     return {
         "ok": True,
@@ -593,4 +676,6 @@ async def run_research() -> dict[str, Any]:
         "deduplicated": len(unique_items),
         "saved": len(saved),
         "high": high_count,
+        "perspectives_generated": perspectives_generated,
+        "perspectives_skipped": skipped_perspective,
     }
