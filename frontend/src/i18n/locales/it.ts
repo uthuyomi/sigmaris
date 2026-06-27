@@ -3,7 +3,7 @@ import type { Dictionary } from "@/i18n/types";
 export const it: Dictionary = {
     nav: { chat: "Chat", calendar: "Calendario", settings: "Impostazioni" },
     common: {
-      appName: "ShiftPilotAI",
+      appName: "Sigmaris",
       statusOn: "Attivo",
       statusOff: "Disattivo",
       unavailable: "Non disponibile",

@@ -3,7 +3,7 @@ import type { Dictionary } from "@/i18n/types";
 export const zhTW: Dictionary = {
     nav: { chat: "對話", calendar: "行程", settings: "設定" },
     common: {
-      appName: "ShiftPilotAI",
+      appName: "Sigmaris",
       statusOn: "開啟",
       statusOff: "關閉",
       unavailable: "未連線",

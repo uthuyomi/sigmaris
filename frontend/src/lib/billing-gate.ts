@@ -9,7 +9,7 @@ export const requireProPlan = async (userId: string) => {
 
   return NextResponse.json(
     {
-      error: "This feature requires ShiftPilotAI Pro.",
+      error: "This feature requires シグマリス Pro.",
       code: "PRO_REQUIRED",
       billing: status,
     },

@@ -14,7 +14,7 @@ const createUpgradeStream = (usage: ChatUsageStatus) => {
   const message = [
     `無料チャット上限 ${usage.limit} 回に達しました。`,
     "",
-    `このまま続ける場合は、ShiftPilotAI Proが月額${price}円です。`,
+    `このまま続ける場合は、シグマリス Proが月額${price}円です。`,
     "Settings の Proプランから手続きできます。",
   ].join("\n");
   const events = [

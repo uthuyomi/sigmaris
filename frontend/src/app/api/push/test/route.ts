@@ -68,7 +68,7 @@ export async function POST() {
   let sent = 0;
 
   const payload = JSON.stringify({
-    title: "ShiftPilotAI test notification",
+    title: "Sigmaris test notification",
     body: "Tap to open Google Maps.",
     tag: `push-test:${Date.now()}`,
     navigationUrl: "https://www.google.com/maps",

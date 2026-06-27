@@ -16,7 +16,7 @@ export const landingCopies: Record<AppLocale, LandingCopy> = {
     ],
     heroTitle: "勤務表や予定メモを、カレンダーに登録できる形へ変換します。",
     heroBody:
-      "ShiftPilotAIは、画像やGoogle Sheetsから予定を読み取り、確認してからGoogle Calendarに保存できるスケジュール整理アプリです。場所がある予定は、移動時間や出発時刻までまとめて計算できます。",
+      "シグマリスは、画像やGoogle Sheetsから予定を読み取り、確認してからGoogle Calendarに保存できるスケジュール整理アプリです。場所がある予定は、移動時間や出発時刻までまとめて計算できます。",
     heroCards: [
       ["読み取り", "画像・Sheets URL"],
       ["確認", "予定内容をチェック"],
@@ -104,7 +104,7 @@ export const landingCopies: Record<AppLocale, LandingCopy> = {
     ],
     heroTitle: "Convert shift tables and schedule notes into calendar-ready events.",
     heroBody:
-      "ShiftPilotAI reads schedules from images and Google Sheets, lets you review them, and saves them to Google Calendar. For events with locations, it can also calculate travel time and departure times.",
+      "Sigmaris reads schedules from images and Google Sheets, lets you review them, and saves them to Google Calendar. For events with locations, it can also calculate travel time and departure times.",
     heroCards: [
       ["Read", "Images and Sheets URLs"],
       ["Review", "Check event details"],
@@ -115,7 +115,7 @@ export const landingCopies: Record<AppLocale, LandingCopy> = {
     detailsEyebrow: "What you can do",
     detailsTitle: "Automate the tedious parts of schedule cleanup.",
     detailsBody:
-      "ShiftPilotAI creates event candidates from shift tables and schedule notes. You can review everything before saving, making it easier to catch reading mistakes before events reach your calendar.",
+      "Sigmaris creates event candidates from shift tables and schedule notes. You can review everything before saving, making it easier to catch reading mistakes before events reach your calendar.",
     useCases: [
       {
         icon: "image",
@@ -141,7 +141,7 @@ export const landingCopies: Record<AppLocale, LandingCopy> = {
     workflowEyebrow: "Workflow",
     workflowTitle: "The workflow is simple.",
     workflowBody:
-      "Send an image or sheet, and ShiftPilotAI creates event candidates. You review the details before saving, so the checks that matter for scheduling stay in place.",
+      "Send an image or sheet, and Sigmaris creates event candidates. You review the details before saving, so the checks that matter for scheduling stay in place.",
     workflow: [
       {
         step: "1",
@@ -192,7 +192,7 @@ export const landingCopies: Record<AppLocale, LandingCopy> = {
     ],
     heroTitle: "근무표와 일정 메모를 캘린더에 등록할 수 있는 형태로 변환합니다.",
     heroBody:
-      "ShiftPilotAI는 이미지와 Google Sheets에서 일정을 읽어 오고, 확인한 뒤 Google Calendar에 저장할 수 있는 일정 정리 앱입니다. 장소가 있는 일정은 이동 시간과 출발 시각까지 함께 계산할 수 있습니다.",
+      "Sigmaris는 이미지와 Google Sheets에서 일정을 읽어 오고, 확인한 뒤 Google Calendar에 저장할 수 있는 일정 정리 앱입니다. 장소가 있는 일정은 이동 시간과 출발 시각까지 함께 계산할 수 있습니다.",
     heroCards: [
       ["읽기", "이미지・Sheets URL"],
       ["확인", "일정 내용 확인"],
@@ -280,7 +280,7 @@ export const landingCopies: Record<AppLocale, LandingCopy> = {
     ],
     heroTitle: "将排班表和日程备忘转换成可登记到日历的内容。",
     heroBody:
-      "ShiftPilotAI 可以从图片和 Google Sheets 中读取日程，确认后保存到 Google Calendar。带地点的日程，还可以一起计算出行时间和出发时间。",
+      "Sigmaris 可以从图片和 Google Sheets 中读取日程，确认后保存到 Google Calendar。带地点的日程，还可以一起计算出行时间和出发时间。",
     heroCards: [
       ["读取", "图片・Sheets URL"],
       ["确认", "检查日程内容"],
@@ -368,7 +368,7 @@ export const landingCopies: Record<AppLocale, LandingCopy> = {
     ],
     heroTitle: "將排班表與行程備忘轉換成可登錄到行事曆的內容。",
     heroBody:
-      "ShiftPilotAI 可以從圖片與 Google Sheets 讀取行程，確認後儲存到 Google Calendar。帶有地點的行程，也能一併計算移動時間與出發時間。",
+      "Sigmaris 可以從圖片與 Google Sheets 讀取行程，確認後儲存到 Google Calendar。帶有地點的行程，也能一併計算移動時間與出發時間。",
     heroCards: [
       ["讀取", "圖片・Sheets URL"],
       ["確認", "檢查行程內容"],
@@ -456,7 +456,7 @@ export const landingCopies: Record<AppLocale, LandingCopy> = {
     ],
     heroTitle: "Convierte turnos y notas de agenda en eventos listos para el calendario.",
     heroBody:
-      "ShiftPilotAI lee horarios desde imágenes y Google Sheets, te permite revisarlos y guardarlos en Google Calendar. Si un evento tiene ubicación, también calcula el tiempo de traslado y la hora de salida.",
+      "Sigmaris lee horarios desde imágenes y Google Sheets, te permite revisarlos y guardarlos en Google Calendar. Si un evento tiene ubicación, también calcula el tiempo de traslado y la hora de salida.",
     heroCards: [
       ["Lectura", "Imágenes y URL de Sheets"],
       ["Revisión", "Comprobar detalles"],
@@ -544,7 +544,7 @@ export const landingCopies: Record<AppLocale, LandingCopy> = {
     ],
     heroTitle: "Transformez plannings et notes en événements prêts pour le calendrier.",
     heroBody:
-      "ShiftPilotAI lit les horaires depuis des images et Google Sheets, vous laisse les vérifier, puis les enregistre dans Google Calendar. Pour les événements avec lieu, il calcule aussi le temps de trajet et l'heure de départ.",
+      "Sigmaris lit les horaires depuis des images et Google Sheets, vous laisse les vérifier, puis les enregistre dans Google Calendar. Pour les événements avec lieu, il calcule aussi le temps de trajet et l'heure de départ.",
     heroCards: [
       ["Lecture", "Images et URL Sheets"],
       ["Vérification", "Contrôler les détails"],
@@ -555,7 +555,7 @@ export const landingCopies: Record<AppLocale, LandingCopy> = {
     detailsEyebrow: "What you can do",
     detailsTitle: "Automatisez les tâches fastidieuses de préparation du planning.",
     detailsBody:
-      "À partir de plannings et de notes, ShiftPilotAI crée automatiquement des propositions d'événements. Vous pouvez tout vérifier avant d'enregistrer, repérer les erreurs de lecture et sauvegarder plus sereinement.",
+      "À partir de plannings et de notes, Sigmaris crée automatiquement des propositions d'événements. Vous pouvez tout vérifier avant d'enregistrer, repérer les erreurs de lecture et sauvegarder plus sereinement.",
     useCases: [
       {
         icon: "image",
@@ -581,7 +581,7 @@ export const landingCopies: Record<AppLocale, LandingCopy> = {
     workflowEyebrow: "Workflow",
     workflowTitle: "L'utilisation est simple.",
     workflowBody:
-      "Envoyez une image ou une feuille, et ShiftPilotAI crée des propositions. Vous vérifiez avant d'enregistrer, afin de garder l'étape de contrôle nécessaire.",
+      "Envoyez une image ou une feuille, et Sigmaris crée des propositions. Vous vérifiez avant d'enregistrer, afin de garder l'étape de contrôle nécessaire.",
     workflow: [
       {
         step: "1",
@@ -632,7 +632,7 @@ export const landingCopies: Record<AppLocale, LandingCopy> = {
     ],
     heroTitle: "Wandle Dienstpläne und Terminnotizen in kalenderfertige Einträge um.",
     heroBody:
-      "ShiftPilotAI liest Termine aus Bildern und Google Sheets, lässt dich alles prüfen und speichert es in Google Calendar. Bei Terminen mit Ort werden auch Fahrzeit und Abfahrtszeit berechnet.",
+      "Sigmaris liest Termine aus Bildern und Google Sheets, lässt dich alles prüfen und speichert es in Google Calendar. Bei Terminen mit Ort werden auch Fahrzeit und Abfahrtszeit berechnet.",
     heroCards: [
       ["Auslesen", "Bilder und Sheets-URLs"],
       ["Prüfen", "Termindetails ansehen"],
@@ -643,7 +643,7 @@ export const landingCopies: Record<AppLocale, LandingCopy> = {
     detailsEyebrow: "What you can do",
     detailsTitle: "Automatisiere die mühsame Terminaufbereitung an einem Ort.",
     detailsBody:
-      "Aus Dienstplänen und Terminnotizen erstellt ShiftPilotAI automatisch Terminvorschläge. Vor dem Speichern kannst du alles prüfen, Lesefehler leichter erkennen und sicher in den Kalender übernehmen.",
+      "Aus Dienstplänen und Terminnotizen erstellt Sigmaris automatisch Terminvorschläge. Vor dem Speichern kannst du alles prüfen, Lesefehler leichter erkennen und sicher in den Kalender übernehmen.",
     useCases: [
       {
         icon: "image",
@@ -669,7 +669,7 @@ export const landingCopies: Record<AppLocale, LandingCopy> = {
     workflowEyebrow: "Workflow",
     workflowTitle: "Die Nutzung ist einfach.",
     workflowBody:
-      "Sende ein Bild oder eine Tabelle, und ShiftPilotAI erstellt Terminvorschläge. Da du vor dem Speichern prüfst, bleibt der wichtige Kontrollschritt erhalten.",
+      "Sende ein Bild oder eine Tabelle, und Sigmaris erstellt Terminvorschläge. Da du vor dem Speichern prüfst, bleibt der wichtige Kontrollschritt erhalten.",
     workflow: [
       {
         step: "1",
@@ -720,7 +720,7 @@ export const landingCopies: Record<AppLocale, LandingCopy> = {
     ],
     heroTitle: "Transforme escalas e notas de agenda em eventos prontos para o calendário.",
     heroBody:
-      "ShiftPilotAI lê agendas de imagens e Google Sheets, permite revisar tudo e salva no Google Calendar. Para compromissos com local, também calcula tempo de deslocamento e horário de saída.",
+      "Sigmaris lê agendas de imagens e Google Sheets, permite revisar tudo e salva no Google Calendar. Para compromissos com local, também calcula tempo de deslocamento e horário de saída.",
     heroCards: [
       ["Leitura", "Imagens e URLs do Sheets"],
       ["Revisão", "Conferir detalhes"],
@@ -731,7 +731,7 @@ export const landingCopies: Record<AppLocale, LandingCopy> = {
     detailsEyebrow: "What you can do",
     detailsTitle: "Automatize a organização trabalhosa da agenda.",
     detailsBody:
-      "Com base em escalas e notas, o ShiftPilotAI cria candidatos de eventos automaticamente. Você revisa tudo antes de salvar, encontra erros de leitura com mais facilidade e envia ao calendário com confiança.",
+      "Com base em escalas e notas, o Sigmaris cria candidatos de eventos automaticamente. Você revisa tudo antes de salvar, encontra erros de leitura com mais facilidade e envia ao calendário com confiança.",
     useCases: [
       {
         icon: "image",
@@ -757,7 +757,7 @@ export const landingCopies: Record<AppLocale, LandingCopy> = {
     workflowEyebrow: "Workflow",
     workflowTitle: "O uso é simples.",
     workflowBody:
-      "Envie uma imagem ou planilha e o ShiftPilotAI cria candidatos de eventos. Você revisa antes de salvar, mantendo a conferência necessária para a agenda.",
+      "Envie uma imagem ou planilha e o Sigmaris cria candidatos de eventos. Você revisa antes de salvar, mantendo a conferência necessária para a agenda.",
     workflow: [
       {
         step: "1",
@@ -808,7 +808,7 @@ export const landingCopies: Record<AppLocale, LandingCopy> = {
     ],
     heroTitle: "Trasforma turni e note in eventi pronti per il calendario.",
     heroBody:
-      "ShiftPilotAI legge gli impegni da immagini e Google Sheets, ti permette di controllarli e li salva in Google Calendar. Per gli eventi con luogo, calcola anche tempo di viaggio e orario di partenza.",
+      "Sigmaris legge gli impegni da immagini e Google Sheets, ti permette di controllarli e li salva in Google Calendar. Per gli eventi con luogo, calcola anche tempo di viaggio e orario di partenza.",
     heroCards: [
       ["Lettura", "Immagini e URL Sheets"],
       ["Controllo", "Verifica dettagli"],
@@ -819,7 +819,7 @@ export const landingCopies: Record<AppLocale, LandingCopy> = {
     detailsEyebrow: "What you can do",
     detailsTitle: "Automatizza in un unico flusso la parte noiosa dell'agenda.",
     detailsBody:
-      "Da turni e note, ShiftPilotAI crea automaticamente proposte di eventi. Puoi controllare tutto prima di salvare, individuare errori di lettura e registrare con più sicurezza.",
+      "Da turni e note, Sigmaris crea automaticamente proposte di eventi. Puoi controllare tutto prima di salvare, individuare errori di lettura e registrare con più sicurezza.",
     useCases: [
       {
         icon: "image",
@@ -845,7 +845,7 @@ export const landingCopies: Record<AppLocale, LandingCopy> = {
     workflowEyebrow: "Workflow",
     workflowTitle: "L'uso è semplice.",
     workflowBody:
-      "Invia un'immagine o un foglio e ShiftPilotAI crea proposte di eventi. Controlli i dettagli prima di salvare, mantenendo il passaggio di verifica necessario.",
+      "Invia un'immagine o un foglio e Sigmaris crea proposte di eventi. Controlli i dettagli prima di salvare, mantenendo il passaggio di verifica necessario.",
     workflow: [
       {
         step: "1",
@@ -896,7 +896,7 @@ export const landingCopies: Record<AppLocale, LandingCopy> = {
     ],
     heroTitle: "Ubah tabel shift dan catatan jadwal menjadi acara siap masuk kalender.",
     heroBody:
-      "ShiftPilotAI membaca jadwal dari gambar dan Google Sheets, lalu memungkinkan Anda memeriksanya sebelum menyimpan ke Google Calendar. Untuk acara yang memiliki lokasi, waktu perjalanan dan jam berangkat juga dapat dihitung sekaligus.",
+      "Sigmaris membaca jadwal dari gambar dan Google Sheets, lalu memungkinkan Anda memeriksanya sebelum menyimpan ke Google Calendar. Untuk acara yang memiliki lokasi, waktu perjalanan dan jam berangkat juga dapat dihitung sekaligus.",
     heroCards: [
       ["Baca", "Gambar dan URL Sheets"],
       ["Periksa", "Cek detail acara"],
@@ -907,7 +907,7 @@ export const landingCopies: Record<AppLocale, LandingCopy> = {
     detailsEyebrow: "What you can do",
     detailsTitle: "Otomatiskan pekerjaan merapikan jadwal yang merepotkan.",
     detailsBody:
-      "Berdasarkan tabel shift dan catatan jadwal, ShiftPilotAI membuat kandidat acara secara otomatis. Anda bisa memeriksa isinya sebelum menyimpan, sehingga kesalahan baca lebih mudah terlihat dan kalender tetap aman.",
+      "Berdasarkan tabel shift dan catatan jadwal, Sigmaris membuat kandidat acara secara otomatis. Anda bisa memeriksa isinya sebelum menyimpan, sehingga kesalahan baca lebih mudah terlihat dan kalender tetap aman.",
     useCases: [
       {
         icon: "image",
@@ -933,7 +933,7 @@ export const landingCopies: Record<AppLocale, LandingCopy> = {
     workflowEyebrow: "Workflow",
     workflowTitle: "Cara pakainya sederhana.",
     workflowBody:
-      "Kirim gambar atau sheet, lalu ShiftPilotAI membuat kandidat acara. Karena Anda memeriksa sebelum menyimpan, proses pengecekan jadwal tetap ada.",
+      "Kirim gambar atau sheet, lalu Sigmaris membuat kandidat acara. Karena Anda memeriksa sebelum menyimpan, proses pengecekan jadwal tetap ada.",
     workflow: [
       {
         step: "1",
@@ -984,7 +984,7 @@ export const landingCopies: Record<AppLocale, LandingCopy> = {
     ],
     heroTitle: "แปลงตารางกะและบันทึกนัดหมายให้พร้อมบันทึกลงปฏิทิน",
     heroBody:
-      "ShiftPilotAI อ่านตารางจากรูปภาพและ Google Sheets ให้คุณตรวจสอบก่อนบันทึกลง Google Calendar หากนัดหมายมีสถานที่ ระบบยังคำนวณเวลาเดินทางและเวลาออกเดินทางให้ด้วย",
+      "Sigmaris อ่านตารางจากรูปภาพและ Google Sheets ให้คุณตรวจสอบก่อนบันทึกลง Google Calendar หากนัดหมายมีสถานที่ ระบบยังคำนวณเวลาเดินทางและเวลาออกเดินทางให้ด้วย",
     heroCards: [
       ["อ่านข้อมูล", "รูปภาพและ URL ของ Sheets"],
       ["ตรวจสอบ", "เช็กรายละเอียดนัดหมาย"],
@@ -995,7 +995,7 @@ export const landingCopies: Record<AppLocale, LandingCopy> = {
     detailsEyebrow: "What you can do",
     detailsTitle: "ทำให้งานจัดตารางที่ยุ่งยากเป็นอัตโนมัติในที่เดียว",
     detailsBody:
-      "จากตารางกะหรือบันทึกนัดหมาย ShiftPilotAI จะสร้างรายการนัดหมายให้โดยอัตโนมัติ คุณตรวจสอบก่อนบันทึกได้ จึงเห็นข้อผิดพลาดจากการอ่านข้อมูลได้ง่ายขึ้นและบันทึกลงปฏิทินได้อย่างมั่นใจ",
+      "จากตารางกะหรือบันทึกนัดหมาย Sigmaris จะสร้างรายการนัดหมายให้โดยอัตโนมัติ คุณตรวจสอบก่อนบันทึกได้ จึงเห็นข้อผิดพลาดจากการอ่านข้อมูลได้ง่ายขึ้นและบันทึกลงปฏิทินได้อย่างมั่นใจ",
     useCases: [
       {
         icon: "image",
@@ -1072,7 +1072,7 @@ export const landingCopies: Record<AppLocale, LandingCopy> = {
     ],
     heroTitle: "Chuyển bảng ca và ghi chú lịch thành sự kiện sẵn sàng lưu vào lịch.",
     heroBody:
-      "ShiftPilotAI đọc lịch từ hình ảnh và Google Sheets, cho phép bạn kiểm tra rồi lưu vào Google Calendar. Với lịch có địa điểm, ứng dụng cũng tính cả thời gian di chuyển và giờ xuất phát.",
+      "Sigmaris đọc lịch từ hình ảnh và Google Sheets, cho phép bạn kiểm tra rồi lưu vào Google Calendar. Với lịch có địa điểm, ứng dụng cũng tính cả thời gian di chuyển và giờ xuất phát.",
     heroCards: [
       ["Đọc", "Hình ảnh và URL Sheets"],
       ["Kiểm tra", "Xem lại nội dung lịch"],
@@ -1083,7 +1083,7 @@ export const landingCopies: Record<AppLocale, LandingCopy> = {
     detailsEyebrow: "What you can do",
     detailsTitle: "Tự động hóa phần sắp xếp lịch rườm rà.",
     detailsBody:
-      "Dựa trên bảng ca và ghi chú lịch, ShiftPilotAI tự động tạo các lịch đề xuất. Bạn có thể kiểm tra trước khi lưu, dễ phát hiện lỗi đọc dữ liệu và yên tâm đưa vào lịch.",
+      "Dựa trên bảng ca và ghi chú lịch, Sigmaris tự động tạo các lịch đề xuất. Bạn có thể kiểm tra trước khi lưu, dễ phát hiện lỗi đọc dữ liệu và yên tâm đưa vào lịch.",
     useCases: [
       {
         icon: "image",
@@ -1109,7 +1109,7 @@ export const landingCopies: Record<AppLocale, LandingCopy> = {
     workflowEyebrow: "Workflow",
     workflowTitle: "Cách dùng rất đơn giản.",
     workflowBody:
-      "Chỉ cần gửi ảnh hoặc sheet, ShiftPilotAI sẽ tạo lịch đề xuất. Bạn kiểm tra nội dung rồi mới lưu, nên vẫn giữ được bước kiểm tra cần thiết khi quản lý lịch.",
+      "Chỉ cần gửi ảnh hoặc sheet, Sigmaris sẽ tạo lịch đề xuất. Bạn kiểm tra nội dung rồi mới lưu, nên vẫn giữ được bước kiểm tra cần thiết khi quản lý lịch.",
     workflow: [
       {
         step: "1",

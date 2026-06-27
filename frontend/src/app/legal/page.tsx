@@ -3,8 +3,8 @@ import Link from "next/link";
 import { ArrowRightIcon } from "lucide-react";
 
 export const metadata: Metadata = {
-  title: "法務情報 | ShiftPilotAI",
-  description: "ShiftPilotAIの法務情報、利用規約、プライバシーポリシー、特定商取引法に基づく表記です。",
+  title: "法務情報 | シグマリス",
+  description: "シグマリスの法務情報、利用規約、プライバシーポリシー、特定商取引法に基づく表記です。",
 };
 
 const legalLinks = [
@@ -16,7 +16,7 @@ const legalLinks = [
   {
     href: "/legal/terms",
     title: "利用規約",
-    body: "ShiftPilotAIの利用条件、有料プラン、禁止事項、免責事項などを掲載しています。",
+    body: "シグマリスの利用条件、有料プラン、禁止事項、免責事項などを掲載しています。",
   },
   {
     href: "/legal/privacy",
@@ -33,7 +33,7 @@ export default function LegalIndexPage() {
           href="/"
           className="inline-flex rounded-full border border-stone-900/10 bg-white px-4 py-2 text-sm font-semibold text-stone-700 transition hover:bg-stone-50"
         >
-          ShiftPilotAIへ戻る
+          シグマリスへ戻る
         </Link>
 
         <section className="mt-8">
@@ -44,7 +44,7 @@ export default function LegalIndexPage() {
             法務情報
           </h1>
           <p className="mt-4 max-w-2xl text-sm leading-7 text-stone-600">
-            ShiftPilotAIの利用条件、個人情報の取り扱い、有料プランに関する表示をまとめています。
+            シグマリスの利用条件、個人情報の取り扱い、有料プランに関する表示をまとめています。
           </p>
 
           <div className="mt-8 grid gap-4 md:grid-cols-3">

@@ -3,14 +3,14 @@ import Link from "next/link";
 import { PRO_MONTHLY_PRICE_JPY } from "@/lib/stripe";
 
 export const metadata: Metadata = {
-  title: "利用規約 | ShiftPilotAI",
-  description: "ShiftPilotAIの利用規約です。",
+  title: "利用規約 | シグマリス",
+  description: "シグマリスの利用規約です。",
 };
 
 const sections = [
   {
     title: "第1条（適用）",
-    body: "本規約は、ShiftPilotAI（以下「本サービス」といいます）の利用条件を定めるものです。ユーザーは、本サービスを利用することにより、本規約に同意したものとみなされます。",
+    body: "本規約は、シグマリス（以下「本サービス」といいます）の利用条件を定めるものです。ユーザーは、本サービスを利用することにより、本規約に同意したものとみなされます。",
   },
   {
     title: "第2条（サービス内容）",
@@ -22,7 +22,7 @@ const sections = [
   },
   {
     title: "第4条（有料プラン）",
-    body: `ShiftPilotAI Proは月額${PRO_MONTHLY_PRICE_JPY.toLocaleString("ja-JP")}円（税込）のサブスクリプションです。支払いはStripeを通じて行われ、決済完了後にPro機能を利用できます。`,
+    body: `シグマリス Proは月額${PRO_MONTHLY_PRICE_JPY.toLocaleString("ja-JP")}円（税込）のサブスクリプションです。支払いはStripeを通じて行われ、決済完了後にPro機能を利用できます。`,
   },
   {
     title: "第5条（解約）",
@@ -58,7 +58,7 @@ export default function TermsPage() {
           href="/"
           className="inline-flex rounded-full border border-stone-900/10 bg-white px-4 py-2 text-sm font-semibold text-stone-700 transition hover:bg-stone-50"
         >
-          ShiftPilotAIへ戻る
+          シグマリスへ戻る
         </Link>
 
         <section className="mt-8 rounded-[28px] border border-stone-900/10 bg-white p-5 shadow-[0_30px_80px_-60px_rgba(41,37,36,0.75)] sm:p-8">

@@ -1,7 +1,11 @@
 // 役割: Next.js側からPythonバックエンドAPIへリクエストする共通クライアントをまとめる。
 
 export const getBackendBaseUrl = () =>
-  process.env.BACKEND_API_BASE_URL?.replace(/\/+$/, "") || "http://127.0.0.1:8000";
+  (
+    process.env.NEXT_PUBLIC_API_URL ??
+    process.env.BACKEND_API_BASE_URL ??
+    "http://127.0.0.1:8000"
+  ).replace(/\/+$/, "");
 
 const BACKEND_TIMEOUT_MS = 8000;
 

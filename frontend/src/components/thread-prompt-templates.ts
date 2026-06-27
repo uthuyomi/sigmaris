@@ -2,7 +2,7 @@ export const promptTemplates = [
   {
     id: "event-create-one",
     label: "予定を1件登録",
-    text: `[ShiftPilotAI処理: calendar_write]
+    text: `[シグマリス処理: calendar_write]
 やりたいこと: 予定を1件登録する
 
 予定名:
@@ -18,7 +18,7 @@ export const promptTemplates = [
   {
     id: "event-create-multiple",
     label: "複数予定を登録",
-    text: `[ShiftPilotAI処理: calendar_write]
+    text: `[シグマリス処理: calendar_write]
 やりたいこと: 複数の予定をまとめて登録する
 
 予定を下に貼り付けます。日付・開始時刻・終了時刻・予定名・場所・メモに整理してください。
@@ -32,7 +32,7 @@ export const promptTemplates = [
   {
     id: "event-check-day",
     label: "指定日の予定確認",
-    text: `[ShiftPilotAI処理: event_lookup]
+    text: `[シグマリス処理: event_lookup]
 やりたいこと: 指定日の予定を確認する
 
 確認したい日: 今日 / 明日 / 日付を入力
@@ -43,7 +43,7 @@ export const promptTemplates = [
   {
     id: "event-search",
     label: "予定を検索",
-    text: `[ShiftPilotAI処理: event_lookup]
+    text: `[シグマリス処理: event_lookup]
 やりたいこと: 予定名・場所・キーワードから予定を探す
 
 キーワード:
@@ -55,7 +55,7 @@ export const promptTemplates = [
   {
     id: "route-plan-only",
     label: "移動時間だけ計算",
-    text: `[ShiftPilotAI処理: mobility_plan]
+    text: `[シグマリス処理: mobility_plan]
 やりたいこと: Googleマップで移動時間だけ計算する
 
 出発地:
@@ -69,7 +69,7 @@ export const promptTemplates = [
   {
     id: "travel-reminder-existing-event",
     label: "既存予定に移動通知",
-    text: `[ShiftPilotAI処理: mobility_plan]
+    text: `[シグマリス処理: mobility_plan]
 やりたいこと: すでに登録済みの予定に、出発時間のスマホ通知を追加する
 
 対象の予定名:
@@ -83,7 +83,7 @@ export const promptTemplates = [
   {
     id: "travel-reminder-new-event",
     label: "予定と移動通知を作成",
-    text: `[ShiftPilotAI処理: calendar_write]
+    text: `[シグマリス処理: calendar_write]
 やりたいこと: 新しい予定を登録し、その予定に間に合う移動通知も作る
 
 予定名:
@@ -101,7 +101,7 @@ export const promptTemplates = [
   {
     id: "import-image",
     label: "画像から予定抽出",
-    text: `[ShiftPilotAI処理: schedule_import]
+    text: `[シグマリス処理: schedule_import]
 やりたいこと: 添付した画像から予定候補を読み取る
 
 画像の種類: シフト表 / 予定表 / スクリーンショット / その他
@@ -113,7 +113,7 @@ export const promptTemplates = [
   {
     id: "import-google-sheets",
     label: "Sheetsから予定抽出",
-    text: `[ShiftPilotAI処理: schedule_import]
+    text: `[シグマリス処理: schedule_import]
 やりたいこと: Google Sheetsから予定候補を読み取る
 
 Google Sheets URL:
@@ -126,7 +126,7 @@ Google Sheets URL:
   {
     id: "event-delete-specific",
     label: "予定を削除",
-    text: `[ShiftPilotAI処理: calendar_write]
+    text: `[シグマリス処理: calendar_write]
 やりたいこと: 条件に合う予定を削除する
 
 対象日または期間:
@@ -138,7 +138,7 @@ Google Sheets URL:
   {
     id: "travel-alert-check",
     label: "移動通知を確認",
-    text: `[ShiftPilotAI処理: sync_control]
+    text: `[シグマリス処理: sync_control]
 やりたいこと: 出発時間のスマホ通知が動く状態か確認する
 
 確認したいこと:
@@ -150,7 +150,7 @@ cron-job.orgの設定: 済み / 未設定 / わからない
   {
     id: "google-sync-check",
     label: "Google連携を確認",
-    text: `[ShiftPilotAI処理: sync_control]
+    text: `[シグマリス処理: sync_control]
 やりたいこと: Googleカレンダー連携やログイン状態を確認する
 
 困っていること:

@@ -83,8 +83,8 @@ export default async function SettingsPage({ searchParams }: SettingsPageProps) 
         <SavedLocationsPanel />
 
         <IntegrationStatusPanel
-          backendApiLabel="ShiftPilotAI Backend API"
-          backendChatLabel="ShiftPilotAI Backend Chat Tools"
+          backendApiLabel="Sigmaris Backend API"
+          backendChatLabel="Sigmaris Backend Chat Tools"
           calendarLabel="Google Calendar API"
           calendarReady={calendarReady}
           integrationsLabel={dict.settings.integrations}

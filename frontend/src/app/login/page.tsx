@@ -43,7 +43,7 @@ export default async function LoginPage({ searchParams }: LoginPageProps) {
       <div className="mx-auto flex min-h-screen max-w-6xl flex-col px-4 py-5 sm:px-6 lg:px-8">
         <header className="flex items-center justify-between">
           <Link href="/" className="text-sm font-semibold text-stone-700">
-            ShiftPilotAI
+            シグマリス
           </Link>
           <Link
             href="/"

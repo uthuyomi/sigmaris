@@ -3,17 +3,17 @@ import Link from "next/link";
 import { PRO_MONTHLY_PRICE_JPY } from "@/lib/stripe";
 
 export const metadata: Metadata = {
-  title: "特定商取引法に基づく表記 | ShiftPilotAI",
-  description: "ShiftPilotAI Proの特定商取引法に基づく表記です。",
+  title: "特定商取引法に基づく表記 | シグマリス",
+  description: "シグマリス Proの特定商取引法に基づく表記です。",
 };
 
 const disclosureRows = [
-  ["販売事業者", "ShiftPilotAI"],
+  ["販売事業者", "シグマリス"],
   ["運営責任者", "安崎 海星"],
   ["所在地", "〒007-0842 北海道札幌市東区北四十二条東2丁目1-18 パインビレッジ2-12号"],
   ["メールアドレス", "kaiseif4e@gmail.com"],
   ["電話番号", "請求があった場合、遅滞なく開示いたします。"],
-  ["販売価格", `ShiftPilotAI Pro 月額${PRO_MONTHLY_PRICE_JPY.toLocaleString("ja-JP")}円（税込）`],
+  ["販売価格", `シグマリス Pro 月額${PRO_MONTHLY_PRICE_JPY.toLocaleString("ja-JP")}円（税込）`],
   [
     "商品代金以外の必要料金",
     "インターネット接続料金、通信料金その他サービス利用に必要な費用はお客様の負担となります。",
@@ -40,7 +40,7 @@ export default function TokushohoPage() {
           href="/"
           className="inline-flex rounded-full border border-stone-900/10 bg-white px-4 py-2 text-sm font-semibold text-stone-700 transition hover:bg-stone-50"
         >
-          ShiftPilotAIへ戻る
+          シグマリスへ戻る
         </Link>
 
         <section className="mt-8 rounded-[28px] border border-stone-900/10 bg-white p-5 shadow-[0_30px_80px_-60px_rgba(41,37,36,0.75)] sm:p-8">
@@ -51,7 +51,7 @@ export default function TokushohoPage() {
             特定商取引法に基づく表記
           </h1>
           <p className="mt-4 text-sm leading-7 text-stone-600">
-            ShiftPilotAI Proの提供に関する表示です。内容に変更がある場合は、必要に応じて本ページを更新します。
+            シグマリス Proの提供に関する表示です。内容に変更がある場合は、必要に応じて本ページを更新します。
           </p>
 
           <div className="mt-8 overflow-hidden rounded-2xl border border-stone-900/10">

@@ -45,7 +45,7 @@ export function BillingPanel({ initialBilling }: BillingPanelProps) {
             {isPro ? <SparklesIcon className="size-5" /> : <CreditCardIcon className="size-5" />}
           </div>
           <h2 className="mt-4 text-lg font-semibold text-stone-900 dark:text-stone-50">
-            ShiftPilotAI Pro
+            シグマリス Pro
           </h2>
           <p className="mt-2 max-w-md text-sm leading-7 text-stone-600 dark:text-stone-400">
             チャット継続、Google Calendar同期、移動予定、出発前通知までまとめて使えます。

@@ -3,7 +3,7 @@ import type { Dictionary } from "@/i18n/types";
 export const ko: Dictionary = {
     nav: { chat: "채팅", calendar: "일정", settings: "설정" },
     common: {
-      appName: "ShiftPilotAI",
+      appName: "Sigmaris",
       statusOn: "켜짐",
       statusOff: "꺼짐",
       unavailable: "미연결",

@@ -78,7 +78,7 @@ export function LandingPageContent({ copy }: LandingPageContentProps) {
               </span>
               <span>
                 <span className="block text-sm font-semibold">
-                  ShiftPilotAI
+                  シグマリス
                 </span>
                 <span className="block text-xs text-stone-600">
                   {copy.tagline}
@@ -302,7 +302,7 @@ export function LandingPageContent({ copy }: LandingPageContentProps) {
           <div className="rounded-[28px] border border-stone-900/10 bg-[#f7f2e8] p-6">
             <div className="flex flex-wrap items-start justify-between gap-4">
               <div>
-                <h3 className="text-xl font-semibold">ShiftPilotAI Pro</h3>
+                <h3 className="text-xl font-semibold">シグマリス Pro</h3>
                 <p className="mt-2 text-sm leading-7 text-stone-600">
                   月額サブスクリプション
                 </p>
@@ -340,7 +340,7 @@ export function LandingPageContent({ copy }: LandingPageContentProps) {
 
       <footer className="border-t border-stone-900/10 bg-[#efe3cf]">
         <div className="mx-auto flex max-w-6xl flex-col gap-3 px-4 py-6 text-sm text-stone-600 sm:flex-row sm:items-center sm:justify-between sm:px-6 lg:px-8">
-          <p>© ShiftPilotAI</p>
+          <p>© シグマリス</p>
           <nav className="flex flex-wrap gap-4">
             <Link href="/legal" className="font-medium hover:text-stone-950">
               法務情報

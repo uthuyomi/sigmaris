@@ -2,8 +2,8 @@ import type { Metadata } from "next";
 import Link from "next/link";
 
 export const metadata: Metadata = {
-  title: "プライバシーポリシー | ShiftPilotAI",
-  description: "ShiftPilotAIのプライバシーポリシーです。",
+  title: "プライバシーポリシー | シグマリス",
+  description: "シグマリスのプライバシーポリシーです。",
 };
 
 const sections = [
@@ -53,7 +53,7 @@ export default function PrivacyPage() {
           href="/"
           className="inline-flex rounded-full border border-stone-900/10 bg-white px-4 py-2 text-sm font-semibold text-stone-700 transition hover:bg-stone-50"
         >
-          ShiftPilotAIへ戻る
+          シグマリスへ戻る
         </Link>
 
         <section className="mt-8 rounded-[28px] border border-stone-900/10 bg-white p-5 shadow-[0_30px_80px_-60px_rgba(41,37,36,0.75)] sm:p-8">
