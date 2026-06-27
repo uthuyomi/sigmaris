@@ -29,7 +29,7 @@ export async function POST(request: Request) {
 
     const authHeaders = await readBackendAuthHeaders();
     const backendBaseUrl =
-      process.env.BACKEND_API_BASE_URL ?? "http://127.0.0.1:8000";
+      process.env.BACKEND_API_BASE_URL ?? "http://192.168.179.11:8000";
     const backendResponse = await fetch(
       `${backendBaseUrl}/api/orchestrator/chat`,
       {
