@@ -185,7 +185,7 @@ def _supabase_headers() -> dict[str, str]:
 
 def api_chat(messages: list[dict], thread_id: str) -> tuple[str, str]:
     """
-    POST /api/orchestrator/chat
+    POST /api/orchestrator/chat (通常・フォールバック用)
     401 が返った場合は自動で login() してから1回リトライする。
     Returns: (response_text, thread_id)
     """
@@ -227,6 +227,103 @@ def api_chat(messages: list[dict], thread_id: str) -> tuple[str, str]:
         return data.get("text", "(応答なし)"), data.get("thread_id", thread_id)
 
     return "⚠ 認証エラー: 再ログイン後も失敗しました", thread_id
+
+
+def api_chat_stream(messages: list[dict], thread_id: str) -> tuple[str, str]:
+    """
+    POST /api/orchestrator/chat/stream (SSE ストリーミング)
+    文字を受け取りながら順次表示する。
+    接続失敗時は api_chat() にフォールバックして通常表示する。
+    Returns: (response_text, thread_id)
+    """
+    url = f"{BACKEND}/api/orchestrator/chat/stream"
+    full_text = ""
+    returned_thread_id = thread_id
+    header_printed = False
+
+    def _print_stream_header() -> None:
+        ts = _ts()
+        # ANSI cyan bold でヘッダー表示（rich を使わず直接 stdout へ）
+        sys.stdout.write(f"\033[1;36mΣ シグマリス  [{ts}]\033[0m\n")
+        sys.stdout.flush()
+
+    try:
+        req_headers = {**_user_headers(), "Content-Type": "application/json", "Accept": "text/event-stream"}
+        with httpx.stream(
+            "POST",
+            url,
+            headers=req_headers,
+            json={"messages": messages, "thread_id": thread_id},
+            timeout=httpx.Timeout(connect=10.0, read=120.0, write=10.0, pool=10.0),
+        ) as resp:
+            # 401: 再ログインして通常エンドポイントにフォールバック
+            if resp.status_code == 401:
+                console.print("[dim cyan]  JWT期限切れ、再ログイン中...[/dim cyan]")
+                try:
+                    login()
+                except Exception as e:
+                    return f"⚠ 再ログイン失敗: {e}", thread_id
+                text, tid = api_chat(messages, thread_id)
+                ts_fb = _ts()
+                print_sigmaris_msg(text, ts_fb)
+                return text, tid
+
+            if resp.is_error:
+                # ストリーミング失敗 → 通常エンドポイントにフォールバック
+                raise httpx.HTTPError(f"HTTP {resp.status_code}")
+
+            for line in resp.iter_lines():
+                if not line.startswith("data:"):
+                    continue
+                raw = line[5:].strip()
+                if not raw:
+                    continue
+                try:
+                    event = json.loads(raw)
+                except json.JSONDecodeError:
+                    continue
+
+                if "error" in event:
+                    if header_printed:
+                        sys.stdout.write("\n\n")
+                        sys.stdout.flush()
+                    return f"⚠ {event['error']}", thread_id
+
+                if "delta" in event:
+                    chunk: str = event["delta"]
+                    if not header_printed:
+                        _print_stream_header()
+                        header_printed = True
+                    full_text += chunk
+                    sys.stdout.write(chunk)
+                    sys.stdout.flush()
+
+                if event.get("done"):
+                    returned_thread_id = event.get("thread_id", thread_id)
+                    break
+
+        # ストリーム終了後に改行を補完
+        if header_printed:
+            sys.stdout.write("\n\n")
+            sys.stdout.flush()
+
+        if not full_text:
+            return "(応答なし)", returned_thread_id
+
+        return full_text, returned_thread_id
+
+    except (httpx.ConnectError, httpx.RemoteProtocolError):
+        # バックエンドにストリームエンドポイントがない → 通常表示でフォールバック
+        text, tid = api_chat(messages, thread_id)
+        ts_fb = _ts()
+        print_sigmaris_msg(text, ts_fb)
+        return text, tid
+    except Exception:
+        # その他のエラーも通常フォールバック
+        text, tid = api_chat(messages, thread_id)
+        ts_fb = _ts()
+        print_sigmaris_msg(text, ts_fb)
+        return text, tid
 
 
 def api_self_model() -> dict[str, Any]:
@@ -593,10 +690,10 @@ def main() -> None:
             messages.append({"role": "user", "content": user_input})
 
             print_thinking()
-            response_text, thread_id = api_chat(messages, thread_id)
-
-            ts_resp = _ts()
-            print_sigmaris_msg(response_text, ts_resp)
+            # ストリーミング表示を試みる。
+            # 成功時: api_chat_stream がヘッダー+文字を直接 stdout に出力してから返す。
+            # 失敗時: api_chat_stream 内で api_chat() + print_sigmaris_msg() を呼んで返す。
+            response_text, thread_id = api_chat_stream(messages, thread_id)
 
             messages.append({"role": "assistant", "content": response_text})
 

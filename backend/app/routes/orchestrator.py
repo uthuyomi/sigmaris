@@ -1,14 +1,19 @@
 from __future__ import annotations
 
+import json
 import logging
 
 from fastapi import APIRouter, Header, HTTPException
+from fastapi.responses import StreamingResponse
 
 from app.schemas.orchestrator import OrchestratorChatRequest, OrchestratorChatResponse
 from app.services.orchestrator.service import run_orchestrator_chat
 
 router = APIRouter(prefix="/api/orchestrator", tags=["orchestrator"])
 logger = logging.getLogger(__name__)
+
+# Characters per SSE chunk — small enough for natural progressive display
+_STREAM_CHUNK_SIZE = 4
 
 
 def _require_jwt(authorization: str | None) -> str:
@@ -48,3 +53,60 @@ async def orchestrator_chat(
         raise HTTPException(status_code=500, detail={"error": str(error)}) from error
 
     return OrchestratorChatResponse.model_validate(result)
+
+
+@router.post("/chat/stream")
+async def orchestrator_chat_stream(
+    payload: OrchestratorChatRequest,
+    authorization: str | None = Header(default=None),
+    x_google_access_token: str | None = Header(default=None),
+    x_google_refresh_token: str | None = Header(default=None),
+) -> StreamingResponse:
+    """
+    SSE streaming endpoint. Runs orchestration fully, then streams the
+    completed response text in small chunks so the client can display it
+    progressively.
+
+    SSE event format:
+      data: {"delta": "<text chunk>"}\n\n
+      data: {"done": true, "thread_id": "...", "invocation_id": "..."}\n\n
+      data: {"error": "<message>"}\n\n  (on failure)
+    """
+    jwt = _require_jwt(authorization)
+
+    async def _generate():
+        try:
+            result = await run_orchestrator_chat(
+                jwt=jwt,
+                google_access_token=x_google_access_token,
+                google_refresh_token=x_google_refresh_token,
+                messages=[message.model_dump() for message in payload.messages],
+                thread_id=payload.thread_id,
+                request_context=payload.context,
+            )
+            text: str = result["text"]
+            # Stream in small char-level chunks for progressive display
+            for i in range(0, len(text), _STREAM_CHUNK_SIZE):
+                chunk = text[i : i + _STREAM_CHUNK_SIZE]
+                yield f"data: {json.dumps({'delta': chunk}, ensure_ascii=False)}\n\n"
+            yield (
+                f"data: {json.dumps({'done': True, 'thread_id': result['thread_id'], 'invocation_id': result['invocation_id']}, ensure_ascii=False)}\n\n"
+            )
+            logger.info(
+                "orchestrator stream: sent %d chars in %d chunks",
+                len(text),
+                (len(text) + _STREAM_CHUNK_SIZE - 1) // _STREAM_CHUNK_SIZE,
+            )
+        except Exception as exc:
+            logger.exception("orchestrator stream: error during generation")
+            yield f"data: {json.dumps({'error': str(exc)[:300]}, ensure_ascii=False)}\n\n"
+
+    return StreamingResponse(
+        _generate(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no",   # disable nginx buffering for SSE
+            "Connection": "keep-alive",
+        },
+    )
