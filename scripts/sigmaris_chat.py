@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+#!/home/sigmaris/shift-pilot-ai/backend/.venv/bin/python3
 """
 Sigmaris Terminal Chat Client
 デプロイ先: /home/sigmaris/sigmaris_chat.py
@@ -26,6 +26,10 @@ import uuid
 from datetime import date, datetime, timezone
 from pathlib import Path
 from typing import Any
+
+# UTF-8 入出力を強制（SSH ターミナルでの日本語文字化け・UnicodeDecodeError 対策）
+sys.stdin.reconfigure(encoding="utf-8")
+sys.stdout.reconfigure(encoding="utf-8")
 
 import httpx
 from rich.console import Console
@@ -307,8 +311,8 @@ def print_header() -> None:
         padding=(0, 2),
     ))
     console.print(
-        "[dim]  Enter で送信  /  [bold]/help[/bold] でコマンド一覧  /  "
-        "[bold]Ctrl+C[/bold] で終了[/dim]\n"
+        "[dim]  Enter で送信  /  行末に [bold]\\\\[/bold] で改行継続  /  "
+        "[bold]/help[/bold] でコマンド一覧  /  [bold]Ctrl+C[/bold] で終了[/dim]\n"
     )
 
 
@@ -337,7 +341,13 @@ def print_help() -> None:
         "  [bold cyan]/status[/bold cyan]   シグマリスの状態を表示\n"
         "  [bold cyan]/help[/bold cyan]     このヘルプを表示\n"
         "  [bold cyan]Ctrl+C[/bold cyan]    終了\n\n"
-        "[dim]メッセージを入力して Enter を押すと送信されます。[/dim]",
+        "[bold]入力方法[/bold]\n\n"
+        "  Enter           — 送信\n"
+        "  行末に [bold]\\\\[/bold] + Enter  — 改行して次の行へ継続\n\n"
+        "[dim]例:\n"
+        "  > 今日はAIと話し合って\\\\\n"
+        "    シグマリスの設計を考えていたよ\n"
+        "  > ← Enter で送信[/dim]",
         title="[bold magenta]Σ HELP[/bold magenta]",
         style="magenta",
         padding=(1, 2),
@@ -371,6 +381,50 @@ def print_thinking() -> None:
 
 def print_error(msg: str) -> None:
     console.print(f"[bold red]  ⚠ {escape(msg)}[/bold red]\n")
+
+
+# ─── 入力読み取り ─────────────────────────────────────────────────────────────
+
+def _read_input() -> str | None:
+    """
+    プロンプトを表示して stdin から入力を読む。
+    - 行末が \\ → 改行継続（次の行もつなげる）
+    - 行末が \\ 以外の Enter → 送信（入力確定）
+    - EOF (Ctrl+D) → None を返す（ループ終了）
+
+    sys.stdin.readline() を直接使うことで SSH ターミナルでの
+    UnicodeDecodeError を回避する。
+    """
+    lines: list[str] = []
+    first = True
+    while True:
+        # プロンプト表示（rich を経由せず直接 stdout へ書く）
+        prompt = "\033[1;37m> \033[0m" if first else "  "
+        sys.stdout.write(prompt)
+        sys.stdout.flush()
+        first = False
+
+        try:
+            raw = sys.stdin.readline()
+        except UnicodeDecodeError:
+            # 壊れたバイト列は無視して次の行へ
+            sys.stdout.write("\n")
+            sys.stdout.flush()
+            continue
+
+        if not raw:  # EOF (Ctrl+D)
+            return None
+
+        line = raw.rstrip("\n").rstrip("\r")
+
+        if line.endswith("\\"):
+            # バックスラッシュを除去して次の行へ継続
+            lines.append(line[:-1])
+        else:
+            lines.append(line)
+            break
+
+    return "\n".join(lines)
 
 
 # ─── 事前チェック ─────────────────────────────────────────────────────────────
@@ -415,10 +469,10 @@ def main() -> None:
 
     try:
         while True:
-            try:
-                user_input = console.input("[bold white]> [/bold white]").strip()
-            except EOFError:
+            user_input = _read_input()
+            if user_input is None:  # EOF (Ctrl+D)
                 break
+            user_input = user_input.strip()
 
             if not user_input:
                 continue
