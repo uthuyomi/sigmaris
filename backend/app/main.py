@@ -19,6 +19,10 @@ from app.services.supabase_rest import (
     shutdown_supabase_http_client,
     startup_supabase_http_client,
 )
+from app.services.orchestrator.schedule_agent_client import (
+    shutdown_schedule_agent_http_client,
+    startup_schedule_agent_http_client,
+)
 
 
 logging.basicConfig(
@@ -30,11 +34,13 @@ logging.basicConfig(
 @asynccontextmanager
 async def lifespan(_: FastAPI):
     await startup_supabase_http_client()
+    await startup_schedule_agent_http_client()
     startup_scheduler()
     try:
         yield
     finally:
         shutdown_scheduler()
+        await shutdown_schedule_agent_http_client()
         await shutdown_supabase_http_client()
 
 

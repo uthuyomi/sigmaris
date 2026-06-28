@@ -10,6 +10,33 @@ import httpx
 from app.config import settings
 from app.services.orchestrator.agent_registry import AgentDefinition
 
+# Persistent connection pool — created on first call, closed on app shutdown.
+_http_client: httpx.AsyncClient | None = None
+
+
+async def startup_schedule_agent_http_client() -> None:
+    global _http_client
+    if _http_client is None:
+        _http_client = httpx.AsyncClient(
+            timeout=httpx.Timeout(connect=10.0, read=120.0, write=30.0, pool=5.0),
+            limits=httpx.Limits(max_connections=20, max_keepalive_connections=10),
+        )
+
+
+async def shutdown_schedule_agent_http_client() -> None:
+    global _http_client
+    if _http_client is not None:
+        await _http_client.aclose()
+        _http_client = None
+
+
+async def _get_http_client() -> httpx.AsyncClient:
+    if _http_client is None:
+        await startup_schedule_agent_http_client()
+    if _http_client is None:
+        raise RuntimeError("Schedule agent HTTP client is not available.")
+    return _http_client
+
 
 _BASE_SYSTEM_OVERRIDE = (
     "Return the schedule analysis and execution result accurately and plainly. "
@@ -127,12 +154,12 @@ async def call_schedule_agent(
         self_model_context=self_model_context,
     )
 
-    async with httpx.AsyncClient(timeout=httpx.Timeout(90.0)) as client:
-        response = await client.post(
-            f"{agent.base_url}{agent.chat_endpoint}",
-            headers=headers,
-            json=payload,
-        )
+    client = await _get_http_client()
+    response = await client.post(
+        f"{agent.base_url}{agent.chat_endpoint}",
+        headers=headers,
+        json=payload,
+    )
 
     if response.is_error:
         detail = response.text.strip()
@@ -184,13 +211,13 @@ async def call_schedule_agent_stream(
     )
     stream_endpoint = agent.chat_endpoint.replace("/complete", "/stream")
 
-    async with httpx.AsyncClient(timeout=httpx.Timeout(120.0)) as client:
-        async with client.stream(
-            "POST",
-            f"{agent.base_url}{stream_endpoint}",
-            headers=headers,
-            json=payload,
-        ) as response:
+    client = await _get_http_client()
+    async with client.stream(
+        "POST",
+        f"{agent.base_url}{stream_endpoint}",
+        headers=headers,
+        json=payload,
+    ) as response:
             if response.is_error:
                 detail = (await response.aread()).decode("utf-8", errors="replace").strip()
                 raise RuntimeError(

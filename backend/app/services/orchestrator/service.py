@@ -70,7 +70,7 @@ async def _cached_self_model() -> dict | None:
     hit, val = _cache_get("self_model")
     if hit:
         return val
-    result = await _timed(get_self_model(), timeout=5.0)
+    result = await _timed(get_self_model(), timeout=3.0)
     _cache_set("self_model", result)
     return result
 
@@ -80,7 +80,7 @@ async def _cached_user_profile(jwt: str) -> dict | None:
     hit, val = _cache_get(key)
     if hit:
         return val
-    result = await _timed(get_user_profile(jwt), timeout=5.0)
+    result = await _timed(get_user_profile(jwt), timeout=3.0)
     _cache_set(key, result)
     return result
 
@@ -90,7 +90,7 @@ async def _cached_fact_items(jwt: str) -> list | None:
     hit, val = _cache_get(key)
     if hit:
         return val
-    result = await _timed(get_fact_items(jwt, active_only=True), timeout=5.0)
+    result = await _timed(get_fact_items(jwt, active_only=True), timeout=3.0)
     _cache_set(key, result)
     return result
 
@@ -102,7 +102,7 @@ async def _cached_active_trends(jwt: str) -> list:
         return val
     try:
         from app.services.trend_analyzer import get_active_trends  # noqa: PLC0415
-        result = await _timed(get_active_trends(jwt), timeout=5.0, default=[])
+        result = await _timed(get_active_trends(jwt), timeout=2.0, default=[])
     except Exception:
         result = []
     _cache_set(key, result)
@@ -190,25 +190,23 @@ async def run_orchestrator_chat(
     started_at = time.monotonic()
     invocation_id = str(uuid.uuid4())
 
-    # Auth check (no cache — must be fresh every request)
-    user = await _timed(get_current_user(jwt), timeout=5.0)
-    if not user:
-        raise RuntimeError("Failed to authenticate user (timeout or error).")
-    user_id = user.get("id")
-    if not isinstance(user_id, str):
-        raise RuntimeError("Authenticated Supabase user did not include an id.")
-
     persona = load_persona()
     agent = get_schedule_agent()
 
-    # Parallel-load context with cache + 5s timeout each
-    fact_profile, fact_items, self_model, active_trends = await asyncio.gather(
+    # Auth + all context in one parallel gather (auth=8s, context≤3s each)
+    user, fact_profile, fact_items, self_model, active_trends = await asyncio.gather(
+        _timed(get_current_user(jwt), timeout=8.0),
         _cached_user_profile(jwt),
         _cached_fact_items(jwt),
         _cached_self_model(),
         _cached_active_trends(jwt),
         return_exceptions=False,
     )
+    if not user:
+        raise RuntimeError("Failed to authenticate user (timeout or error).")
+    user_id = user.get("id")
+    if not isinstance(user_id, str):
+        raise RuntimeError("Authenticated Supabase user did not include an id.")
 
     reason = "User requested schedule assistance through the Sigmaris orchestrator."
     caller_agent_id = settings.schedule_agent_id
@@ -315,7 +313,7 @@ async def run_orchestrator_chat(
         from app.services.active_inquiry import get_inquiry_question  # noqa: PLC0415
         full_messages_so_far = list(messages) + [{"role": "assistant", "content": response_text}]
         inquiry = await asyncio.wait_for(
-            get_inquiry_question(jwt, full_messages_so_far), timeout=3.0
+            get_inquiry_question(jwt, full_messages_so_far), timeout=2.0
         )
         if inquiry:
             response_text = response_text + "\n\n" + inquiry
@@ -362,23 +360,23 @@ async def run_orchestrator_chat_stream(
     started_at = time.monotonic()
     invocation_id = str(uuid.uuid4())
 
-    user = await _timed(get_current_user(jwt), timeout=5.0)
-    if not user:
-        raise RuntimeError("Failed to authenticate user (timeout or error).")
-    user_id = user.get("id")
-    if not isinstance(user_id, str):
-        raise RuntimeError("Authenticated Supabase user did not include an id.")
-
     persona = load_persona()
     agent = get_schedule_agent()
 
-    fact_profile, fact_items, self_model, active_trends = await asyncio.gather(
+    # Auth + all context in one parallel gather (auth=8s, context≤3s each)
+    user, fact_profile, fact_items, self_model, active_trends = await asyncio.gather(
+        _timed(get_current_user(jwt), timeout=8.0),
         _cached_user_profile(jwt),
         _cached_fact_items(jwt),
         _cached_self_model(),
         _cached_active_trends(jwt),
         return_exceptions=False,
     )
+    if not user:
+        raise RuntimeError("Failed to authenticate user (timeout or error).")
+    user_id = user.get("id")
+    if not isinstance(user_id, str):
+        raise RuntimeError("Authenticated Supabase user did not include an id.")
 
     reason = "User requested schedule assistance through the Sigmaris orchestrator."
     caller_agent_id = settings.schedule_agent_id
@@ -509,7 +507,7 @@ async def run_orchestrator_chat_stream(
         from app.services.active_inquiry import get_inquiry_question  # noqa: PLC0415
         full_messages_so_far = list(messages) + [{"role": "assistant", "content": response_text}]
         inquiry = await asyncio.wait_for(
-            get_inquiry_question(jwt, full_messages_so_far), timeout=3.0
+            get_inquiry_question(jwt, full_messages_so_far), timeout=2.0
         )
         if inquiry:
             inquiry_delta = "\n\n" + inquiry

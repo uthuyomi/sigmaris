@@ -29,11 +29,12 @@ _LOCAL_TASK_TYPES = {
 
 
 class LocalLLMClient:
-    """Thin async client for Ollama /api/chat."""
+    """Thin async client for Ollama /api/chat with persistent connection pool."""
 
     def __init__(self, base_url: str, model: str) -> None:
         self._base_url = base_url.rstrip("/")
         self._model = model
+        self._client = httpx.AsyncClient(timeout=httpx.Timeout(60.0))
 
     async def chat(
         self,
@@ -55,19 +56,26 @@ class LocalLLMClient:
         if json_mode:
             payload["format"] = "json"
 
-        async with httpx.AsyncClient(timeout=httpx.Timeout(60.0)) as client:
-            r = await client.post(f"{self._base_url}/api/chat", json=payload)
-            r.raise_for_status()
-            data = r.json()
-            return data["message"]["content"]
+        r = await self._client.post(f"{self._base_url}/api/chat", json=payload)
+        r.raise_for_status()
+        data = r.json()
+        return data["message"]["content"]
 
     async def is_available(self) -> bool:
         try:
-            async with httpx.AsyncClient(timeout=httpx.Timeout(3.0)) as client:
-                r = await client.get(f"{self._base_url}/api/tags")
-                return r.is_success
+            r = await self._client.get(f"{self._base_url}/api/tags")
+            return r.is_success
         except Exception:
             return False
+
+
+def _openai_model_for_task(task: TaskType) -> str:
+    """Map TaskType to the appropriate OpenAI model tier."""
+    if task in {TaskType.SELF_REFLECT, TaskType.COMPLEX_REASONING}:
+        return settings.sigmaris_reflect_model or settings.openai_advanced_model
+    if task in {TaskType.ROUTING, TaskType.MEMORY_EXTRACTION, TaskType.SUMMARIZE}:
+        return settings.openai_nano_model
+    return settings.openai_model
 
 
 class _OpenAIAdapter:
@@ -83,9 +91,11 @@ class _OpenAIAdapter:
         temperature: float = 0.3,
         max_tokens: int = 1024,
         json_mode: bool = False,
+        task: TaskType | None = None,
     ) -> str:
+        model = _openai_model_for_task(task) if task is not None else settings.openai_model
         kwargs: dict[str, Any] = {
-            "model": settings.sigmaris_reflect_model or settings.openai_model,
+            "model": model,
             "messages": messages,
             "max_completion_tokens": max_tokens,
         }
@@ -145,6 +155,14 @@ class LLMRouter:
         backend = await self._get_backend(task)
         backend_name = "local" if isinstance(backend, LocalLLMClient) else "openai"
         logger.debug("LLMRouter task=%s backend=%s", task.value, backend_name)
+        if isinstance(backend, _OpenAIAdapter):
+            return await backend.chat(
+                messages,
+                temperature=temperature,
+                max_tokens=max_tokens,
+                json_mode=json_mode,
+                task=task,
+            )
         return await backend.chat(
             messages,
             temperature=temperature,

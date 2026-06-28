@@ -226,7 +226,7 @@ async def _analyze(
     if not settings.openai_api_key:
         raise RuntimeError("OPENAI_API_KEY is not configured.")
 
-    model = settings.sigmaris_reflect_model or settings.openai_model
+    model = settings.sigmaris_reflect_model or settings.openai_advanced_model
     client = AsyncOpenAI(api_key=settings.openai_api_key)
     log_summary = _summarize_logs(logs)
 

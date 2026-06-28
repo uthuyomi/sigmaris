@@ -10,7 +10,9 @@ class Settings(BaseSettings):
     frontend_origin: str = "http://localhost:3000"
     google_maps_api_key: str | None = None
     openai_api_key: str | None = None
-    openai_model: str = "gpt-5-nano"
+    openai_model: str = "gpt-5.4-mini"           # 通常会話・ルーティング
+    openai_nano_model: str = "gpt-5.4-nano"       # 記憶抽出・要約・分類
+    openai_advanced_model: str = "gpt-5.5"        # 自己反省・設計・週次レビュー
     openai_import_model: str | None = None
     google_client_id: str | None = None
     google_client_secret: str | None = None
