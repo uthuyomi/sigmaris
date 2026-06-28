@@ -31,6 +31,32 @@ async def _safe_load(fn, *args, **kwargs):
         return None
 
 
+async def _cognitive_layer_bg(*, invocation_id: str) -> None:
+    """Fire-and-forget: log decision and nudge internal state after each chat turn."""
+    try:
+        from app.services.decision_log import log_decision  # noqa: PLC0415
+        from app.services.internal_state import get_internal_state, snapshot  # noqa: PLC0415
+        state_snap = await snapshot()
+        await log_decision(
+            decision_type="action",
+            title=f"chat_turn:{invocation_id[:8]}",
+            reason="Orchestrator processed a user conversation turn.",
+            internal_state_snapshot=state_snap,
+        )
+        state = await get_internal_state()
+        current_curiosity = float(state.get("curiosity", 0.5))
+        from app.services.internal_state import update_internal_state  # noqa: PLC0415
+        await update_internal_state(
+            curiosity=min(1.0, current_curiosity + 0.01),
+            stability=min(1.0, float(state.get("stability", 0.8)) + 0.005),
+        )
+    except Exception:
+        import logging  # noqa: PLC0415
+        logging.getLogger(__name__).exception(
+            "cognitive_layer_bg: failed for invocation=%s", invocation_id
+        )
+
+
 async def _safe_load_no_args(fn):
     """Call fn() (no args) and return None on any exception."""
     try:
@@ -195,6 +221,12 @@ async def run_orchestrator_chat(
     asyncio.create_task(
         extract_from_conversation(messages=full_messages, jwt=jwt),
         name=f"memory_extract:{invocation_id}",
+    )
+
+    # Fire-and-forget: cognitive layer (decision log + internal state update).
+    asyncio.create_task(
+        _cognitive_layer_bg(invocation_id=invocation_id),
+        name=f"cognitive_layer:{invocation_id}",
     )
 
     return {

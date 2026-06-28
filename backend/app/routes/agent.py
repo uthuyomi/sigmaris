@@ -828,3 +828,142 @@ async def narrative_history(
         logger.exception("narrative/history failed")
         raise HTTPException(status_code=500, detail={"error": str(exc)}) from exc
     return {"ok": True, "chapters": chapters, "count": len(chapters)}
+
+
+# ─── Cognitive Architecture Endpoints ─────────────────────────────────────────
+
+
+@router.get("/constitution")
+async def get_constitution(
+    x_agent_id: str | None = Header(default=None),
+    x_agent_secret: str | None = Header(default=None),
+) -> dict[str, Any]:
+    """Return all constitution rows (core values + doctrine)."""
+    _verify_agent(x_agent_id, x_agent_secret)
+    from app.services.constitution import load_constitution  # noqa: PLC0415
+    try:
+        rows = await load_constitution()
+    except Exception as exc:
+        logger.exception("constitution endpoint failed")
+        raise HTTPException(status_code=500, detail={"error": str(exc)}) from exc
+    return {"ok": True, "rows": rows, "count": len(rows)}
+
+
+@router.get("/experience/list")
+async def experience_list(
+    limit: int = 30,
+    experience_type: str | None = None,
+    category: str | None = None,
+    x_agent_id: str | None = Header(default=None),
+    x_agent_secret: str | None = Header(default=None),
+) -> dict[str, Any]:
+    """Return recent experience records."""
+    _verify_agent(x_agent_id, x_agent_secret)
+    from app.services.experience_layer import get_recent_experiences  # noqa: PLC0415
+    limit = max(1, min(limit, 100))
+    try:
+        items = await get_recent_experiences(
+            limit,
+            experience_type=experience_type,
+            category=category,
+        )
+    except Exception as exc:
+        logger.exception("experience/list endpoint failed")
+        raise HTTPException(status_code=500, detail={"error": str(exc)}) from exc
+    return {"ok": True, "items": items, "count": len(items)}
+
+
+class ExperienceRecordRequest(BaseModel):
+    experience_type: str = Field(min_length=1, max_length=20)
+    category: str = Field(min_length=1, max_length=20)
+    title: str = Field(min_length=1, max_length=200)
+    description: str | None = None
+    context: dict[str, Any] | None = None
+    outcome: str | None = None
+    lesson: str | None = None
+    adoption_rate: float | None = None
+    confidence_delta: float = 0.0
+    related_fact_ids: list[str] | None = None
+
+
+@router.post("/experience/record")
+async def experience_record(
+    payload: ExperienceRecordRequest,
+    x_agent_id: str | None = Header(default=None),
+    x_agent_secret: str | None = Header(default=None),
+) -> dict[str, Any]:
+    """Insert a new experience record."""
+    _verify_agent(x_agent_id, x_agent_secret)
+    from app.services.experience_layer import record_experience  # noqa: PLC0415
+    try:
+        row_id = await record_experience(
+            experience_type=payload.experience_type,
+            category=payload.category,
+            title=payload.title,
+            description=payload.description,
+            context=payload.context,
+            outcome=payload.outcome,
+            lesson=payload.lesson,
+            adoption_rate=payload.adoption_rate,
+            confidence_delta=payload.confidence_delta,
+            related_fact_ids=payload.related_fact_ids,
+        )
+    except Exception as exc:
+        logger.exception("experience/record endpoint failed")
+        raise HTTPException(status_code=500, detail={"error": str(exc)}) from exc
+    if not row_id:
+        raise HTTPException(status_code=400, detail={"error": "Failed to record experience. Check experience_type and category values."})
+    return {"ok": True, "id": row_id}
+
+
+@router.get("/state")
+async def get_state(
+    x_agent_id: str | None = Header(default=None),
+    x_agent_secret: str | None = Header(default=None),
+) -> dict[str, Any]:
+    """Return current Sigmaris internal state."""
+    _verify_agent(x_agent_id, x_agent_secret)
+    from app.services.internal_state import get_internal_state  # noqa: PLC0415
+    try:
+        state = await get_internal_state()
+    except Exception as exc:
+        logger.exception("state endpoint failed")
+        raise HTTPException(status_code=500, detail={"error": str(exc)}) from exc
+    return {"ok": True, "state": state}
+
+
+@router.get("/decisions")
+async def get_decisions(
+    limit: int = 30,
+    decision_type: str | None = None,
+    x_agent_id: str | None = Header(default=None),
+    x_agent_secret: str | None = Header(default=None),
+) -> dict[str, Any]:
+    """Return recent decision log entries."""
+    _verify_agent(x_agent_id, x_agent_secret)
+    from app.services.decision_log import get_recent_decisions  # noqa: PLC0415
+    limit = max(1, min(limit, 100))
+    try:
+        items = await get_recent_decisions(limit, decision_type=decision_type)
+    except Exception as exc:
+        logger.exception("decisions endpoint failed")
+        raise HTTPException(status_code=500, detail={"error": str(exc)}) from exc
+    return {"ok": True, "items": items, "count": len(items)}
+
+
+@router.get("/curiosity/queue")
+async def get_curiosity_queue(
+    limit: int = 20,
+    x_agent_id: str | None = Header(default=None),
+    x_agent_secret: str | None = Header(default=None),
+) -> dict[str, Any]:
+    """Return pending curiosity queue items."""
+    _verify_agent(x_agent_id, x_agent_secret)
+    from app.services.curiosity_engine import get_pending_queue  # noqa: PLC0415
+    limit = max(1, min(limit, 50))
+    try:
+        items = await get_pending_queue(limit)
+    except Exception as exc:
+        logger.exception("curiosity/queue endpoint failed")
+        raise HTTPException(status_code=500, detail={"error": str(exc)}) from exc
+    return {"ok": True, "items": items, "count": len(items)}

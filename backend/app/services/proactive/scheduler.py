@@ -114,6 +114,33 @@ async def _narrative_generate() -> None:
         logger.exception("Narrative generate job raised unexpectedly")
 
 
+async def _curiosity_search() -> None:
+    from app.services.curiosity_engine import execute_curiosity_search  # noqa: PLC0415
+    try:
+        result = await execute_curiosity_search()
+        logger.info("Curiosity search job done: %s", result)
+    except Exception:
+        logger.exception("Curiosity search job raised unexpectedly")
+
+
+async def _experience_analyze() -> None:
+    from app.services.experience_layer import analyze_patterns  # noqa: PLC0415
+    try:
+        result = await analyze_patterns()
+        logger.info("Experience analyze job done: patterns=%s", list(result.keys()) if result else None)
+    except Exception:
+        logger.exception("Experience analyze job raised unexpectedly")
+
+
+async def _decision_analyze() -> None:
+    from app.services.decision_log import analyze_decision_patterns  # noqa: PLC0415
+    try:
+        result = await analyze_decision_patterns()
+        logger.info("Decision analyze job done: keys=%s", list(result.keys()) if result else None)
+    except Exception:
+        logger.exception("Decision analyze job raised unexpectedly")
+
+
 def startup_scheduler() -> None:
     global _scheduler
 
@@ -133,6 +160,9 @@ def startup_scheduler() -> None:
     _scheduler.add_job(_evening,         CronTrigger(hour=22, minute=0,                  timezone=tz), id="evening_checkin", replace_existing=True)
     _scheduler.add_job(_weekly,             CronTrigger(day_of_week="sun", hour=20, minute=0,  timezone=tz), id="weekly_review",      replace_existing=True)
     _scheduler.add_job(_narrative_generate, CronTrigger(day_of_week="sun", hour=5,  minute=0,  timezone=tz), id="narrative_generate", replace_existing=True)
+    _scheduler.add_job(_curiosity_search,   CronTrigger(hour=6,  minute=15,                    timezone=tz), id="curiosity_search",   replace_existing=True)
+    _scheduler.add_job(_experience_analyze, CronTrigger(day_of_week="sun", hour=4,  minute=0,  timezone=tz), id="experience_analyze", replace_existing=True)
+    _scheduler.add_job(_decision_analyze,   CronTrigger(day_of_week="sun", hour=4,  minute=30, timezone=tz), id="decision_analyze",   replace_existing=True)
 
     _scheduler.start()
     logger.info("Proactive scheduler started (tz=%s)", tz)
