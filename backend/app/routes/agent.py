@@ -8,7 +8,7 @@ import logging
 import uuid
 from typing import Any
 
-from fastapi import APIRouter, Header, HTTPException
+from fastapi import APIRouter, Header, HTTPException, Query
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
@@ -26,7 +26,9 @@ from app.services.proactive.actions import (
     run_weekly_review,
 )
 from app.services.memory_validator import validate_all_facts
+from app.services.memory_search import search_relevant_memories, update_fact_embeddings
 from app.services.trend_analyzer import analyze_trends, get_active_trends
+from app.services.supabase_rest import get_current_user
 from app.services.self_narrative import (
     generate_narrative_chapter,
     get_current_narrative,
@@ -341,6 +343,47 @@ async def agent_facts_unknown(
     jwt = _require_jwt(authorization)
     missing = await get_null_fields(jwt)
     return {"ok": True, "unknown": missing, "count": len(missing)}
+
+
+@router.post("/memory/embed")
+async def agent_memory_embed(
+    authorization: str | None = Header(default=None),
+    x_agent_id: str | None = Header(default=None),
+    x_agent_secret: str | None = Header(default=None),
+) -> dict[str, Any]:
+    _verify_agent(x_agent_id, x_agent_secret)
+    jwt = _require_jwt(authorization)
+    user = await get_current_user(jwt)
+    user_id = user.get("id")
+    if not isinstance(user_id, str):
+        raise HTTPException(status_code=400, detail={"error": "Authenticated user id is missing."})
+    result = await update_fact_embeddings(user_id, jwt=jwt)
+    return {"ok": True, **result}
+
+
+@router.get("/memory/search")
+async def agent_memory_search(
+    q: str = Query(min_length=1, max_length=500),
+    threshold: float = Query(default=0.7, ge=0.0, le=1.0),
+    limit: int = Query(default=5, ge=1, le=20),
+    authorization: str | None = Header(default=None),
+    x_agent_id: str | None = Header(default=None),
+    x_agent_secret: str | None = Header(default=None),
+) -> dict[str, Any]:
+    _verify_agent(x_agent_id, x_agent_secret)
+    jwt = _require_jwt(authorization)
+    user = await get_current_user(jwt)
+    user_id = user.get("id")
+    if not isinstance(user_id, str):
+        raise HTTPException(status_code=400, detail={"error": "Authenticated user id is missing."})
+    memories = await search_relevant_memories(
+        q,
+        user_id,
+        threshold=threshold,
+        limit=limit,
+        jwt=jwt,
+    )
+    return {"ok": True, "memories": memories, "count": len(memories)}
 
 
 class FactExtractTestRequest(BaseModel):

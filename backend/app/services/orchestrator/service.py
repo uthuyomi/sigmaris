@@ -16,6 +16,7 @@ from app.services.orchestrator.persona_rewriter import rewrite_with_persona, rew
 from app.services.orchestrator.response_guard import replace_forbidden_assistant_names
 from app.services.orchestrator.schedule_agent_client import call_schedule_agent, call_schedule_agent_stream
 from app.services.supabase_rest import get_current_user
+from app.services.memory_search import search_relevant_memories
 from app.services.self_model import get_self_model
 from app.services.user_fact_data import (
     build_facts_context,
@@ -151,6 +152,79 @@ def _user_display_name(user: dict[str, Any]) -> str | None:
     return None
 
 
+def _latest_user_content(messages: list[dict[str, str]]) -> str:
+    for message in reversed(messages):
+        if message.get("role") == "user":
+            return str(message.get("content") or "").strip()
+    return ""
+
+
+def _build_relevant_memories_context(memories: list[dict[str, Any]]) -> str | None:
+    if not memories:
+        return None
+    lines = ["[関連する事実記憶]"]
+    for item in memories:
+        category = item.get("category") or ""
+        key = item.get("fact_key") or item.get("key") or ""
+        value = item.get("value") or ""
+        confidence = item.get("confidence")
+        similarity = item.get("similarity")
+        lines.append(
+            f"- {category}/{key}: {value} "
+            f"(confidence={float(confidence or 0.0):.2f}, similarity={float(similarity or 0.0):.2f})"
+        )
+    return "\n".join(lines)
+
+
+async def _build_memory_context(
+    *,
+    jwt: str,
+    user_id: str,
+    messages: list[dict[str, str]],
+    fact_profile: dict | None,
+    fact_items: list | None,
+    active_trends: list,
+) -> str | None:
+    profile_context = build_profile_context(fact_profile)
+    if profile_context and len(profile_context) > 200:
+        profile_context = profile_context[:200] + "窶ｦ"
+
+    if settings.local_llm_enabled:
+        relevant_context = None
+        latest_user_text = _latest_user_content(messages)
+        if latest_user_text:
+            try:
+                relevant = await search_relevant_memories(
+                    latest_user_text,
+                    user_id,
+                    threshold=0.7,
+                    limit=5,
+                    jwt=jwt,
+                )
+                relevant_context = _build_relevant_memories_context(relevant)
+            except Exception:
+                logger.exception("orchestrator: relevant memory search failed")
+        if relevant_context and profile_context:
+            return profile_context + "\n\n" + relevant_context
+        if relevant_context:
+            return relevant_context
+        return profile_context
+
+    facts_ctx = build_facts_context(fact_items or [], top_n=5)
+    if facts_ctx and profile_context:
+        profile_context = profile_context + "\n\n" + facts_ctx
+    elif facts_ctx:
+        profile_context = facts_ctx
+
+    trends_ctx = _build_trends_context(active_trends)
+    if trends_ctx and profile_context:
+        profile_context = profile_context + "\n\n" + trends_ctx
+    elif trends_ctx:
+        profile_context = trends_ctx
+
+    return profile_context
+
+
 # ─── Background tasks ─────────────────────────────────────────────────────────
 
 
@@ -253,6 +327,15 @@ async def run_orchestrator_chat(
         profile_context = profile_context + "\n\n" + trends_ctx
     elif trends_ctx:
         profile_context = trends_ctx
+
+    profile_context = await _build_memory_context(
+        jwt=jwt,
+        user_id=user_id,
+        messages=messages,
+        fact_profile=fact_profile,
+        fact_items=fact_items,
+        active_trends=active_trends,
+    )
 
     call_name = extract_call_name(fact_profile) or _user_display_name(user)
     self_model_context = _build_self_model_context(self_model)
@@ -423,6 +506,15 @@ async def run_orchestrator_chat_stream(
         profile_context = profile_context + "\n\n" + trends_ctx
     elif trends_ctx:
         profile_context = trends_ctx
+
+    profile_context = await _build_memory_context(
+        jwt=jwt,
+        user_id=user_id,
+        messages=messages,
+        fact_profile=fact_profile,
+        fact_items=fact_items,
+        active_trends=active_trends,
+    )
 
     call_name = extract_call_name(fact_profile) or _user_display_name(user)
     self_model_context = _build_self_model_context(self_model)

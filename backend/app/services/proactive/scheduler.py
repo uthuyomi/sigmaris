@@ -67,6 +67,22 @@ async def _memory_validate() -> None:
         logger.exception("Memory validate job raised unexpectedly")
 
 
+async def _memory_embed() -> None:
+    from app.services.memory_search import update_fact_embeddings  # noqa: PLC0415
+    from app.services.supabase_rest import get_current_user  # noqa: PLC0415
+    try:
+        jwt = await get_sigmaris_jwt()
+        user = await get_current_user(jwt)
+        user_id = user.get("id")
+        if not isinstance(user_id, str):
+            logger.warning("Memory embed job skipped: authenticated user id is missing")
+            return
+        result = await update_fact_embeddings(user_id, jwt=jwt)
+        logger.info("Memory embed job done: %s", result)
+    except Exception:
+        logger.exception("Memory embed job raised unexpectedly")
+
+
 async def _health_data_sync() -> None:
     if not settings.health_sync_enabled:
         return
@@ -161,6 +177,7 @@ def startup_scheduler() -> None:
     _scheduler = AsyncIOScheduler(timezone=tz)
 
     _scheduler.add_job(_heartbeat,       CronTrigger(minute="*/1",                       timezone=tz), id="heartbeat",       replace_existing=True)
+    _scheduler.add_job(_memory_embed,    CronTrigger(hour=3,  minute=0,                  timezone=tz), id="memory_embed",    replace_existing=True)
     _scheduler.add_job(_research,        CronTrigger(hour=7,  minute=0,                  timezone=tz), id="research",        replace_existing=True)
     _scheduler.add_job(_memory_validate, CronTrigger(hour=6,  minute=30,                 timezone=tz), id="memory_validate", replace_existing=True)
     _scheduler.add_job(_health_data_sync,CronTrigger(hour=6,  minute=45,                 timezone=tz), id="health_sync",     replace_existing=True)

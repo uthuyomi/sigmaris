@@ -40,6 +40,7 @@ class Settings(BaseSettings):
     local_llm_enabled: bool = False
     ollama_base_url: str = "http://localhost:11434"
     ollama_model: str = "qwen2.5:14b"
+    ollama_embed_model: str = "nomic-embed-text"
     x_api_key: str | None = None
     x_api_secret: str | None = None
     x_access_token: str | None = None
