@@ -287,15 +287,67 @@ def api_research_count() -> str:
         return "—"
 
 
-def fetch_status() -> dict[str, str]:
+def api_internal_state() -> dict[str, Any]:
+    """Supabase REST で sigmaris_internal_state を取得"""
+    if not SUPABASE_URL or not SERVICE_KEY:
+        return {}
+    try:
+        resp = httpx.get(
+            f"{SUPABASE_URL}/rest/v1/sigmaris_internal_state",
+            headers=_supabase_headers(),
+            params={"limit": "1", "order": "updated_at.desc"},
+            timeout=10.0,
+        )
+        if resp.status_code == 200:
+            data = resp.json()
+            if isinstance(data, list) and data:
+                return data[0]
+        return {}
+    except Exception:
+        return {}
+
+
+def api_curiosity_count() -> str:
+    """Supabase REST で pending の curiosity_queue 件数を取得"""
+    if not SUPABASE_URL or not SERVICE_KEY:
+        return "—"
+    try:
+        resp = httpx.get(
+            f"{SUPABASE_URL}/rest/v1/sigmaris_curiosity_queue",
+            headers=_supabase_headers(),
+            params={"status": "eq.pending", "select": "id"},
+            timeout=10.0,
+        )
+        cr = resp.headers.get("content-range", "")
+        if "/" in cr:
+            return cr.split("/")[-1]
+        if resp.status_code == 200:
+            data = resp.json()
+            if isinstance(data, list):
+                return str(len(data))
+        return "—"
+    except Exception:
+        return "—"
+
+
+def _bar(value: float, width: int = 10) -> str:
+    """float (0.0-1.0) を ██░░ スタイルのバーに変換"""
+    filled = round(value * width)
+    return "█" * filled + "░" * (width - filled)
+
+
+def fetch_status() -> dict[str, Any]:
     """全ステータス情報を収集して dict で返す"""
     model = api_self_model()
+    state = api_internal_state()
     return {
         "version":          str(model.get("version", "—")),
         "last_reflected":   _fmt_dt(model.get("reflected_at") or model.get("updated_at")),
         "fact_count":       api_fact_count(),
         "research_count":   api_research_count(),
+        "curiosity_count":  api_curiosity_count(),
         "uptime":           _uptime(),
+        "state":            state,
     }
 
 
@@ -358,13 +410,44 @@ def print_help() -> None:
 def print_status() -> None:
     console.print("[dim cyan]  ステータスを取得中...[/dim cyan]")
     s = fetch_status()
+    state: dict[str, Any] = s.get("state") or {}
+
+    # ─── 内部状態バー ──────────────────────────────────────────────────────────
+    def _fmt_bar(key: str, label: str) -> str:
+        v = state.get(key)
+        if v is None:
+            return f"  {label:<12} [dim]—[/dim]"
+        fv = float(v)
+        bar = _bar(fv)
+        pct = f"{int(fv * 100):3d}%"
+        return f"  {label:<12} [cyan]{escape(bar)}[/cyan] [dim]{pct}[/dim]"
+
+    intervention = state.get("intervention_level", "—")
+    intervention_color = {"low": "green", "moderate": "yellow", "high": "red"}.get(
+        str(intervention), "dim"
+    )
+
+    cognitive_lines = ""
+    if state:
+        cognitive_lines = (
+            "\n\n  [bold]── 認知状態 ──────────────────────────[/bold]\n"
+            + _fmt_bar("confidence",      "確信度") + "\n"
+            + _fmt_bar("curiosity",       "好奇心") + "\n"
+            + _fmt_bar("stability",       "安定度") + "\n"
+            + _fmt_bar("concern",         "懸念度") + "\n"
+            + _fmt_bar("urgency",         "緊急度") + "\n"
+            + _fmt_bar("trust_in_context","文脈信頼") + "\n"
+            + f"  {'介入レベル':<12} [{intervention_color}]{escape(str(intervention))}[/{intervention_color}]"
+        )
 
     lines = (
         f"  [bold]自己モデル バージョン:[/bold]    [cyan]{escape(s['version'])}[/cyan]\n"
         f"  [bold]記憶している事実の件数:[/bold]  [cyan]{escape(s['fact_count'])}[/cyan]\n"
         f"  [bold]最終自己反省日時:[/bold]        [cyan]{escape(s['last_reflected'])}[/cyan]\n"
         f"  [bold]稼働日数:[/bold]                [cyan]{escape(s['uptime'])}[/cyan]\n"
-        f"  [bold]リサーチ済み記事数:[/bold]      [cyan]{escape(s['research_count'])}[/cyan]"
+        f"  [bold]リサーチ済み記事数:[/bold]      [cyan]{escape(s['research_count'])}[/cyan]\n"
+        f"  [bold]好奇心キュー:[/bold]            [cyan]{escape(s['curiosity_count'])} 件 pending[/cyan]"
+        + cognitive_lines
     )
     console.print(Panel(
         lines,

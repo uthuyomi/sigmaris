@@ -670,6 +670,24 @@ async def run_research() -> dict[str, Any]:
         len(saved), len(all_items) - len(unique_items),
         perspectives_generated, _MAX_PERSPECTIVES_PER_DAY,
     )
+
+    # Auto-enqueue curiosity queries for LOW-relevance items that had interesting titles
+    try:
+        from app.services.curiosity_engine import enqueue_curiosity  # noqa: PLC0415
+        low_items = [i for i in classified if i.get("relevance") == "LOW"][:3]
+        for item in low_items:
+            title = item.get("title", "")
+            reason = item.get("classify_reason", "")
+            if title:
+                await enqueue_curiosity(
+                    query=title,
+                    reason=reason or f"Researched but rated LOW — worth revisiting ({item.get('source', '')})",
+                    source="trend",
+                    priority=0.3,
+                )
+    except Exception:
+        logger.exception("research_agent: failed to enqueue curiosity queries")
+
     return {
         "ok": True,
         "fetched": len(all_items),
@@ -679,3 +697,73 @@ async def run_research() -> dict[str, Any]:
         "perspectives_generated": perspectives_generated,
         "perspectives_skipped": skipped_perspective,
     }
+
+
+async def run_research_for_query(query: str) -> dict[str, Any]:
+    """
+    Run a targeted research search for a specific curiosity query.
+    Searches only HackerNews and arXiv with the query as keyword filter.
+    Called by curiosity_engine.execute_curiosity_search().
+    """
+    if not settings.research_enabled:
+        return {"ok": True, "skipped": True}
+
+    logger.info("research_agent: targeted research for query='%s'", query[:80])
+
+    user_ctx = "[ユーザープロフィール不明]"
+    try:
+        jwt = await get_sigmaris_jwt()
+        profile = await get_user_profile(jwt)
+        user_ctx = build_profile_context(profile) or user_ctx
+    except Exception:
+        pass
+
+    # Fetch from general sources then filter by keyword match
+    try:
+        hn_items, arxiv_items = await asyncio.gather(
+            _fetch_hn_items(),
+            _fetch_arxiv_items(),
+            return_exceptions=True,
+        )
+        raw: list[dict[str, str]] = []
+        if isinstance(hn_items, list):
+            raw.extend(hn_items)
+        if isinstance(arxiv_items, list):
+            raw.extend(arxiv_items)
+    except Exception:
+        logger.exception("research_agent: targeted fetch failed for query='%s'", query[:80])
+        return {"ok": False, "error": "fetch_failed"}
+
+    # Keep items whose title or summary contains any keyword from the query
+    keywords = [k.lower().strip() for k in query.replace("　", " ").split() if len(k.strip()) > 1]
+    filtered = [
+        item for item in raw
+        if any(kw in (item.get("title", "") + item.get("raw_summary", "")).lower() for kw in keywords)
+    ] if keywords else raw[:5]
+
+    if not filtered:
+        logger.info("research_agent: no items matched query='%s'", query[:80])
+        return {"ok": True, "matched": 0}
+
+    classified = await _classify_items(filtered[:10], user_ctx)
+    existing_titles = await _db_get_today_titles()
+    unique = _deduplicate(classified, existing_titles)
+
+    saved_count = 0
+    for item in unique:
+        if item.get("relevance") in ("HIGH", "MEDIUM"):
+            item["summary"] = await _summarize_item(item)
+        else:
+            item["summary"] = (item.get("raw_summary") or "")[:500]
+        result = await _db_insert_item({
+            "source": item["source"],
+            "title": item["title"],
+            "url": item["url"],
+            "summary": item.get("summary", "")[:2000],
+            "relevance": item.get("relevance", "LOW"),
+        })
+        if result:
+            saved_count += 1
+
+    logger.info("research_agent: targeted research done query='%s' saved=%d", query[:80], saved_count)
+    return {"ok": True, "matched": len(filtered), "saved": saved_count}
