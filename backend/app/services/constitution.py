@@ -109,6 +109,25 @@ async def build_constitution_context() -> str:
         return ""
 
 
+async def get_interests(*, sub_layer: str | None = None) -> list[dict[str, Any]]:
+    """
+    Return Article 8 interest rows (layer='interest').
+    sub_layer: 'self' | 'user' | 'tech' | None (all)
+    """
+    try:
+        rows = await load_constitution()
+        interests = [r for r in rows if r.get("layer") == "interest"]
+        if sub_layer:
+            interests = [
+                r for r in interests
+                if (r.get("description") or "").startswith(f"sub_layer:{sub_layer}")
+            ]
+        return interests
+    except Exception:
+        logger.exception("constitution: failed to get_interests sub_layer=%s", sub_layer)
+        return []
+
+
 async def update_doctrine(key: str, value: str) -> bool:
     """Update a mutable doctrine value. Returns True on success."""
     try:

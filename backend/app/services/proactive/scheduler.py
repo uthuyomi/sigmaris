@@ -123,6 +123,15 @@ async def _curiosity_search() -> None:
         logger.exception("Curiosity search job raised unexpectedly")
 
 
+async def _self_interest_queries() -> None:
+    from app.services.curiosity_engine import generate_self_interest_queries  # noqa: PLC0415
+    try:
+        result = await generate_self_interest_queries()
+        logger.info("Self-interest query job done: generated=%d", len(result))
+    except Exception:
+        logger.exception("Self-interest query job raised unexpectedly")
+
+
 async def _experience_analyze() -> None:
     from app.services.experience_layer import analyze_patterns  # noqa: PLC0415
     try:
@@ -160,9 +169,10 @@ def startup_scheduler() -> None:
     _scheduler.add_job(_evening,         CronTrigger(hour=22, minute=0,                  timezone=tz), id="evening_checkin", replace_existing=True)
     _scheduler.add_job(_weekly,             CronTrigger(day_of_week="sun", hour=20, minute=0,  timezone=tz), id="weekly_review",      replace_existing=True)
     _scheduler.add_job(_narrative_generate, CronTrigger(day_of_week="sun", hour=5,  minute=0,  timezone=tz), id="narrative_generate", replace_existing=True)
-    _scheduler.add_job(_curiosity_search,   CronTrigger(hour=6,  minute=15,                    timezone=tz), id="curiosity_search",   replace_existing=True)
-    _scheduler.add_job(_experience_analyze, CronTrigger(day_of_week="sun", hour=4,  minute=0,  timezone=tz), id="experience_analyze", replace_existing=True)
-    _scheduler.add_job(_decision_analyze,   CronTrigger(day_of_week="sun", hour=4,  minute=30, timezone=tz), id="decision_analyze",   replace_existing=True)
+    _scheduler.add_job(_curiosity_search,     CronTrigger(hour=6,  minute=15,                    timezone=tz), id="curiosity_search",     replace_existing=True)
+    _scheduler.add_job(_experience_analyze,   CronTrigger(day_of_week="sun", hour=4,  minute=0,  timezone=tz), id="experience_analyze",   replace_existing=True)
+    _scheduler.add_job(_decision_analyze,     CronTrigger(day_of_week="sun", hour=4,  minute=30, timezone=tz), id="decision_analyze",     replace_existing=True)
+    _scheduler.add_job(_self_interest_queries,CronTrigger(day_of_week="sun", hour=5,  minute=30, timezone=tz), id="self_interest_queries",replace_existing=True)
 
     _scheduler.start()
     logger.info("Proactive scheduler started (tz=%s)", tz)
