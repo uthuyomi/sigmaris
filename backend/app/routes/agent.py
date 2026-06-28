@@ -9,10 +9,11 @@ import uuid
 from typing import Any
 
 from fastapi import APIRouter, Header, HTTPException
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
 from app.config import settings
-from app.services.chat import run_chat_completion
+from app.services.chat import run_chat_completion, stream_chat_completion_ui
 from app.services.chat_tools import execute_tool, headers_to_google_tokens
 from app.services.self_model import get_self_model, record_discrepancy, reflect, update_self_model
 from app.services.self_improvement import ImprovementProposal, SelfImprovementAgent
@@ -145,6 +146,86 @@ async def agent_chat_complete(
         "message_id": message_id,
         "thread_id": thread_id,
     }
+
+
+@router.post("/chat/stream")
+async def agent_chat_stream(
+    payload: AgentChatRequest,
+    authorization: str | None = Header(default=None),
+    x_agent_id: str | None = Header(default=None),
+    x_agent_secret: str | None = Header(default=None),
+    x_google_access_token: str | None = Header(default=None),
+    x_google_refresh_token: str | None = Header(default=None),
+) -> StreamingResponse:
+    agent_id = _verify_agent(x_agent_id, x_agent_secret)
+    jwt = _require_jwt(authorization)
+
+    thread_id = payload.thread_id or str(uuid.uuid4())
+    persist = payload.persist_thread and payload.thread_id is not None
+    reason = (payload.context or {}).get("reason") if payload.context else None
+    audit_info: dict[str, str | None] = {
+        "actor_type": "agent",
+        "actor_ref": agent_id,
+        "reason": reason,
+    }
+
+    async def _generate():
+        message_id: str | None = None
+        try:
+            upstream = stream_chat_completion_ui(
+                jwt=jwt,
+                google_header_map={
+                    "x-google-access-token": x_google_access_token or "",
+                    "x-google-refresh-token": x_google_refresh_token or "",
+                },
+                thread_id=thread_id,
+                messages=payload.messages,
+                system=payload.system_override,
+                persist_messages=persist,
+                audit_info=audit_info,
+                emit_status_delta=False,
+            )
+            async for raw_chunk in upstream:
+                text = raw_chunk.decode("utf-8")
+                for line in text.splitlines():
+                    if not line.startswith("data:"):
+                        continue
+                    raw_event = line[5:].strip()
+                    if not raw_event:
+                        continue
+                    try:
+                        event = json.loads(raw_event)
+                    except json.JSONDecodeError:
+                        continue
+                    if event.get("type") == "start":
+                        value = event.get("messageId")
+                        if isinstance(value, str):
+                            message_id = value
+                    elif event.get("type") == "text-delta":
+                        delta = event.get("delta")
+                        if isinstance(delta, str) and delta:
+                            yield f"data: {json.dumps({'delta': delta}, ensure_ascii=False)}\n\n"
+                    elif event.get("type") == "finish":
+                        yield (
+                            f"data: {json.dumps({'done': True, 'thread_id': thread_id, 'message_id': message_id}, ensure_ascii=False)}\n\n"
+                        )
+                        return
+            yield (
+                f"data: {json.dumps({'done': True, 'thread_id': thread_id, 'message_id': message_id}, ensure_ascii=False)}\n\n"
+            )
+        except Exception as error:  # noqa: BLE001
+            logger.exception("agent chat stream failed agent_id=%s", agent_id)
+            yield f"data: {json.dumps({'error': str(error)[:300]}, ensure_ascii=False)}\n\n"
+
+    return StreamingResponse(
+        _generate(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
+    )
 
 
 @router.post("/tools/execute")

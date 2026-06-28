@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass
+from collections.abc import AsyncGenerator
 from typing import Any
 
 import httpx
@@ -37,19 +39,21 @@ class ScheduleAgentResult:
     message_id: str | None
 
 
-async def call_schedule_agent(
+@dataclass(frozen=True)
+class ScheduleAgentStreamEvent:
+    delta: str = ""
+    thread_id: str | None = None
+    message_id: str | None = None
+    done: bool = False
+
+
+def _build_headers(
     *,
-    agent: AgentDefinition,
     jwt: str,
     google_access_token: str | None,
     google_refresh_token: str | None,
-    messages: list[dict[str, str]],
-    thread_id: str | None,
     invocation_id: str,
-    reason: str,
-    user_profile_context: str | None = None,
-    self_model_context: str | None = None,
-) -> ScheduleAgentResult:
+) -> dict[str, str]:
     if not settings.schedule_agent_secret:
         raise RuntimeError("SCHEDULE_AGENT_SECRET is not configured.")
 
@@ -64,8 +68,19 @@ async def call_schedule_agent(
         headers["X-Google-Access-Token"] = google_access_token
     if google_refresh_token:
         headers["X-Google-Refresh-Token"] = google_refresh_token
+    return headers
 
-    payload: dict[str, Any] = {
+
+def _build_payload(
+    *,
+    messages: list[dict[str, str]],
+    thread_id: str | None,
+    invocation_id: str,
+    reason: str,
+    user_profile_context: str | None = None,
+    self_model_context: str | None = None,
+) -> dict[str, Any]:
+    return {
         "thread_id": thread_id,
         "messages": [
             {
@@ -82,6 +97,35 @@ async def call_schedule_agent(
             "callerAgentId": settings.schedule_agent_id,
         },
     }
+
+
+async def call_schedule_agent(
+    *,
+    agent: AgentDefinition,
+    jwt: str,
+    google_access_token: str | None,
+    google_refresh_token: str | None,
+    messages: list[dict[str, str]],
+    thread_id: str | None,
+    invocation_id: str,
+    reason: str,
+    user_profile_context: str | None = None,
+    self_model_context: str | None = None,
+) -> ScheduleAgentResult:
+    headers = _build_headers(
+        jwt=jwt,
+        google_access_token=google_access_token,
+        google_refresh_token=google_refresh_token,
+        invocation_id=invocation_id,
+    )
+    payload = _build_payload(
+        messages=messages,
+        thread_id=thread_id,
+        invocation_id=invocation_id,
+        reason=reason,
+        user_profile_context=user_profile_context,
+        self_model_context=self_model_context,
+    )
 
     async with httpx.AsyncClient(timeout=httpx.Timeout(90.0)) as client:
         response = await client.post(
@@ -108,3 +152,71 @@ async def call_schedule_agent(
         thread_id=returned_thread_id,
         message_id=data.get("message_id") if isinstance(data.get("message_id"), str) else None,
     )
+
+
+async def call_schedule_agent_stream(
+    *,
+    agent: AgentDefinition,
+    jwt: str,
+    google_access_token: str | None,
+    google_refresh_token: str | None,
+    messages: list[dict[str, str]],
+    thread_id: str | None,
+    invocation_id: str,
+    reason: str,
+    user_profile_context: str | None = None,
+    self_model_context: str | None = None,
+) -> AsyncGenerator[ScheduleAgentStreamEvent, None]:
+    headers = _build_headers(
+        jwt=jwt,
+        google_access_token=google_access_token,
+        google_refresh_token=google_refresh_token,
+        invocation_id=invocation_id,
+    )
+    headers["Accept"] = "text/event-stream"
+    payload = _build_payload(
+        messages=messages,
+        thread_id=thread_id,
+        invocation_id=invocation_id,
+        reason=reason,
+        user_profile_context=user_profile_context,
+        self_model_context=self_model_context,
+    )
+    stream_endpoint = agent.chat_endpoint.replace("/complete", "/stream")
+
+    async with httpx.AsyncClient(timeout=httpx.Timeout(120.0)) as client:
+        async with client.stream(
+            "POST",
+            f"{agent.base_url}{stream_endpoint}",
+            headers=headers,
+            json=payload,
+        ) as response:
+            if response.is_error:
+                detail = (await response.aread()).decode("utf-8", errors="replace").strip()
+                raise RuntimeError(
+                    f"Schedule agent stream returned HTTP {response.status_code}"
+                    + (f": {detail}" if detail else "")
+                )
+
+            async for line in response.aiter_lines():
+                if not line.startswith("data:"):
+                    continue
+                raw = line[5:].strip()
+                if not raw:
+                    continue
+                try:
+                    event = json.loads(raw)
+                except json.JSONDecodeError:
+                    continue
+                if isinstance(event.get("error"), str):
+                    raise RuntimeError(event["error"])
+                delta = event.get("delta")
+                if isinstance(delta, str) and delta:
+                    yield ScheduleAgentStreamEvent(delta=delta)
+                if event.get("done"):
+                    yield ScheduleAgentStreamEvent(
+                        done=True,
+                        thread_id=event.get("thread_id") if isinstance(event.get("thread_id"), str) else None,
+                        message_id=event.get("message_id") if isinstance(event.get("message_id"), str) else None,
+                    )
+                    return

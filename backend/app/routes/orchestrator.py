@@ -7,14 +7,10 @@ from fastapi import APIRouter, Header, HTTPException
 from fastapi.responses import StreamingResponse
 
 from app.schemas.orchestrator import OrchestratorChatRequest, OrchestratorChatResponse
-from app.services.orchestrator.service import run_orchestrator_chat
+from app.services.orchestrator.service import run_orchestrator_chat, run_orchestrator_chat_stream
 
 router = APIRouter(prefix="/api/orchestrator", tags=["orchestrator"])
 logger = logging.getLogger(__name__)
-
-# Characters per SSE chunk — small enough for natural progressive display
-_STREAM_CHUNK_SIZE = 4
-
 
 def _require_jwt(authorization: str | None) -> str:
     if not authorization or not authorization.startswith("Bearer "):
@@ -63,9 +59,7 @@ async def orchestrator_chat_stream(
     x_google_refresh_token: str | None = Header(default=None),
 ) -> StreamingResponse:
     """
-    SSE streaming endpoint. Runs orchestration fully, then streams the
-    completed response text in small chunks so the client can display it
-    progressively.
+    SSE streaming endpoint. Streams OpenAI deltas from the orchestrator path.
 
     SSE event format:
       data: {"delta": "<text chunk>"}\n\n
@@ -76,27 +70,21 @@ async def orchestrator_chat_stream(
 
     async def _generate():
         try:
-            result = await run_orchestrator_chat(
+            async for event in run_orchestrator_chat_stream(
                 jwt=jwt,
                 google_access_token=x_google_access_token,
                 google_refresh_token=x_google_refresh_token,
                 messages=[message.model_dump() for message in payload.messages],
                 thread_id=payload.thread_id,
                 request_context=payload.context,
-            )
-            text: str = result["text"]
-            # Stream in small char-level chunks for progressive display
-            for i in range(0, len(text), _STREAM_CHUNK_SIZE):
-                chunk = text[i : i + _STREAM_CHUNK_SIZE]
-                yield f"data: {json.dumps({'delta': chunk}, ensure_ascii=False)}\n\n"
-            yield (
-                f"data: {json.dumps({'done': True, 'thread_id': result['thread_id'], 'invocation_id': result['invocation_id']}, ensure_ascii=False)}\n\n"
-            )
-            logger.info(
-                "orchestrator stream: sent %d chars in %d chunks",
-                len(text),
-                (len(text) + _STREAM_CHUNK_SIZE - 1) // _STREAM_CHUNK_SIZE,
-            )
+            ):
+                if event.delta:
+                    yield f"data: {json.dumps({'delta': event.delta}, ensure_ascii=False)}\n\n"
+                if event.done:
+                    yield (
+                        f"data: {json.dumps({'done': True, 'thread_id': event.thread_id, 'invocation_id': event.invocation_id}, ensure_ascii=False)}\n\n"
+                    )
+                    logger.info("orchestrator stream: completed invocation=%s", event.invocation_id)
         except Exception as exc:
             logger.exception("orchestrator stream: error during generation")
             yield f"data: {json.dumps({'error': str(exc)[:300]}, ensure_ascii=False)}\n\n"

@@ -7,7 +7,7 @@ import json
 import logging
 import re
 import uuid
-from collections.abc import AsyncIterator
+from collections.abc import AsyncGenerator, AsyncIterator
 from typing import Any
 from google.auth.exceptions import RefreshError
 from openai import AsyncOpenAI
@@ -373,6 +373,40 @@ def _require_openai_client() -> AsyncOpenAI:
     return AsyncOpenAI(api_key=settings.openai_api_key)
 
 
+async def chat_stream(
+    messages: list[dict[str, str]],
+    model: str,
+    *,
+    system: str | None = None,
+    temperature: float | None = None,
+    max_tokens: int | None = None,
+) -> AsyncGenerator[str, None]:
+    """Stream raw Chat Completions deltas for simple non-tool callers."""
+    client = _require_openai_client()
+    chat_messages: list[dict[str, str]] = []
+    if system:
+        chat_messages.append({"role": "system", "content": system})
+    chat_messages.extend(messages)
+
+    kwargs: dict[str, Any] = {
+        "model": model,
+        "messages": chat_messages,
+        "stream": True,
+    }
+    if temperature is not None:
+        kwargs["temperature"] = temperature
+    if max_tokens is not None:
+        kwargs["max_tokens"] = max_tokens
+
+    stream = await client.chat.completions.create(**kwargs)
+    async for chunk in stream:
+        if not chunk.choices:
+            continue
+        delta = chunk.choices[0].delta.content
+        if delta:
+            yield delta
+
+
 async def run_chat_completion(
     *,
     jwt: str,
@@ -633,17 +667,22 @@ async def stream_chat_completion_ui(
     thread_id: str,
     messages: list[dict[str, Any]],
     system: str | None = None,
+    persist_messages: bool = True,
+    audit_info: dict[str, str | None] | None = None,
+    emit_status_delta: bool = True,
 ) -> AsyncIterator[bytes]:
     message_id = str(uuid.uuid4())
     text_part_id = str(uuid.uuid4())
     logger.info("chat stream start thread_id=%s message_count=%s", thread_id, len(messages))
     yield f"data: {json.dumps({'type': 'start', 'messageId': message_id}, ensure_ascii=False)}\n\n".encode("utf-8")
     yield f"data: {json.dumps({'type': 'text-start', 'id': text_part_id}, ensure_ascii=False)}\n\n".encode("utf-8")
-    yield f"data: {json.dumps({'type': 'text-delta', 'id': text_part_id, 'delta': '確認中...\n'}, ensure_ascii=False)}\n\n".encode("utf-8")
+    if emit_status_delta:
+        yield f"data: {json.dumps({'type': 'text-delta', 'id': text_part_id, 'delta': '確認中...\n'}, ensure_ascii=False)}\n\n".encode("utf-8")
 
-    thread = await get_chat_thread(jwt, thread_id)
-    if not thread:
-        raise RuntimeError("Requested chat thread was not found.")
+    if persist_messages:
+        thread = await get_chat_thread(jwt, thread_id)
+        if not thread:
+            raise RuntimeError("Requested chat thread was not found.")
 
     profile_context = await get_profile_context(jwt)
     attachment_facts = build_attachment_facts(await extract_latest_image_contexts(messages))
@@ -679,9 +718,10 @@ async def stream_chat_completion_ui(
         build_ai_tone_instruction(profile_context["aiTone"]),
         attachment_facts,
         router_instruction,
+        agent_mode=not persist_messages,
     )
     google_tokens = headers_to_google_tokens(google_header_map)
-    ui_audit_info: dict[str, str | None] = {"actor_type": "chat", "actor_ref": thread_id}
+    ui_audit_info: dict[str, str | None] = audit_info or {"actor_type": "chat", "actor_ref": thread_id}
     final_text = ""
     tool_parts: list[dict[str, Any]] = []
     confirmed_followup_input: list[dict[str, Any]] | None = None
@@ -745,10 +785,11 @@ async def stream_chat_completion_ui(
             },
         }
         messages_to_store = [*messages, assistant_message]
-        try:
-            await replace_chat_messages(jwt, thread_id=thread_id, messages=messages_to_store)
-        except Exception:
-            logger.exception("failed to persist streamed chat messages")
+        if persist_messages:
+            try:
+                await replace_chat_messages(jwt, thread_id=thread_id, messages=messages_to_store)
+            except Exception:
+                logger.exception("failed to persist streamed chat messages")
         for chunk in (
             {"type": "text-end", "id": text_part_id},
             {"type": "finish", "finishReason": "stop"},
@@ -965,12 +1006,13 @@ async def stream_chat_completion_ui(
         },
     }
     messages_to_store = [*messages, assistant_message]
-    try:
-        await replace_chat_messages(jwt, thread_id=thread_id, messages=messages_to_store)
-    except Exception:
-        logger.exception("failed to persist streamed chat messages")
-    else:
-        logger.info("chat stream persisted thread_id=%s message_id=%s", thread_id, message_id)
+    if persist_messages:
+        try:
+            await replace_chat_messages(jwt, thread_id=thread_id, messages=messages_to_store)
+        except Exception:
+            logger.exception("failed to persist streamed chat messages")
+        else:
+            logger.info("chat stream persisted thread_id=%s message_id=%s", thread_id, message_id)
 
     for chunk in (
         {"type": "text-end", "id": text_part_id},
