@@ -62,12 +62,15 @@ def _load_env(path: Path) -> dict[str, str]:
 
 _env = _load_env(ENV_PATH)
 
-USER_JWT       = _env.get("SIGMARIS_USER_JWT", "")
+USER_JWT       = _env.get("SIGMARIS_USER_JWT", "")   # login() で上書きされる
 AGENT_ID       = _env.get("SCHEDULE_AGENT_ID", "sigmaris-orchestrator")
 AGENT_SECRET   = _env.get("SCHEDULE_AGENT_SECRET", "")
 SUPABASE_URL   = _env.get("NEXT_PUBLIC_SUPABASE_URL", "")
+ANON_KEY       = _env.get("NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY", "")
 SERVICE_KEY    = _env.get("SUPABASE_SERVICE_ROLE_KEY", "")
 LAUNCH_DATE    = _env.get("SIGMARIS_LAUNCH_DATE", "")
+USER_EMAIL     = _env.get("SIGMARIS_USER_EMAIL", "")
+USER_PASSWORD  = _env.get("SIGMARIS_USER_PASSWORD", "")
 
 # AGENT_SECRETS JSON から secret を補完（SCHEDULE_AGENT_SECRET 未設定の場合）
 if not AGENT_SECRET:
@@ -113,6 +116,42 @@ def _fmt_dt(raw: str | None) -> str:
         return str(raw)[:16]
 
 
+# ─── 認証 ────────────────────────────────────────────────────────────────────
+
+def login() -> str:
+    """
+    Supabase パスワード認証で JWT を取得し、グローバル USER_JWT を更新する。
+    POST {SUPABASE_URL}/auth/v1/token?grant_type=password
+    Returns: 取得した access_token
+    Raises: RuntimeError — 設定不足 or 認証失敗
+    """
+    global USER_JWT
+
+    if not SUPABASE_URL or not ANON_KEY:
+        raise RuntimeError("NEXT_PUBLIC_SUPABASE_URL または NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY が未設定です")
+    if not USER_EMAIL or not USER_PASSWORD:
+        raise RuntimeError("SIGMARIS_USER_EMAIL または SIGMARIS_USER_PASSWORD が未設定です")
+
+    resp = httpx.post(
+        f"{SUPABASE_URL}/auth/v1/token",
+        params={"grant_type": "password"},
+        headers={
+            "apikey": ANON_KEY,
+            "Content-Type": "application/json",
+        },
+        json={"email": USER_EMAIL, "password": USER_PASSWORD},
+        timeout=15.0,
+    )
+    resp.raise_for_status()
+    data = resp.json()
+    token = data.get("access_token", "")
+    if not token:
+        raise RuntimeError(f"ログイン応答に access_token がありません: {data}")
+
+    USER_JWT = token
+    return token
+
+
 # ─── HTTP ヘッダー ────────────────────────────────────────────────────────────
 
 def _user_headers() -> dict[str, str]:
@@ -143,31 +182,47 @@ def _supabase_headers() -> dict[str, str]:
 def api_chat(messages: list[dict], thread_id: str) -> tuple[str, str]:
     """
     POST /api/orchestrator/chat
+    401 が返った場合は自動で login() してから1回リトライする。
     Returns: (response_text, thread_id)
     """
-    try:
-        resp = httpx.post(
-            f"{BACKEND}/api/orchestrator/chat",
-            headers=_user_headers(),
-            json={"messages": messages, "thread_id": thread_id},
-            timeout=90.0,
-        )
-        resp.raise_for_status()
+    for attempt in range(2):
+        try:
+            resp = httpx.post(
+                f"{BACKEND}/api/orchestrator/chat",
+                headers=_user_headers(),
+                json={"messages": messages, "thread_id": thread_id},
+                timeout=90.0,
+            )
+        except httpx.ConnectError:
+            return "⚠ バックエンドに接続できません (http://localhost:8000)", thread_id
+        except httpx.TimeoutException:
+            return "⚠ タイムアウト — バックエンドの応答が90秒以内に返りませんでした", thread_id
+        except Exception as e:
+            return f"⚠ 予期しないエラー: {e}", thread_id
+
+        # 401 → 再ログインしてリトライ（1回のみ）
+        if resp.status_code == 401 and attempt == 0:
+            console.print("[dim cyan]  JWT期限切れ、再ログイン中...[/dim cyan]")
+            try:
+                login()
+            except Exception as e:
+                return f"⚠ 再ログイン失敗: {e}", thread_id
+            continue
+
+        try:
+            resp.raise_for_status()
+        except httpx.HTTPStatusError as e:
+            try:
+                detail = e.response.json().get("detail", {})
+                msg = detail.get("error", e.response.text[:200]) if isinstance(detail, dict) else str(detail)[:200]
+            except Exception:
+                msg = e.response.text[:200]
+            return f"⚠ HTTP {e.response.status_code}: {msg}", thread_id
+
         data = resp.json()
         return data.get("text", "(応答なし)"), data.get("thread_id", thread_id)
-    except httpx.ConnectError:
-        return "⚠ バックエンドに接続できません (http://localhost:8000)", thread_id
-    except httpx.TimeoutException:
-        return "⚠ タイムアウト — バックエンドの応答が90秒以内に返りませんでした", thread_id
-    except httpx.HTTPStatusError as e:
-        try:
-            detail = e.response.json().get("detail", {})
-            msg = detail.get("error", e.response.text[:200]) if isinstance(detail, dict) else str(detail)[:200]
-        except Exception:
-            msg = e.response.text[:200]
-        return f"⚠ HTTP {e.response.status_code}: {msg}", thread_id
-    except Exception as e:
-        return f"⚠ 予期しないエラー: {e}", thread_id
+
+    return "⚠ 認証エラー: 再ログイン後も失敗しました", thread_id
 
 
 def api_self_model() -> dict[str, Any]:
@@ -325,10 +380,10 @@ def _preflight() -> None:
         console.print(f"[bold red]エラー:[/bold red] .env ファイルが見つかりません: {ENV_PATH}")
         sys.exit(1)
 
-    if not USER_JWT:
+    if not USER_EMAIL or not USER_PASSWORD:
         console.print(
-            "[bold red]エラー:[/bold red] SIGMARIS_USER_JWT が設定されていません。\n"
-            f"[dim]{ENV_PATH}[/dim] に SIGMARIS_USER_JWT を設定してください。"
+            "[bold red]エラー:[/bold red] SIGMARIS_USER_EMAIL または SIGMARIS_USER_PASSWORD が設定されていません。\n"
+            f"[dim]{ENV_PATH}[/dim] を確認してください。"
         )
         sys.exit(1)
 
@@ -337,6 +392,15 @@ def _preflight() -> None:
             "[bold yellow]警告:[/bold yellow] SCHEDULE_AGENT_SECRET / AGENT_SECRETS が未設定です。\n"
             "[dim]/status コマンドの一部機能が制限されます。[/dim]"
         )
+
+    # 起動時に自動ログイン
+    console.print("[dim cyan]  Supabase にログイン中...[/dim cyan]")
+    try:
+        login()
+        console.print("[dim cyan]  ログイン完了[/dim cyan]\n")
+    except Exception as e:
+        console.print(f"[bold red]エラー:[/bold red] ログイン失敗: {e}")
+        sys.exit(1)
 
 
 # ─── メインループ ─────────────────────────────────────────────────────────────
