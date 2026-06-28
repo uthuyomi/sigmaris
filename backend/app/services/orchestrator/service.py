@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import time
 import uuid
 from typing import Any
@@ -22,61 +23,108 @@ from app.services.user_fact_data import (
     get_user_profile,
 )
 
+logger = logging.getLogger(__name__)
 
-async def _safe_load(fn, *args, **kwargs):
-    """Call fn(*args, **kwargs) and return None on any exception."""
+# ─── 5-minute TTL cache for expensive pre-response DB reads ──────────────────
+_CACHE_TTL = 300.0  # seconds
+
+_cache: dict[str, tuple[float, Any]] = {}  # key → (timestamp, value)
+
+
+def _cache_get(key: str) -> tuple[bool, Any]:
+    entry = _cache.get(key)
+    if entry and (time.monotonic() - entry[0] < _CACHE_TTL):
+        return True, entry[1]
+    return False, None
+
+
+def _cache_set(key: str, value: Any) -> None:
+    _cache[key] = (time.monotonic(), value)
+
+
+async def _timed(coro, *, timeout: float = 5.0, default: Any = None) -> Any:
+    """Await coro with a hard timeout; return default on timeout or error."""
     try:
-        return await fn(*args, **kwargs)
+        return await asyncio.wait_for(coro, timeout=timeout)
+    except asyncio.TimeoutError:
+        logger.warning("orchestrator: timed out (%.1fs)", timeout)
+        return default
     except Exception:
-        return None
+        return default
 
 
-async def _cognitive_layer_bg(*, invocation_id: str) -> None:
-    """Fire-and-forget: log decision and nudge internal state after each chat turn."""
+async def _cached_self_model() -> dict | None:
+    hit, val = _cache_get("self_model")
+    if hit:
+        return val
+    result = await _timed(get_self_model(), timeout=5.0)
+    _cache_set("self_model", result)
+    return result
+
+
+async def _cached_user_profile(jwt: str) -> dict | None:
+    key = f"profile:{jwt[:20]}"
+    hit, val = _cache_get(key)
+    if hit:
+        return val
+    result = await _timed(get_user_profile(jwt), timeout=5.0)
+    _cache_set(key, result)
+    return result
+
+
+async def _cached_fact_items(jwt: str) -> list | None:
+    key = f"facts:{jwt[:20]}"
+    hit, val = _cache_get(key)
+    if hit:
+        return val
+    result = await _timed(get_fact_items(jwt, active_only=True), timeout=5.0)
+    _cache_set(key, result)
+    return result
+
+
+async def _cached_active_trends(jwt: str) -> list:
+    key = f"trends:{jwt[:20]}"
+    hit, val = _cache_get(key)
+    if hit:
+        return val
     try:
-        from app.services.decision_log import log_decision  # noqa: PLC0415
-        from app.services.internal_state import get_internal_state, snapshot  # noqa: PLC0415
-        state_snap = await snapshot()
-        await log_decision(
-            decision_type="action",
-            title=f"chat_turn:{invocation_id[:8]}",
-            reason="Orchestrator processed a user conversation turn.",
-            internal_state_snapshot=state_snap,
-        )
-        state = await get_internal_state()
-        current_curiosity = float(state.get("curiosity", 0.5))
-        from app.services.internal_state import update_internal_state  # noqa: PLC0415
-        await update_internal_state(
-            curiosity=min(1.0, current_curiosity + 0.01),
-            stability=min(1.0, float(state.get("stability", 0.8)) + 0.005),
-        )
+        from app.services.trend_analyzer import get_active_trends  # noqa: PLC0415
+        result = await _timed(get_active_trends(jwt), timeout=5.0, default=[])
     except Exception:
-        import logging  # noqa: PLC0415
-        logging.getLogger(__name__).exception(
-            "cognitive_layer_bg: failed for invocation=%s", invocation_id
-        )
+        result = []
+    _cache_set(key, result)
+    return result or []
 
 
-async def _safe_load_no_args(fn):
-    """Call fn() (no args) and return None on any exception."""
-    try:
-        return await fn()
-    except Exception:
-        return None
+# ─── Context builders ─────────────────────────────────────────────────────────
 
 
 def _build_self_model_context(model: dict | None) -> str | None:
     if not model:
         return None
-    identity = model.get("identity_statement", "").strip()
+    identity = (model.get("identity_statement") or "").strip()
     if not identity:
         return None
+    # Trim identity to 150 chars to keep context light
+    identity_short = identity[:150] + ("…" if len(identity) > 150 else "")
     goals = model.get("current_goals") or []
-    lines = [f"[シグマリス自己認識]\n{identity}"]
+    lines = [f"[シグマリス自己認識]\n{identity_short}"]
     if goals:
-        goal_str = "・".join(str(g) for g in goals[:5])
-        lines.append(f"現在の目標: {goal_str}")
+        goal_str = "・".join(str(g) for g in goals[:3])  # max 3 goals
+        lines.append(f"目標: {goal_str}")
     return "\n".join(lines)
+
+
+def _build_trends_context(trends: list) -> str | None:
+    if not trends:
+        return None
+    top = trends[:3]  # top 3 only
+    lines = ["[傾向トピック]"]
+    for t in top:
+        label = (t.get("topic_label") or t.get("topic") or "").strip()
+        if label:
+            lines.append(f"・{label}")
+    return "\n".join(lines) if len(lines) > 1 else None
 
 
 def _user_display_name(user: dict[str, Any]) -> str | None:
@@ -90,6 +138,33 @@ def _user_display_name(user: dict[str, Any]) -> str | None:
     return None
 
 
+# ─── Background tasks ─────────────────────────────────────────────────────────
+
+
+async def _cognitive_layer_bg(*, invocation_id: str) -> None:
+    """Fire-and-forget: log decision and nudge internal state after each chat turn."""
+    try:
+        from app.services.decision_log import log_decision  # noqa: PLC0415
+        from app.services.internal_state import get_internal_state, snapshot, update_internal_state  # noqa: PLC0415
+        state_snap = await snapshot()
+        await log_decision(
+            decision_type="action",
+            title=f"chat_turn:{invocation_id[:8]}",
+            reason="Orchestrator processed a user conversation turn.",
+            internal_state_snapshot=state_snap,
+        )
+        state = await get_internal_state()
+        await update_internal_state(
+            curiosity=min(1.0, float(state.get("curiosity", 0.5)) + 0.01),
+            stability=min(1.0, float(state.get("stability", 0.8)) + 0.005),
+        )
+    except Exception:
+        logger.exception("cognitive_layer_bg: failed for invocation=%s", invocation_id)
+
+
+# ─── Main entry point ─────────────────────────────────────────────────────────
+
+
 async def run_orchestrator_chat(
     *,
     jwt: str,
@@ -101,7 +176,11 @@ async def run_orchestrator_chat(
 ) -> dict[str, Any]:
     started_at = time.monotonic()
     invocation_id = str(uuid.uuid4())
-    user = await get_current_user(jwt)
+
+    # Auth check (no cache — must be fresh every request)
+    user = await _timed(get_current_user(jwt), timeout=5.0)
+    if not user:
+        raise RuntimeError("Failed to authenticate user (timeout or error).")
     user_id = user.get("id")
     if not isinstance(user_id, str):
         raise RuntimeError("Authenticated Supabase user did not include an id.")
@@ -109,10 +188,12 @@ async def run_orchestrator_chat(
     persona = load_persona()
     agent = get_schedule_agent()
 
-    fact_profile, fact_items, self_model = await asyncio.gather(
-        _safe_load(get_user_profile, jwt),
-        _safe_load(get_fact_items, jwt, active_only=True),
-        _safe_load_no_args(get_self_model),
+    # Parallel-load context with cache + 5s timeout each
+    fact_profile, fact_items, self_model, active_trends = await asyncio.gather(
+        _cached_user_profile(jwt),
+        _cached_fact_items(jwt),
+        _cached_self_model(),
+        _cached_active_trends(jwt),
         return_exceptions=False,
     )
 
@@ -145,12 +226,23 @@ async def run_orchestrator_chat(
     )
     audit_row_id = str(audit_row["id"])
 
+    # Build lightweight context (profile 200 chars, facts top 5, trends top 3)
     profile_context = build_profile_context(fact_profile)
-    facts_ctx = build_facts_context(fact_items or [], top_n=20)
+    if profile_context and len(profile_context) > 200:
+        profile_context = profile_context[:200] + "…"
+
+    facts_ctx = build_facts_context(fact_items or [], top_n=5)
     if facts_ctx and profile_context:
         profile_context = profile_context + "\n\n" + facts_ctx
     elif facts_ctx:
         profile_context = facts_ctx
+
+    trends_ctx = _build_trends_context(active_trends)
+    if trends_ctx and profile_context:
+        profile_context = profile_context + "\n\n" + trends_ctx
+    elif trends_ctx:
+        profile_context = trends_ctx
+
     call_name = extract_call_name(fact_profile) or _user_display_name(user)
     self_model_context = _build_self_model_context(self_model)
 
@@ -209,10 +301,12 @@ async def run_orchestrator_chat(
     try:
         from app.services.active_inquiry import get_inquiry_question  # noqa: PLC0415
         full_messages_so_far = list(messages) + [{"role": "assistant", "content": response_text}]
-        inquiry = await get_inquiry_question(jwt, full_messages_so_far)
+        inquiry = await asyncio.wait_for(
+            get_inquiry_question(jwt, full_messages_so_far), timeout=3.0
+        )
         if inquiry:
             response_text = response_text + "\n\n" + inquiry
-    except Exception:
+    except (asyncio.TimeoutError, Exception):
         pass  # Never block the response for inquiry failures
 
     # Fire-and-forget: extract memorable facts from this conversation turn.
@@ -228,6 +322,10 @@ async def run_orchestrator_chat(
         _cognitive_layer_bg(invocation_id=invocation_id),
         name=f"cognitive_layer:{invocation_id}",
     )
+
+    # Invalidate context cache after response so next turn picks up any new facts
+    # (only invalidate facts — profile and self_model change less frequently)
+    _cache.pop(f"facts:{jwt[:20]}", None)
 
     return {
         "ok": True,
