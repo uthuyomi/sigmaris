@@ -22,6 +22,7 @@ from app.services.user_fact_data import (
     build_facts_context,
     build_profile_context,
     extract_call_name,
+    get_fact_items_for_user,
     get_fact_items,
     get_user_profile,
 )
@@ -56,14 +57,16 @@ def _cache_set(key: str, value: Any) -> None:
     _cache[key] = (time.monotonic(), value)
 
 
-async def _timed(coro, *, timeout: float = 5.0, default: Any = None) -> Any:
+async def _timed(coro, *, timeout: float = 5.0, default: Any = None, label: str | None = None) -> Any:
     """Await coro with a hard timeout; return default on timeout or error."""
     try:
         return await asyncio.wait_for(coro, timeout=timeout)
     except asyncio.TimeoutError:
-        logger.warning("orchestrator: timed out (%.1fs)", timeout)
+        logger.warning("orchestrator: timed out%s (%.1fs)", f" during {label}" if label else "", timeout)
         return default
     except Exception:
+        if label:
+            logger.exception("orchestrator: failed during %s", label)
         return default
 
 
@@ -71,7 +74,7 @@ async def _cached_self_model() -> dict | None:
     hit, val = _cache_get("self_model")
     if hit:
         return val
-    result = await _timed(get_self_model(), timeout=3.0)
+    result = await _timed(get_self_model(), timeout=3.0, label="self_model")
     _cache_set("self_model", result)
     return result
 
@@ -81,19 +84,28 @@ async def _cached_user_profile(jwt: str) -> dict | None:
     hit, val = _cache_get(key)
     if hit:
         return val
-    result = await _timed(get_user_profile(jwt), timeout=3.0)
+    result = await _timed(get_user_profile(jwt), timeout=3.0, label="user_profile")
     _cache_set(key, result)
     return result
 
 
-async def _cached_fact_items(jwt: str) -> list | None:
-    key = f"facts:{jwt[:20]}"
+async def _cached_fact_items(jwt: str, user_id: str) -> list:
+    key = f"facts:{user_id}"
     hit, val = _cache_get(key)
     if hit:
         return val
-    result = await _timed(get_fact_items(jwt, active_only=True), timeout=3.0)
+
+    result = await _timed(get_fact_items(jwt, active_only=True), timeout=3.0, default=[], label="fact_items_rls")
+    if not result:
+        result = await _timed(
+            get_fact_items_for_user(user_id, active_only=True),
+            timeout=3.0,
+            default=[],
+            label="fact_items_service_role",
+        )
+    logger.info("orchestrator: loaded fact_items count=%d user_id=%s", len(result or []), user_id)
     _cache_set(key, result)
-    return result
+    return result or []
 
 
 async def _cached_active_trends(jwt: str) -> list:
@@ -103,7 +115,7 @@ async def _cached_active_trends(jwt: str) -> list:
         return val
     try:
         from app.services.trend_analyzer import get_active_trends  # noqa: PLC0415
-        result = await _timed(get_active_trends(jwt), timeout=2.0, default=[])
+        result = await _timed(get_active_trends(jwt), timeout=2.0, default=[], label="active_trends")
     except Exception:
         result = []
     _cache_set(key, result)
@@ -267,11 +279,10 @@ async def run_orchestrator_chat(
     persona = load_persona()
     agent = get_schedule_agent()
 
-    # Auth + all context in one parallel gather (auth=8s, context≤3s each)
-    user, fact_profile, fact_items, self_model, active_trends = await asyncio.gather(
+    # Auth + stable context in one parallel gather, then facts after user_id is known.
+    user, fact_profile, self_model, active_trends = await asyncio.gather(
         _timed(get_current_user(jwt), timeout=8.0),
         _cached_user_profile(jwt),
-        _cached_fact_items(jwt),
         _cached_self_model(),
         _cached_active_trends(jwt),
         return_exceptions=False,
@@ -281,6 +292,7 @@ async def run_orchestrator_chat(
     user_id = user.get("id")
     if not isinstance(user_id, str):
         raise RuntimeError("Authenticated Supabase user did not include an id.")
+    fact_items = await _cached_fact_items(jwt, user_id)
 
     reason = "User requested schedule assistance through the Sigmaris orchestrator."
     caller_agent_id = settings.schedule_agent_id
@@ -419,7 +431,7 @@ async def run_orchestrator_chat(
 
     # Invalidate context cache after response so next turn picks up any new facts
     # (only invalidate facts — profile and self_model change less frequently)
-    _cache.pop(f"facts:{jwt[:20]}", None)
+    _cache.pop(f"facts:{user_id}", None)
 
     return {
         "ok": True,
@@ -446,11 +458,10 @@ async def run_orchestrator_chat_stream(
     persona = load_persona()
     agent = get_schedule_agent()
 
-    # Auth + all context in one parallel gather (auth=8s, context≤3s each)
-    user, fact_profile, fact_items, self_model, active_trends = await asyncio.gather(
+    # Auth + stable context in one parallel gather, then facts after user_id is known.
+    user, fact_profile, self_model, active_trends = await asyncio.gather(
         _timed(get_current_user(jwt), timeout=8.0),
         _cached_user_profile(jwt),
-        _cached_fact_items(jwt),
         _cached_self_model(),
         _cached_active_trends(jwt),
         return_exceptions=False,
@@ -460,6 +471,7 @@ async def run_orchestrator_chat_stream(
     user_id = user.get("id")
     if not isinstance(user_id, str):
         raise RuntimeError("Authenticated Supabase user did not include an id.")
+    fact_items = await _cached_fact_items(jwt, user_id)
 
     reason = "User requested schedule assistance through the Sigmaris orchestrator."
     caller_agent_id = settings.schedule_agent_id
@@ -618,7 +630,7 @@ async def run_orchestrator_chat_stream(
         _cognitive_layer_bg(invocation_id=invocation_id),
         name=f"cognitive_layer:{invocation_id}",
     )
-    _cache.pop(f"facts:{jwt[:20]}", None)
+    _cache.pop(f"facts:{user_id}", None)
 
     yield OrchestratorStreamEvent(
         done=True,

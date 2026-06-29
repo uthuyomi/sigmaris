@@ -35,6 +35,7 @@ from app.services.self_narrative import (
     get_narrative_history,
 )
 from app.services.user_fact_data import (
+    get_fact_items_for_user,
     get_fact_items,
     get_null_fields,
     get_user_profile,
@@ -304,9 +305,13 @@ async def agent_facts_items(
     x_agent_id: str | None = Header(default=None),
     x_agent_secret: str | None = Header(default=None),
 ) -> dict[str, Any]:
-    _verify_agent(x_agent_id, x_agent_secret)
     jwt = _require_jwt(authorization)
     items = await get_fact_items(jwt, category=category)
+    if not items:
+        user = await get_current_user(jwt)
+        user_id = user.get("id")
+        if isinstance(user_id, str):
+            items = await get_fact_items_for_user(user_id, category=category)
     return {"ok": True, "items": items, "count": len(items)}
 
 

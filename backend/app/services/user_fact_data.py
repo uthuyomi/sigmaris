@@ -4,7 +4,8 @@ from __future__ import annotations
 
 from typing import Any
 
-from app.services.supabase_rest import rest_rpc, rest_select
+from app.config import settings
+from app.services.supabase_rest import _get_client, _require_supabase_config, rest_rpc, rest_select
 
 # Category-level importance scores (mirrors DB trigger set_fact_category_defaults).
 # Used for Python-side sorting without requiring the DB column to exist.
@@ -14,8 +15,12 @@ CATEGORY_IMPORTANCE: dict[str, float] = {
     "profile":       0.8,
     "relationships": 0.8,
     "finance":       0.7,
+    "work":          0.7,
+    "personality":   0.7,
+    "timeline":      0.7,
     "lifestyle":     0.6,
     "preferences":   0.5,
+    "preference":    0.5,
     "devices":       0.4,
     "environment":   0.4,
 }
@@ -52,6 +57,49 @@ async def get_fact_items(
         params["is_deleted"] = "eq.false"
         params["is_stale"] = "eq.false"
     result = await rest_select(jwt, "user_fact_items", params)
+    return result if isinstance(result, list) else []
+
+
+async def get_fact_items_for_user(
+    user_id: str,
+    *,
+    category: str | None = None,
+    active_only: bool = False,
+) -> list[dict[str, Any]]:
+    """Return fact items for a user with the service role.
+
+    Server-side callers use this after authenticating the caller and resolving
+    the concrete user_id. It prevents imported memories from disappearing from
+    Sigmaris context when a user JWT cannot see service-role inserted rows.
+    """
+    base_url, _ = _require_supabase_config()
+    key = settings.supabase_service_role_key
+    if not key:
+        raise RuntimeError("SUPABASE_SERVICE_ROLE_KEY is not configured.")
+
+    params: dict[str, str] = {
+        "select": "*",
+        "user_id": f"eq.{user_id}",
+        "order": "category.asc,key.asc",
+    }
+    if category:
+        params["category"] = f"eq.{category}"
+    if active_only:
+        params["is_deleted"] = "eq.false"
+        params["is_stale"] = "eq.false"
+
+    client = await _get_client()
+    response = await client.get(
+        f"{base_url}/rest/v1/user_fact_items",
+        headers={
+            "apikey": key,
+            "Authorization": f"Bearer {key}",
+            "Content-Type": "application/json",
+        },
+        params=params,
+    )
+    response.raise_for_status()
+    result = response.json()
     return result if isinstance(result, list) else []
 
 
