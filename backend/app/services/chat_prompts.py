@@ -31,7 +31,6 @@ def build_system_prompt(
     router_instruction: str | None = None,
     agent_mode: bool = False,
 ) -> str:
-    now_jst = datetime.now(ZoneInfo("Asia/Tokyo")).isoformat(timespec="minutes")
     if agent_mode:
         identity_rule = (
             "あなたは予定処理エージェントです。"
@@ -40,6 +39,10 @@ def build_system_prompt(
         )
     else:
         identity_rule = "あなたはシグマリスの予定調整アシスタントです。"
+    # `rules` must stay free of anything that changes turn-to-turn (see the
+    # trailing comment at the end of this function for why: it's the prefix
+    # OpenAI's prompt cache matches against). The current-time line used to
+    # live here — moved out to `time_instruction` below.
     rules = [
         identity_rule,
         (
@@ -47,7 +50,6 @@ def build_system_prompt(
             "ShiftPilotAI・shift-pilot-ai・ShiftPilotという名前は絶対に使わないでください。"
             "自己紹介を求められたら必ず『シグマリス』と名乗ってください。"
         ),
-        f"現在日時は Asia/Tokyo の {now_jst} です。明日、明後日、今日などの相対日付はこの日時を基準に解釈してください。",
         "日本語で自然に話してください。",
         (
             "【返答の長さ】ユーザーの質問の重さに合わせること。"
@@ -89,8 +91,35 @@ def build_system_prompt(
         "If the user asks whether a Google Maps or navigation notification will arrive, explain that Google Maps will not be opened automatically by the OS. The app can send a travel reminder push notification if the user has enabled Travel alerts/notification permission on that phone, the push subscription is saved, and the cron reminder job is running. Tapping the notification opens Google Maps via the saved URL.",
         "Do not describe travel reminders as only Google Calendar notifications when a travel block was or can be saved.",
     ]
+
+    now_jst = datetime.now(ZoneInfo("Asia/Tokyo")).isoformat(timespec="minutes")
+    time_instruction = (
+        f"現在日時は Asia/Tokyo の {now_jst} です。"
+        "明日、明後日、今日などの相対日付はこの日時を基準に解釈してください。"
+    )
+
+    # Ordered from most to least stable across consecutive turns, so OpenAI's
+    # prefix-based prompt cache can match as much of the prompt as possible:
+    #   1. rules            — fixed per agent_mode, never changes otherwise
+    #   2. ai_tone_instruction — a user setting; changes only when the user
+    #                            edits it (rarer than fact-memory updates)
+    #   3. base_system       — fact/self_model/trend context; the fact-memory
+    #                          portion is invalidated after every turn (see
+    #                          orchestrator/service.py's `_cache.pop(f"facts:...")`),
+    #                          so this is less stable than tone but still far
+    #                          steadier than the router/time below
+    #   4. attachment_facts  — present only on turns with an attachment
+    #   5. router_instruction — re-classified by an LLM call on every turn
+    #   6. time_instruction  — changes every single turn (minute-resolution)
     return "\n\n".join(
         part
-        for part in [base_system or "", ai_tone_instruction, router_instruction or "", "\n".join(rules), attachment_facts]
+        for part in [
+            "\n".join(rules),
+            ai_tone_instruction,
+            base_system or "",
+            attachment_facts,
+            router_instruction or "",
+            time_instruction,
+        ]
         if part
     )
