@@ -9,6 +9,7 @@ from app.services.app_chat_data import (
     delete_chat_thread,
     derive_thread_title,
     get_chat_thread,
+    get_recent_messages_across_threads,
     list_chat_messages,
     list_chat_threads,
     rename_chat_thread,
@@ -45,5 +46,6 @@ __all__ = [
     "rename_chat_thread",
     "delete_chat_thread",
     "list_chat_messages",
+    "get_recent_messages_across_threads",
     "replace_chat_messages",
 ]

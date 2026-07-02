@@ -9,6 +9,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from app.config import settings
+from app.services.app_chat_data import create_chat_thread, get_chat_thread, get_recent_messages_across_threads
 from app.services.orchestrator.agent_registry import get_schedule_agent
 from app.services.orchestrator.audit import finish_invocation, start_invocation
 from app.services.orchestrator.persona_loader import load_persona
@@ -237,6 +238,114 @@ async def _build_memory_context(
     return profile_context
 
 
+# ─── Session continuity: cross-thread recent-log window (Phase A1) ───────────
+#
+# The schedule-agent (chat.py) resets `previous_response_id` to None on every
+# request, so conversation continuity never relies on OpenAI's own response
+# chaining — it is built explicitly here instead. This lets continuity span
+# multiple threads (thread A's tail carries into thread B), which a linear
+# previous_response_id chain could never do. See
+# docs/sigmaris/phase_a1_report.md for the full design rationale.
+
+
+def _extract_text_from_parts(parts: list[dict[str, Any]] | None) -> str:
+    if not parts:
+        return ""
+    texts = [
+        str(part.get("text", "")).strip()
+        for part in parts
+        if isinstance(part, dict) and part.get("type") == "text" and str(part.get("text", "")).strip()
+    ]
+    return "\n".join(texts).strip()
+
+
+def _window_rows_to_messages(rows: list[dict[str, Any]]) -> list[dict[str, str]]:
+    """Convert chat_messages rows (parts-based) into the simple role/content
+    shape the orchestrator and schedule-agent already use."""
+    result: list[dict[str, str]] = []
+    for row in rows:
+        role = row.get("role")
+        if role not in ("user", "assistant"):
+            continue
+        content = _extract_text_from_parts(row.get("parts"))
+        if not content:
+            continue
+        result.append({"role": role, "content": content})
+    return result
+
+
+def _latest_user_message(messages: list[dict[str, str]]) -> dict[str, str] | None:
+    for message in reversed(messages):
+        if message.get("role") == "user" and str(message.get("content") or "").strip():
+            return {"role": "user", "content": str(message["content"])}
+    return None
+
+
+async def _ensure_chat_thread(jwt: str, thread_id: str) -> None:
+    """Make sure a chat_threads row exists for thread_id before the
+    schedule-agent is asked to persist messages against it — chat.py raises
+    if the thread row is missing. Tolerates a concurrent create() racing this
+    check by re-checking once before giving up."""
+    existing = await get_chat_thread(jwt, thread_id)
+    if existing is not None:
+        return
+    try:
+        await create_chat_thread(jwt, thread_id=thread_id)
+    except Exception:
+        recheck = await get_chat_thread(jwt, thread_id)
+        if recheck is None:
+            raise
+
+
+async def _prepare_session_messages(
+    *,
+    jwt: str,
+    thread_id: str | None,
+    messages: list[dict[str, str]],
+) -> tuple[str, list[dict[str, str]], bool]:
+    """Resolve the effective thread_id, build the cross-thread recent-log
+    window, and decide whether this call should persist to chat_messages.
+
+    Returns (effective_thread_id, messages_to_send, persist_thread).
+
+    Design note: the incoming `messages` array is the caller's own
+    thread-local history (frontend/WearOS-maintained). Rather than sending
+    that alongside the DB-backed window (which would duplicate content) or
+    discarding it outright (which would drop the just-typed message that
+    isn't persisted yet), only its latest user turn is kept and appended
+    after the cross-thread window. See phase_a1_report.md section 1 for why
+    this was chosen over the alternatives.
+    """
+    effective_thread_id = thread_id or str(uuid.uuid4())
+    persist_thread = True
+    try:
+        await _ensure_chat_thread(jwt, effective_thread_id)
+    except Exception:
+        logger.exception(
+            "orchestrator: failed to ensure chat_thread id=%s — falling back to no persistence for this call",
+            effective_thread_id,
+        )
+        persist_thread = False
+
+    window_rows = await _timed(
+        get_recent_messages_across_threads(jwt, limit=settings.sigmaris_recent_message_window),
+        timeout=3.0,
+        default=[],
+        label="recent_message_window",
+    )
+    window_messages = _window_rows_to_messages(window_rows or [])
+    latest_user = _latest_user_message(messages)
+
+    combined = window_messages + ([latest_user] if latest_user else [])
+    if not combined:
+        # Cold start (no history yet) or window fetch failed and no user
+        # message was found — fall back to whatever the caller sent so the
+        # turn is never silently dropped.
+        combined = messages
+
+    return effective_thread_id, combined, persist_thread
+
+
 # ─── Background tasks ─────────────────────────────────────────────────────────
 
 
@@ -280,11 +389,12 @@ async def run_orchestrator_chat(
     agent = get_schedule_agent()
 
     # Auth + stable context in one parallel gather, then facts after user_id is known.
-    user, fact_profile, self_model, active_trends = await asyncio.gather(
+    user, fact_profile, self_model, active_trends, session = await asyncio.gather(
         _timed(get_current_user(jwt), timeout=8.0),
         _cached_user_profile(jwt),
         _cached_self_model(),
         _cached_active_trends(jwt),
+        _prepare_session_messages(jwt=jwt, thread_id=thread_id, messages=messages),
         return_exceptions=False,
     )
     if not user:
@@ -293,6 +403,7 @@ async def run_orchestrator_chat(
     if not isinstance(user_id, str):
         raise RuntimeError("Authenticated Supabase user did not include an id.")
     fact_items = await _cached_fact_items(jwt, user_id)
+    effective_thread_id, session_messages, persist_thread = session
 
     reason = "User requested schedule assistance through the Sigmaris orchestrator."
     caller_agent_id = settings.schedule_agent_id
@@ -358,12 +469,13 @@ async def run_orchestrator_chat(
             jwt=jwt,
             google_access_token=google_access_token,
             google_refresh_token=google_refresh_token,
-            messages=messages,
-            thread_id=thread_id,
+            messages=session_messages,
+            thread_id=effective_thread_id,
             invocation_id=invocation_id,
             reason=f"orchestrator:{invocation_id}:{reason}",
             user_profile_context=profile_context,
             self_model_context=self_model_context,
+            persist_thread=persist_thread,
         )
         rewrite = await rewrite_with_persona(
             source=schedule_result.text,
@@ -459,11 +571,12 @@ async def run_orchestrator_chat_stream(
     agent = get_schedule_agent()
 
     # Auth + stable context in one parallel gather, then facts after user_id is known.
-    user, fact_profile, self_model, active_trends = await asyncio.gather(
+    user, fact_profile, self_model, active_trends, session = await asyncio.gather(
         _timed(get_current_user(jwt), timeout=8.0),
         _cached_user_profile(jwt),
         _cached_self_model(),
         _cached_active_trends(jwt),
+        _prepare_session_messages(jwt=jwt, thread_id=thread_id, messages=messages),
         return_exceptions=False,
     )
     if not user:
@@ -472,6 +585,7 @@ async def run_orchestrator_chat_stream(
     if not isinstance(user_id, str):
         raise RuntimeError("Authenticated Supabase user did not include an id.")
     fact_items = await _cached_fact_items(jwt, user_id)
+    effective_thread_id, session_messages, persist_thread = session
 
     reason = "User requested schedule assistance through the Sigmaris orchestrator."
     caller_agent_id = settings.schedule_agent_id
@@ -531,7 +645,7 @@ async def run_orchestrator_chat_stream(
     call_name = extract_call_name(fact_profile) or _user_display_name(user)
     self_model_context = _build_self_model_context(self_model)
     schedule_text = ""
-    returned_thread_id = thread_id
+    returned_thread_id = effective_thread_id
     schedule_message_id: str | None = None
     used_fallback = False
     guard_violations: tuple[str, ...] = ()
@@ -543,12 +657,13 @@ async def run_orchestrator_chat_stream(
             jwt=jwt,
             google_access_token=google_access_token,
             google_refresh_token=google_refresh_token,
-            messages=messages,
-            thread_id=thread_id,
+            messages=session_messages,
+            thread_id=effective_thread_id,
             invocation_id=invocation_id,
             reason=f"orchestrator:{invocation_id}:{reason}",
             user_profile_context=profile_context,
             self_model_context=self_model_context,
+            persist_thread=persist_thread,
         ):
             if event.delta:
                 schedule_text += event.delta

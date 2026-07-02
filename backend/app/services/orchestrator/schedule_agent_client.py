@@ -106,6 +106,7 @@ def _build_payload(
     reason: str,
     user_profile_context: str | None = None,
     self_model_context: str | None = None,
+    persist_thread: bool = False,
 ) -> dict[str, Any]:
     return {
         "thread_id": thread_id,
@@ -116,7 +117,7 @@ def _build_payload(
             }
             for message in messages
         ],
-        "persist_thread": False,
+        "persist_thread": persist_thread,
         "system_override": _build_system_override(user_profile_context, self_model_context),
         "context": {
             "reason": reason,
@@ -138,6 +139,7 @@ async def call_schedule_agent(
     reason: str,
     user_profile_context: str | None = None,
     self_model_context: str | None = None,
+    persist_thread: bool = False,
 ) -> ScheduleAgentResult:
     headers = _build_headers(
         jwt=jwt,
@@ -152,6 +154,7 @@ async def call_schedule_agent(
         reason=reason,
         user_profile_context=user_profile_context,
         self_model_context=self_model_context,
+        persist_thread=persist_thread,
     )
 
     client = await _get_http_client()
@@ -193,6 +196,7 @@ async def call_schedule_agent_stream(
     reason: str,
     user_profile_context: str | None = None,
     self_model_context: str | None = None,
+    persist_thread: bool = False,
 ) -> AsyncGenerator[ScheduleAgentStreamEvent, None]:
     headers = _build_headers(
         jwt=jwt,
@@ -208,6 +212,7 @@ async def call_schedule_agent_stream(
         reason=reason,
         user_profile_context=user_profile_context,
         self_model_context=self_model_context,
+        persist_thread=persist_thread,
     )
     stream_endpoint = agent.chat_endpoint.replace("/complete", "/stream")
 

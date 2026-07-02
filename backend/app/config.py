@@ -31,6 +31,7 @@ class Settings(BaseSettings):
     sigmaris_guard_model: str | None = None
     sigmaris_reflect_model: str | None = None
     sigmaris_timezone: str = "Asia/Tokyo"
+    sigmaris_recent_message_window: int = 40
     sigmaris_user_jwt: str | None = None
     sigmaris_refresh_token: str | None = None
     sigmaris_google_access_token: str | None = None

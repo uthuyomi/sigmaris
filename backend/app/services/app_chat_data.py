@@ -120,6 +120,36 @@ async def list_chat_messages(jwt: str, *, thread_id: str) -> list[dict[str, Any]
     return result if isinstance(result, list) else []
 
 
+async def get_recent_messages_across_threads(
+    jwt: str,
+    *,
+    limit: int,
+) -> list[dict[str, Any]]:
+    """Return the caller's most recent `limit` chat_messages rows across ALL
+    threads (not scoped to one thread_id), in chronological order (oldest
+    first). Distinct from list_chat_messages(), which is thread-scoped.
+
+    Used to build a cross-thread "recent log window" for session continuity
+    (Phase A1) — separate from the per-thread history used to render a
+    single thread's UI.
+    """
+    context = await get_profile_context(jwt)
+    user_id = context["userId"]
+    result = await rest_select(
+        jwt,
+        "chat_messages",
+        {
+            "select": "id,thread_id,role,parts,metadata,created_at",
+            "user_id": f"eq.{user_id}",
+            "order": "created_at.desc",
+            "limit": str(limit),
+        },
+    )
+    rows = result if isinstance(result, list) else []
+    rows.reverse()
+    return rows
+
+
 async def replace_chat_messages(
     jwt: str,
     *,
