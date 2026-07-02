@@ -51,6 +51,75 @@ async def get_chat_thread(jwt: str, thread_id: str) -> dict[str, Any] | None:
     )
 
 
+async def list_chat_threads(jwt: str) -> list[dict[str, Any]]:
+    context = await get_profile_context(jwt)
+    user_id = context["userId"]
+    result = await rest_select(
+        jwt,
+        "chat_threads",
+        {
+            "select": "id,title,created_at,updated_at",
+            "user_id": f"eq.{user_id}",
+            "order": "updated_at.desc",
+        },
+    )
+    return result if isinstance(result, list) else []
+
+
+async def create_chat_thread(
+    jwt: str,
+    *,
+    thread_id: str | None = None,
+    title: str | None = None,
+) -> dict[str, Any]:
+    context = await get_profile_context(jwt)
+    user_id = context["userId"]
+    payload: dict[str, Any] = {
+        "user_id": user_id,
+        "title": title or DEFAULT_THREAD_TITLE,
+    }
+    if thread_id:
+        payload["id"] = thread_id
+    return await rest_insert(jwt, "chat_threads", payload, single=True)
+
+
+async def rename_chat_thread(jwt: str, *, thread_id: str, title: str) -> None:
+    context = await get_profile_context(jwt)
+    user_id = context["userId"]
+    await rest_update(
+        jwt,
+        "chat_threads",
+        {"title": title},
+        {"id": f"eq.{thread_id}", "user_id": f"eq.{user_id}"},
+    )
+
+
+async def delete_chat_thread(jwt: str, *, thread_id: str) -> None:
+    context = await get_profile_context(jwt)
+    user_id = context["userId"]
+    await rest_delete(
+        jwt,
+        "chat_threads",
+        {"id": f"eq.{thread_id}", "user_id": f"eq.{user_id}"},
+    )
+
+
+async def list_chat_messages(jwt: str, *, thread_id: str) -> list[dict[str, Any]]:
+    context = await get_profile_context(jwt)
+    user_id = context["userId"]
+    result = await rest_select(
+        jwt,
+        "chat_messages",
+        {
+            "select": "id,role,parts,metadata",
+            "user_id": f"eq.{user_id}",
+            "thread_id": f"eq.{thread_id}",
+            "order": "message_order.asc",
+        },
+    )
+    return result if isinstance(result, list) else []
+
+
 async def replace_chat_messages(
     jwt: str,
     *,

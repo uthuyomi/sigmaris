@@ -1,193 +1,106 @@
 // 役割: チャットスレッドの取得・作成・更新に関する処理をまとめる。
+// バックエンド(FastAPI)のREST APIを呼ぶ薄いプロキシとして実装する。
+// 会話履歴の正はバックエンド側(app/services/app_chat_data.py)に一本化されている。
 
 import type { UIMessage } from "ai";
-import { createClient } from "@/lib/supabase/server";
+import { readBackendAuthHeaders } from "@/lib/backend/auth";
+import { fetchBackendJson } from "@/lib/backend/client";
 
 const DEFAULT_THREAD_TITLE = "新しいチャット";
-const LEGACY_DEFAULT_THREAD_TITLE = "New chat";
-const THREAD_TITLE_MAX_LENGTH = 20;
 
-const compactPartsForStorage = (parts: UIMessage["parts"]) => {
-  return parts.map((part) => {
-    if (part.type !== "file") {
-      return part;
-    }
-
-    return {
-      ...part,
-      url: "",
-    };
-  });
+type ChatThreadRecord = {
+  id: string;
+  title: string;
+  created_at: string;
+  updated_at: string;
 };
 
-const deriveThreadTitle = (messages: UIMessage[]) => {
-  const firstUserMessage = messages.find((message) => message.role === "user");
-  if (!firstUserMessage) return DEFAULT_THREAD_TITLE;
-
-  const textPart = firstUserMessage.parts.find((part) => part.type === "text");
-  if (textPart && textPart.text.trim()) {
-    return textPart.text.trim().slice(0, THREAD_TITLE_MAX_LENGTH);
-  }
-
-  const filePart = firstUserMessage.parts.find((part) => part.type === "file");
-  if (filePart?.filename) {
-    return filePart.filename.slice(0, THREAD_TITLE_MAX_LENGTH);
-  }
-
-  return DEFAULT_THREAD_TITLE;
+type ChatMessageRecord = {
+  id: string;
+  role: UIMessage["role"];
+  parts: UIMessage["parts"];
+  metadata?: UIMessage["metadata"];
 };
 
 export const listChatThreads = async (userId: string) => {
-  const supabase = await createClient();
-  const { data, error } = await supabase
-    .from("chat_threads")
-    .select("id,title,created_at,updated_at")
-    .eq("user_id", userId)
-    .order("updated_at", { ascending: false });
-
-  if (error) {
-    throw new Error(error.message);
-  }
-
-  return data ?? [];
+  void userId; // ユーザーはバックエンドがJWTから解決する。シグネチャ互換のため残す。
+  const headers = await readBackendAuthHeaders();
+  const data = await fetchBackendJson<{ threads: ChatThreadRecord[] }>(
+    "/api/app/chat/threads",
+    { method: "GET", headers },
+  );
+  return data.threads;
 };
 
 export const createChatThread = async (
   userId: string,
   options: { id?: string; title?: string } = {},
 ) => {
-  const supabase = await createClient();
-  const { data, error } = await supabase
-    .from("chat_threads")
-    .insert({
-      ...(options.id ? { id: options.id } : {}),
-      user_id: userId,
-      title: options.title ?? DEFAULT_THREAD_TITLE,
-    })
-    .select("id,title,created_at,updated_at")
-    .single();
-
-  if (error) {
-    throw new Error(error.message);
-  }
-
-  return data;
+  void userId;
+  const headers = await readBackendAuthHeaders();
+  const data = await fetchBackendJson<{ thread: ChatThreadRecord }>(
+    "/api/app/chat/threads",
+    {
+      method: "POST",
+      headers,
+      body: JSON.stringify({ threadId: options.id, title: options.title }),
+    },
+  );
+  return data.thread;
 };
 
 export const getChatThread = async (userId: string, threadId: string) => {
-  const supabase = await createClient();
-  const { data, error } = await supabase
-    .from("chat_threads")
-    .select("id,title,created_at,updated_at")
-    .eq("user_id", userId)
-    .eq("id", threadId)
-    .maybeSingle();
-
-  if (error) {
-    throw new Error(error.message);
-  }
-
-  return data;
+  void userId;
+  const headers = await readBackendAuthHeaders();
+  const data = await fetchBackendJson<{ thread: ChatThreadRecord | null }>(
+    `/api/app/chat/threads/${threadId}`,
+    { method: "GET", headers },
+  );
+  return data.thread;
 };
 
 export const renameChatThread = async (userId: string, threadId: string, title: string) => {
-  const supabase = await createClient();
-  const { error } = await supabase
-    .from("chat_threads")
-    .update({ title })
-    .eq("user_id", userId)
-    .eq("id", threadId);
-
-  if (error) {
-    throw new Error(error.message);
-  }
+  void userId;
+  const headers = await readBackendAuthHeaders();
+  await fetchBackendJson(`/api/app/chat/threads/${threadId}`, {
+    method: "PATCH",
+    headers,
+    body: JSON.stringify({ title }),
+  });
 };
 
 export const deleteChatThread = async (userId: string, threadId: string) => {
-  const supabase = await createClient();
-  const { error } = await supabase
-    .from("chat_threads")
-    .delete()
-    .eq("user_id", userId)
-    .eq("id", threadId);
-
-  if (error) {
-    throw new Error(error.message);
-  }
+  void userId;
+  const headers = await readBackendAuthHeaders();
+  await fetchBackendJson(`/api/app/chat/threads/${threadId}`, {
+    method: "DELETE",
+    headers,
+  });
 };
 
 export const listChatMessages = async (userId: string, threadId: string): Promise<UIMessage[]> => {
-  const supabase = await createClient();
-  const { data, error } = await supabase
-    .from("chat_messages")
-    .select("id,role,parts,metadata")
-    .eq("user_id", userId)
-    .eq("thread_id", threadId)
-    .order("message_order", { ascending: true });
-
-  if (error) {
-    throw new Error(error.message);
-  }
-
-  return (data ?? []).map((message) => ({
+  void userId;
+  const headers = await readBackendAuthHeaders();
+  const data = await fetchBackendJson<{ messages: ChatMessageRecord[] }>(
+    `/api/app/chat/threads/${threadId}/messages`,
+    { method: "GET", headers },
+  );
+  return data.messages.map((message) => ({
     id: message.id,
     role: message.role,
-    parts: (message.parts ?? []) as UIMessage["parts"],
-    metadata: (message.metadata ?? {}) as UIMessage["metadata"],
-  }));
+    parts: message.parts,
+    metadata: message.metadata ?? {},
+  })) as UIMessage[];
 };
 
 export const replaceChatMessages = async (userId: string, threadId: string, messages: UIMessage[]) => {
-  const supabase = await createClient();
-
-  const { error: deleteError } = await supabase
-    .from("chat_messages")
-    .delete()
-    .eq("user_id", userId)
-    .eq("thread_id", threadId);
-
-  if (deleteError) {
-    throw new Error(deleteError.message);
-  }
-
-  if (!messages.length) {
-    return;
-  }
-
-  const payload = messages.map((message, index) => ({
-    thread_id: threadId,
-    user_id: userId,
-    message_order: index,
-    role: message.role,
-    parts: compactPartsForStorage(message.parts),
-    metadata: message.metadata ?? {},
-  }));
-
-  const { error: insertError } = await supabase.from("chat_messages").insert(payload);
-  if (insertError) {
-    throw new Error(insertError.message);
-  }
-
-  const currentThread = await getChatThread(userId, threadId);
-  if (!currentThread) return;
-
-  const nextTitle =
-    currentThread.title === DEFAULT_THREAD_TITLE || currentThread.title === LEGACY_DEFAULT_THREAD_TITLE
-      ? deriveThreadTitle(messages)
-      : currentThread.title;
-
-  const { error: updateError } = await supabase
-    .from("chat_threads")
-    .update({
-      title: nextTitle,
-      updated_at: new Date().toISOString(),
-    })
-    .eq("user_id", userId)
-    .eq("id", threadId);
-
-  if (updateError) {
-    throw new Error(updateError.message);
-  }
+  void userId;
+  const headers = await readBackendAuthHeaders();
+  await fetchBackendJson("/api/app/chat/messages/replace", {
+    method: "POST",
+    headers,
+    body: JSON.stringify({ threadId, messages }),
+  });
 };
 
 export { DEFAULT_THREAD_TITLE };
