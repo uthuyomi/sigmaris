@@ -1,0 +1,12 @@
+# Copy this file to local.properties (already gitignored) and fill in real values.
+
+# Location of the Android SDK.
+sdk.dir=/path/to/Android/Sdk
+
+# Supabase project (used by the app to sign in and obtain a JWT).
+# Find these in your Supabase project dashboard under Project Settings > API.
+SUPABASE_URL=https://YOUR_PROJECT_REF.supabase.co
+SUPABASE_KEY=YOUR_SUPABASE_PUBLISHABLE_KEY
+
+# Sigmaris backend base URL reachable from the watch (LAN IP or hostname).
+BACKEND_URL=http://192.168.1.100:8000

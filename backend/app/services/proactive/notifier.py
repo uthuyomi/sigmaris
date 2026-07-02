@@ -32,6 +32,8 @@ class PushoverNotifier(BaseNotifier):
                         "user": self._user_key,
                         "title": title,
                         "message": message,
+                        "url": "sigmaris://chat",
+                        "url_title": "シグマリスを開く",
                     },
                 )
             if response.is_error:
