@@ -351,18 +351,29 @@ async def _prepare_session_messages(
 # ─── Background tasks ─────────────────────────────────────────────────────────
 
 
-async def _cognitive_layer_bg(*, invocation_id: str) -> None:
-    """Fire-and-forget: log decision and nudge internal state after each chat turn."""
+async def _cognitive_layer_bg(
+    *,
+    invocation_id: str,
+    thread_id: str | None,
+    turn_messages: list[dict[str, str]],
+    fact_items: list[dict[str, Any]] | None,
+) -> None:
+    """Fire-and-forget: detect+record real decisions, and nudge internal
+    state, after each chat turn. Replaces the old unconditional generic
+    "chat_turn" log entry (Phase A3) — detect_and_record_decision() only
+    writes a row when the turn actually contained a decision or policy
+    change."""
     try:
-        from app.services.decision_log import log_decision  # noqa: PLC0415
-        from app.services.internal_state import get_internal_state, snapshot, update_internal_state  # noqa: PLC0415
-        state_snap = await snapshot()
-        await log_decision(
-            decision_type="action",
-            title=f"chat_turn:{invocation_id[:8]}",
-            reason="Orchestrator processed a user conversation turn.",
-            internal_state_snapshot=state_snap,
+        from app.services.decision_log import detect_and_record_decision  # noqa: PLC0415
+        from app.services.internal_state import get_internal_state, update_internal_state  # noqa: PLC0415
+
+        await detect_and_record_decision(
+            messages=turn_messages,
+            fact_items=fact_items,
+            thread_id=thread_id,
+            invocation_id=invocation_id,
         )
+
         state = await get_internal_state()
         await update_internal_state(
             curiosity=min(1.0, float(state.get("curiosity", 0.5)) + 0.01),
@@ -547,9 +558,21 @@ async def run_orchestrator_chat(
         name=f"memory_extract:{invocation_id}",
     )
 
-    # Fire-and-forget: cognitive layer (decision log + internal state update).
+    # Fire-and-forget: cognitive layer (decision detection + internal state update).
+    # Scoped to just this turn (not the full cross-thread window) so an old
+    # exchange still sitting in context isn't re-detected as "a new decision"
+    # on every later turn.
+    latest_user = _latest_user_message(messages)
+    turn_messages = ([latest_user] if latest_user else []) + [
+        {"role": "assistant", "content": response_text}
+    ]
     asyncio.create_task(
-        _cognitive_layer_bg(invocation_id=invocation_id),
+        _cognitive_layer_bg(
+            invocation_id=invocation_id,
+            thread_id=effective_thread_id,
+            turn_messages=turn_messages,
+            fact_items=fact_items,
+        ),
         name=f"cognitive_layer:{invocation_id}",
     )
 
@@ -768,8 +791,17 @@ async def run_orchestrator_chat_stream(
         extract_from_conversation(messages=full_messages, jwt=jwt),
         name=f"memory_extract:{invocation_id}",
     )
+    latest_user = _latest_user_message(messages)
+    turn_messages = ([latest_user] if latest_user else []) + [
+        {"role": "assistant", "content": response_text}
+    ]
     asyncio.create_task(
-        _cognitive_layer_bg(invocation_id=invocation_id),
+        _cognitive_layer_bg(
+            invocation_id=invocation_id,
+            thread_id=effective_thread_id,
+            turn_messages=turn_messages,
+            fact_items=fact_items,
+        ),
         name=f"cognitive_layer:{invocation_id}",
     )
     _cache.pop(f"facts:{user_id}", None)
