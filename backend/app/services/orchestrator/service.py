@@ -204,39 +204,31 @@ async def _build_memory_context(
     if profile_context and len(profile_context) > 200:
         profile_context = profile_context[:200] + "窶ｦ"
 
-    if settings.local_llm_enabled:
-        relevant_context = None
-        latest_user_text = _latest_user_content(messages)
-        if latest_user_text:
-            try:
-                relevant = await search_relevant_memories(
-                    latest_user_text,
-                    user_id,
-                    threshold=0.7,
-                    limit=5,
-                    jwt=jwt,
-                )
-                relevant_context = _build_relevant_memories_context(relevant)
-            except Exception:
-                logger.exception("orchestrator: relevant memory search failed")
-        if relevant_context and profile_context:
-            return profile_context + "\n\n" + relevant_context
-        if relevant_context:
-            return relevant_context
-        return profile_context
-
-    facts_ctx = build_facts_context(fact_items or [], top_n=5)
-    if facts_ctx and profile_context:
-        profile_context = profile_context + "\n\n" + facts_ctx
-    elif facts_ctx:
-        profile_context = facts_ctx
-
-    trends_ctx = _build_trends_context(active_trends)
-    if trends_ctx and profile_context:
-        profile_context = profile_context + "\n\n" + trends_ctx
-    elif trends_ctx:
-        profile_context = trends_ctx
-
+    # Phase A5: this used to be gated on settings.local_llm_enabled, with a
+    # non-vector top-N-facts fallback for OpenAI-embedding mode, because
+    # generate_embedding() returned [] whenever LOCAL_LLM_ENABLED=false.
+    # generate_embedding() now falls back to OpenAI embeddings itself
+    # (see memory_search.py), so real similarity search works in both modes
+    # and this branch is unconditional. LOCAL_LLM_ENABLED=true behavior is
+    # unchanged — this is exactly its old branch, just no longer gated.
+    relevant_context = None
+    latest_user_text = _latest_user_content(messages)
+    if latest_user_text:
+        try:
+            relevant = await search_relevant_memories(
+                latest_user_text,
+                user_id,
+                threshold=0.7,
+                limit=5,
+                jwt=jwt,
+            )
+            relevant_context = _build_relevant_memories_context(relevant)
+        except Exception:
+            logger.exception("orchestrator: relevant memory search failed")
+    if relevant_context and profile_context:
+        return profile_context + "\n\n" + relevant_context
+    if relevant_context:
+        return relevant_context
     return profile_context
 
 
