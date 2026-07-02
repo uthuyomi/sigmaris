@@ -10,6 +10,7 @@ from typing import Any
 
 from app.config import settings
 from app.services.app_chat_data import create_chat_thread, get_chat_thread, get_recent_messages_across_threads
+from app.services.chat_messages import CONFIRMATION_MARKER_RE
 from app.services.orchestrator.agent_registry import get_schedule_agent
 from app.services.orchestrator.audit import finish_invocation, start_invocation
 from app.services.orchestrator.persona_loader import load_persona
@@ -45,6 +46,7 @@ class OrchestratorStreamEvent:
     agent_id: str | None = None
     used_fallback: bool = False
     guard_violations: tuple[str, ...] = ()
+    tool_event: dict[str, Any] | None = None
 
 
 def _cache_get(key: str) -> tuple[bool, Any]:
@@ -477,12 +479,22 @@ async def run_orchestrator_chat(
             self_model_context=self_model_context,
             persist_thread=persist_thread,
         )
-        rewrite = await rewrite_with_persona(
-            source=schedule_result.text,
-            persona=persona,
-            user_name=call_name,
-        )
-        response_text = replace_forbidden_assistant_names(rewrite.text)
+        if CONFIRMATION_MARKER_RE.search(schedule_result.text):
+            # See the streaming variant for the full rationale: persona
+            # rewriting has no guarantee of preserving invisible marker
+            # markup, so pending-confirmation messages skip it entirely.
+            response_text = replace_forbidden_assistant_names(schedule_result.text)
+            used_fallback = False
+            guard_violations: tuple[str, ...] = ()
+        else:
+            rewrite = await rewrite_with_persona(
+                source=schedule_result.text,
+                persona=persona,
+                user_name=call_name,
+            )
+            response_text = replace_forbidden_assistant_names(rewrite.text)
+            used_fallback = rewrite.used_fallback
+            guard_violations = rewrite.guard_violations
     except Exception as error:
         duration_ms = int((time.monotonic() - started_at) * 1000)
         try:
@@ -504,11 +516,11 @@ async def run_orchestrator_chat(
     await finish_invocation(
         jwt=jwt,
         audit_row_id=audit_row_id,
-        status="completed_with_fallback" if rewrite.used_fallback else "completed",
+        status="completed_with_fallback" if used_fallback else "completed",
         response_summary={
             "scheduleMessageId": schedule_result.message_id,
-            "usedFallback": rewrite.used_fallback,
-            "guardViolations": list(rewrite.guard_violations),
+            "usedFallback": used_fallback,
+            "guardViolations": list(guard_violations),
             "responseLength": len(response_text),
         },
         error_code=None,
@@ -551,7 +563,7 @@ async def run_orchestrator_chat(
         "thread_id": schedule_result.thread_id,
         "invocation_id": invocation_id,
         "agent_id": agent.agent_id,
-        "used_fallback": rewrite.used_fallback,
+        "used_fallback": used_fallback,
     }
 
 
@@ -665,6 +677,8 @@ async def run_orchestrator_chat_stream(
             self_model_context=self_model_context,
             persist_thread=persist_thread,
         ):
+            if event.tool_event:
+                yield OrchestratorStreamEvent(tool_event=event.tool_event, invocation_id=invocation_id)
             if event.delta:
                 schedule_text += event.delta
             if event.done:
@@ -674,20 +688,33 @@ async def run_orchestrator_chat_stream(
         if not schedule_text.strip():
             raise RuntimeError("Schedule agent stream returned an empty response.")
 
-        async for rewrite_event in rewrite_with_persona_stream(
-            source=schedule_text,
-            persona=persona,
-            user_name=call_name,
-        ):
-            if rewrite_event.delta:
-                delta = replace_forbidden_assistant_names(rewrite_event.delta)
-                response_text += delta
-                yield OrchestratorStreamEvent(delta=delta, invocation_id=invocation_id)
-            if rewrite_event.done:
-                used_fallback = rewrite_event.used_fallback
-                guard_violations = rewrite_event.guard_violations
-                if rewrite_event.text is not None and used_fallback:
-                    response_text = replace_forbidden_assistant_names(rewrite_event.text)
+        if CONFIRMATION_MARKER_RE.search(schedule_text):
+            # A pending-confirmation marker (<!-- shiftpilot-confirmation {...} -->)
+            # is invisible UI metadata, not prose. Persona rewriting is an LLM
+            # tone-pass with no instruction to preserve non-visible markup, and
+            # response_guard's mechanical checks only catch its loss by
+            # coincidence (e.g. if the marker's JSON happens to contain a
+            # number). Skip the rewrite entirely for these messages so the
+            # confirmation button flow can't be silently corrupted.
+            response_text = replace_forbidden_assistant_names(schedule_text)
+            yield OrchestratorStreamEvent(delta=response_text, invocation_id=invocation_id)
+            used_fallback = False
+            guard_violations = ()
+        else:
+            async for rewrite_event in rewrite_with_persona_stream(
+                source=schedule_text,
+                persona=persona,
+                user_name=call_name,
+            ):
+                if rewrite_event.delta:
+                    delta = replace_forbidden_assistant_names(rewrite_event.delta)
+                    response_text += delta
+                    yield OrchestratorStreamEvent(delta=delta, invocation_id=invocation_id)
+                if rewrite_event.done:
+                    used_fallback = rewrite_event.used_fallback
+                    guard_violations = rewrite_event.guard_violations
+                    if rewrite_event.text is not None and used_fallback:
+                        response_text = replace_forbidden_assistant_names(rewrite_event.text)
 
     except Exception as error:
         duration_ms = int((time.monotonic() - started_at) * 1000)

@@ -62,6 +62,10 @@ async def orchestrator_chat_stream(
     SSE streaming endpoint. Streams OpenAI deltas from the orchestrator path.
 
     SSE event format:
+      data: {"tool_event": {...}}\n\n  (AI SDK UI message stream tool part,
+                                        relayed verbatim from the schedule-agent;
+                                        type is one of tool-input-available /
+                                        tool-output-available / tool-output-error)
       data: {"delta": "<text chunk>"}\n\n
       data: {"done": true, "thread_id": "...", "invocation_id": "..."}\n\n
       data: {"error": "<message>"}\n\n  (on failure)
@@ -78,6 +82,8 @@ async def orchestrator_chat_stream(
                 thread_id=payload.thread_id,
                 request_context=payload.context,
             ):
+                if event.tool_event:
+                    yield f"data: {json.dumps({'tool_event': event.tool_event}, ensure_ascii=False)}\n\n"
                 if event.delta:
                     yield f"data: {json.dumps({'delta': event.delta}, ensure_ascii=False)}\n\n"
                 if event.done:

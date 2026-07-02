@@ -72,6 +72,7 @@ class ScheduleAgentStreamEvent:
     thread_id: str | None = None
     message_id: str | None = None
     done: bool = False
+    tool_event: dict[str, Any] | None = None
 
 
 def _build_headers(
@@ -242,6 +243,8 @@ async def call_schedule_agent_stream(
                     continue
                 if isinstance(event.get("error"), str):
                     raise RuntimeError(event["error"])
+                if isinstance(event.get("tool_event"), dict):
+                    yield ScheduleAgentStreamEvent(tool_event=event["tool_event"])
                 delta = event.get("delta")
                 if isinstance(delta, str) and delta:
                     yield ScheduleAgentStreamEvent(delta=delta)

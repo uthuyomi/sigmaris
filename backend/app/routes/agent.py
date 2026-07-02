@@ -208,6 +208,17 @@ async def agent_chat_stream(
                         delta = event.get("delta")
                         if isinstance(delta, str) and delta:
                             yield f"data: {json.dumps({'delta': delta}, ensure_ascii=False)}\n\n"
+                    elif event.get("type") in (
+                        "tool-input-available",
+                        "tool-output-available",
+                        "tool-output-error",
+                    ):
+                        # Relay tool-call UI events verbatim (AI SDK UI message
+                        # stream shape) so callers that want to render them
+                        # (e.g. the orchestrator -> /chat translation layer)
+                        # can, without this agent-to-agent bridge deciding
+                        # what "text-delta only" downstream consumers need.
+                        yield f"data: {json.dumps({'tool_event': event}, ensure_ascii=False)}\n\n"
                     elif event.get("type") == "finish":
                         yield (
                             f"data: {json.dumps({'done': True, 'thread_id': thread_id, 'message_id': message_id}, ensure_ascii=False)}\n\n"
