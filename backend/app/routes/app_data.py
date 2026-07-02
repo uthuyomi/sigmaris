@@ -8,9 +8,11 @@ from fastapi import APIRouter, Header, HTTPException
 from pydantic import BaseModel, Field
 
 from app.services.app_data import (
+    ThreadVersionConflictError,
     create_chat_thread as create_chat_thread_record,
     delete_chat_thread as delete_chat_thread_record,
     get_chat_thread as get_chat_thread_record,
+    get_chat_thread_version as get_chat_thread_version_record,
     get_profile_context,
     list_chat_messages as list_chat_messages_record,
     list_chat_threads as list_chat_threads_record,
@@ -38,6 +40,7 @@ class SearchEventsRequest(BaseModel):
 class ReplaceMessagesRequest(BaseModel):
     threadId: str = Field(min_length=1, max_length=80)
     messages: list[dict[str, Any]] = Field()
+    expectedVersion: int | None = Field(default=None)
 
 
 class CreateThreadRequest(BaseModel):
@@ -103,6 +106,12 @@ async def create_chat_thread(
 async def get_chat_thread(thread_id: str, authorization: str | None = Header(default=None)):
     jwt = _require_jwt(authorization)
     thread = await get_chat_thread_record(jwt, thread_id)
+    if thread is not None:
+        # version is fetched separately (see get_chat_thread_version's
+        # docstring) so this route works before AND after the Phase A4
+        # migration is applied — pre-migration this just adds `version:
+        # null` to the response.
+        thread = {**thread, "version": await get_chat_thread_version_record(jwt, thread_id)}
     return {"ok": True, "thread": thread}
 
 
@@ -137,5 +146,13 @@ async def replace_chat_messages(
     authorization: str | None = Header(default=None),
 ):
     jwt = _require_jwt(authorization)
-    await replace_chat_messages_record(jwt, thread_id=payload.threadId, messages=payload.messages)
-    return {"ok": True}
+    try:
+        new_version = await replace_chat_messages_record(
+            jwt,
+            thread_id=payload.threadId,
+            messages=payload.messages,
+            expected_version=payload.expectedVersion,
+        )
+    except ThreadVersionConflictError as error:
+        raise HTTPException(status_code=409, detail={"error": str(error)}) from error
+    return {"ok": True, "version": new_version}

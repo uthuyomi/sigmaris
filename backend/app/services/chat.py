@@ -13,7 +13,13 @@ from google.auth.exceptions import RefreshError
 from openai import AsyncOpenAI
 
 from app.config import settings
-from app.services.app_data import get_chat_thread, get_profile_context, replace_chat_messages
+from app.services.app_data import (
+    ThreadVersionConflictError,
+    get_chat_thread,
+    get_chat_thread_version,
+    get_profile_context,
+    replace_chat_messages,
+)
 from app.services.chat_attachments import build_attachment_facts, extract_latest_image_contexts
 from app.services.chat_prompts import build_ai_tone_instruction, build_system_prompt
 from app.services.chat_messages import (
@@ -373,6 +379,41 @@ def _require_openai_client() -> AsyncOpenAI:
     return AsyncOpenAI(api_key=settings.openai_api_key)
 
 
+async def _persist_chat_messages_safely(
+    *,
+    jwt: str,
+    thread_id: str,
+    messages_to_store: list[dict[str, Any]],
+    expected_version: int | None,
+) -> None:
+    """Persist a turn's messages without ever letting a failure here break
+    the user-visible response — the assistant's reply has already been
+    generated (and, for the streaming path, already sent to the client) by
+    the time this runs, so failing loudly here would only hide a working
+    answer behind a 500.
+
+    A ThreadVersionConflictError means another writer replaced this
+    thread's messages first (Phase A4); chat_messages was never touched by
+    this call in that case, so nothing was destroyed — this request's view
+    of the thread is just stale. Logged distinctly from other failures so
+    it's identifiable in production logs, but still non-fatal: the next
+    turn re-reads the thread's current version and will persist normally.
+    """
+    try:
+        await replace_chat_messages(
+            jwt, thread_id=thread_id, messages=messages_to_store, expected_version=expected_version
+        )
+    except ThreadVersionConflictError:
+        logger.warning(
+            "chat: thread_id=%s concurrent write conflict (expected_version=%s) — "
+            "this turn's messages were not persisted; existing DB state is untouched",
+            thread_id,
+            expected_version,
+        )
+    except Exception:
+        logger.exception("failed to persist chat messages thread_id=%s", thread_id)
+
+
 async def chat_stream(
     messages: list[dict[str, str]],
     model: str,
@@ -417,10 +458,12 @@ async def run_chat_completion(
     persist_messages: bool = True,
     audit_info: dict[str, str | None] | None = None,
 ) -> tuple[str, list[dict[str, Any]], str]:
+    expected_version: int | None = None
     if persist_messages:
         thread = await get_chat_thread(jwt, thread_id)
         if not thread:
             raise RuntimeError("Requested chat thread was not found.")
+        expected_version = await get_chat_thread_version(jwt, thread_id)
 
     profile_context = await get_profile_context(jwt)
     attachment_facts = build_attachment_facts(await extract_latest_image_contexts(messages))
@@ -502,7 +545,13 @@ async def run_chat_completion(
             },
         }
         messages_to_store = [*messages, assistant_message]
-        await replace_chat_messages(jwt, thread_id=thread_id, messages=messages_to_store)
+        if persist_messages:
+            await _persist_chat_messages_safely(
+                jwt=jwt,
+                thread_id=thread_id,
+                messages_to_store=messages_to_store,
+                expected_version=expected_version,
+            )
         return final_text, messages_to_store, assistant_message["id"]
 
     block_confirmation_tools = (
@@ -656,7 +705,12 @@ async def run_chat_completion(
     }
     messages_to_store = [*messages, assistant_message]
     if persist_messages:
-        await replace_chat_messages(jwt, thread_id=thread_id, messages=messages_to_store)
+        await _persist_chat_messages_safely(
+            jwt=jwt,
+            thread_id=thread_id,
+            messages_to_store=messages_to_store,
+            expected_version=expected_version,
+        )
     return final_text, messages_to_store, assistant_message["id"]
 
 
@@ -679,10 +733,12 @@ async def stream_chat_completion_ui(
     if emit_status_delta:
         yield f"data: {json.dumps({'type': 'text-delta', 'id': text_part_id, 'delta': '確認中...\n'}, ensure_ascii=False)}\n\n".encode("utf-8")
 
+    expected_version: int | None = None
     if persist_messages:
         thread = await get_chat_thread(jwt, thread_id)
         if not thread:
             raise RuntimeError("Requested chat thread was not found.")
+        expected_version = await get_chat_thread_version(jwt, thread_id)
 
     profile_context = await get_profile_context(jwt)
     attachment_facts = build_attachment_facts(await extract_latest_image_contexts(messages))
@@ -786,10 +842,12 @@ async def stream_chat_completion_ui(
         }
         messages_to_store = [*messages, assistant_message]
         if persist_messages:
-            try:
-                await replace_chat_messages(jwt, thread_id=thread_id, messages=messages_to_store)
-            except Exception:
-                logger.exception("failed to persist streamed chat messages")
+            await _persist_chat_messages_safely(
+                jwt=jwt,
+                thread_id=thread_id,
+                messages_to_store=messages_to_store,
+                expected_version=expected_version,
+            )
         for chunk in (
             {"type": "text-end", "id": text_part_id},
             {"type": "finish", "finishReason": "stop"},
@@ -1007,12 +1065,12 @@ async def stream_chat_completion_ui(
     }
     messages_to_store = [*messages, assistant_message]
     if persist_messages:
-        try:
-            await replace_chat_messages(jwt, thread_id=thread_id, messages=messages_to_store)
-        except Exception:
-            logger.exception("failed to persist streamed chat messages")
-        else:
-            logger.info("chat stream persisted thread_id=%s message_id=%s", thread_id, message_id)
+        await _persist_chat_messages_safely(
+            jwt=jwt,
+            thread_id=thread_id,
+            messages_to_store=messages_to_store,
+            expected_version=expected_version,
+        )
 
     for chunk in (
         {"type": "text-end", "id": text_part_id},

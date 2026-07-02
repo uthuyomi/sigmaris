@@ -4,11 +4,13 @@ from __future__ import annotations
 
 from app.services.app_chat_data import (
     DEFAULT_THREAD_TITLE,
+    ThreadVersionConflictError,
     compact_parts,
     create_chat_thread,
     delete_chat_thread,
     derive_thread_title,
     get_chat_thread,
+    get_chat_thread_version,
     get_recent_messages_across_threads,
     list_chat_messages,
     list_chat_threads,
@@ -29,6 +31,7 @@ from app.services.app_profile_data import get_profile_context
 
 __all__ = [
     "DEFAULT_THREAD_TITLE",
+    "ThreadVersionConflictError",
     "compact_parts",
     "derive_thread_title",
     "get_profile_context",
@@ -41,6 +44,7 @@ __all__ = [
     "update_event_external_link",
     "replace_travel_plan",
     "get_chat_thread",
+    "get_chat_thread_version",
     "list_chat_threads",
     "create_chat_thread",
     "rename_chat_thread",

@@ -9,6 +9,21 @@ export const getBackendBaseUrl = () =>
 
 const BACKEND_TIMEOUT_MS = 8000;
 
+// Carries the HTTP status alongside the message so callers can distinguish
+// e.g. a 409 conflict (Phase A4's ThreadVersionConflictError) from other
+// failures, without every caller having to re-parse the response body.
+// Still a plain Error otherwise, so existing `error.message` callers are
+// unaffected.
+export class BackendApiError extends Error {
+  status: number;
+
+  constructor(message: string, status: number) {
+    super(message);
+    this.name = "BackendApiError";
+    this.status = status;
+  }
+}
+
 export async function fetchBackendJson<T>(
   path: string,
   init?: RequestInit,
@@ -41,7 +56,7 @@ export async function fetchBackendJson<T>(
       } catch {
         // ignore parse failures and keep the generic status error
       }
-      throw new Error(detailMessage);
+      throw new BackendApiError(detailMessage, response.status);
     }
 
     return (await response.json()) as T;

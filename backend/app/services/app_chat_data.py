@@ -2,16 +2,25 @@ from __future__ import annotations
 
 # 役割: アプリ内チャットデータの保存と取得を扱う。
 
+import logging
 from datetime import UTC, datetime
 from typing import Any
 
 from app.services.app_profile_data import get_profile_context
 from app.services.supabase_rest import rest_delete, rest_insert, rest_select, rest_update
 
+logger = logging.getLogger(__name__)
 
 DEFAULT_THREAD_TITLE = "新しいチャット"
 LEGACY_DEFAULT_THREAD_TITLE = "New chat"
 THREAD_TITLE_MAX_LENGTH = 20
+
+
+class ThreadVersionConflictError(RuntimeError):
+    """Raised by replace_chat_messages() when expected_version no longer
+    matches chat_threads.version — another writer already replaced this
+    thread's messages first. chat_messages is left untouched when this is
+    raised (the version check happens before any delete/insert)."""
 
 
 def compact_parts(parts: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -49,6 +58,35 @@ async def get_chat_thread(jwt: str, thread_id: str) -> dict[str, Any] | None:
         },
         single=True,
     )
+
+
+async def get_chat_thread_version(jwt: str, thread_id: str) -> int | None:
+    """Best-effort fetch of chat_threads.version for optimistic-concurrency
+    control (Phase A4). Deliberately never raises: until the version column
+    migration (202607050027) is applied, this query fails (unknown column)
+    and the function returns None rather than propagating that failure —
+    every caller already treats None as "skip CAS, use legacy unconditional
+    overwrite", so the feature safely no-ops pre-migration and activates on
+    its own afterward with no code redeploy needed. Kept as a separate
+    query (not folded into get_chat_thread's default select) specifically
+    so a missing column can never break the many existing call sites that
+    just need id/title/timestamps."""
+    try:
+        row = await rest_select(
+            jwt,
+            "chat_threads",
+            {"select": "version", "id": f"eq.{thread_id}"},
+            single=True,
+        )
+        version = row.get("version") if row else None
+        return int(version) if isinstance(version, (int, float)) else None
+    except Exception:
+        logger.warning(
+            "app_chat_data: could not read chat_threads.version for id=%s "
+            "(version migration not applied yet?)",
+            thread_id,
+        )
+        return None
 
 
 async def list_chat_threads(jwt: str) -> list[dict[str, Any]]:
@@ -155,47 +193,92 @@ async def replace_chat_messages(
     *,
     thread_id: str,
     messages: list[dict[str, Any]],
-) -> None:
+    expected_version: int | None = None,
+) -> int | None:
+    """Full delete-then-reinsert of a thread's messages (unchanged from
+    before Phase A4 — see phase_a4_report.md for why a diff-append rewrite
+    was not pursued here).
+
+    When `expected_version` is given, this first does an atomic
+    compare-and-swap on chat_threads.version: the UPDATE only matches (and
+    bumps the version) if the row's current version still equals
+    expected_version. If another writer already replaced this thread's
+    messages since expected_version was read, zero rows match and
+    ThreadVersionConflictError is raised *before* chat_messages is touched
+    — the loser's write never reaches the message rows, so the winner's
+    data is never silently destroyed.
+
+    When `expected_version` is None (caller didn't capture one, or
+    get_chat_thread_version() couldn't read the column because the Phase A4
+    migration isn't applied yet), the `version` column is never referenced
+    at all — this behaves byte-for-byte like the pre-A4 unconditional
+    overwrite. The CAS gate is entirely opt-in so this function is safe to
+    deploy before the migration is applied: nothing breaks, optimistic
+    concurrency control just isn't active yet.
+
+    Returns the new version number, or None if no version tracking was
+    performed (thread row missing, or expected_version was None).
+    """
     context = await get_profile_context(jwt)
     user_id = context["userId"]
 
-    await rest_delete(
-        jwt,
-        "chat_messages",
-        {
-            "user_id": f"eq.{user_id}",
-            "thread_id": f"eq.{thread_id}",
-        },
+    current_thread = await get_chat_thread(jwt, thread_id)
+    if current_thread is None:
+        # Matches pre-A4 behavior: proceed with the message write even if
+        # the thread row is (unexpectedly) missing, just skip title/version.
+        await rest_delete(
+            jwt, "chat_messages", {"user_id": f"eq.{user_id}", "thread_id": f"eq.{thread_id}"}
+        )
+        if messages:
+            await rest_insert(jwt, "chat_messages", _message_insert_payload(thread_id, user_id, messages))
+        return None
+
+    current_title = current_thread.get("title")
+    next_title = (
+        derive_thread_title(messages)
+        if current_title in {DEFAULT_THREAD_TITLE, LEGACY_DEFAULT_THREAD_TITLE}
+        else current_title
     )
 
-    if messages:
-        insert_payload = [
-            {
-                "thread_id": thread_id,
-                "user_id": user_id,
-                "message_order": index,
-                "role": message.get("role"),
-                "parts": compact_parts(message.get("parts", [])),
-                "metadata": message.get("metadata", {}),
-            }
-            for index, message in enumerate(messages)
-        ]
-        await rest_insert(jwt, "chat_messages", insert_payload)
+    update_payload: dict[str, Any] = {
+        "title": next_title,
+        "updated_at": datetime.now(UTC).isoformat(),
+    }
+    update_params = {"id": f"eq.{thread_id}", "user_id": f"eq.{user_id}"}
+    if expected_version is not None:
+        update_payload["version"] = expected_version + 1
+        update_params["version"] = f"eq.{expected_version}"
 
-    current_thread = await get_chat_thread(jwt, thread_id)
-    if current_thread:
-        current_title = current_thread.get("title")
-        next_title = (
-            derive_thread_title(messages)
-            if current_title in {DEFAULT_THREAD_TITLE, LEGACY_DEFAULT_THREAD_TITLE}
-            else current_title
+    updated_rows = await rest_update(jwt, "chat_threads", update_payload, update_params)
+    if expected_version is not None and not updated_rows:
+        raise ThreadVersionConflictError(
+            f"chat_thread {thread_id} was modified concurrently "
+            f"(expected version {expected_version})."
         )
-        await rest_update(
-            jwt,
-            "chat_threads",
-            {
-                "title": next_title,
-                "updated_at": datetime.now(UTC).isoformat(),
-            },
-            {"id": f"eq.{thread_id}", "user_id": f"eq.{user_id}"},
-        )
+    new_version = updated_rows[0].get("version") if updated_rows else None
+
+    # Only reached once the version gate above has passed (or was skipped),
+    # so a losing concurrent writer never deletes/reinserts messages at all.
+    await rest_delete(
+        jwt, "chat_messages", {"user_id": f"eq.{user_id}", "thread_id": f"eq.{thread_id}"}
+    )
+    if messages:
+        await rest_insert(jwt, "chat_messages", _message_insert_payload(thread_id, user_id, messages))
+
+    return new_version
+
+
+def _message_insert_payload(
+    thread_id: str, user_id: str, messages: list[dict[str, Any]]
+) -> list[dict[str, Any]]:
+    return [
+        {
+            "thread_id": thread_id,
+            "user_id": user_id,
+            "message_order": index,
+            "role": message.get("role"),
+            "parts": compact_parts(message.get("parts", [])),
+            "metadata": message.get("metadata", {}),
+        }
+        for index, message in enumerate(messages)
+    ]

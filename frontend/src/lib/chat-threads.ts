@@ -4,7 +4,7 @@
 
 import type { UIMessage } from "ai";
 import { readBackendAuthHeaders } from "@/lib/backend/auth";
-import { fetchBackendJson } from "@/lib/backend/client";
+import { BackendApiError, fetchBackendJson } from "@/lib/backend/client";
 
 const DEFAULT_THREAD_TITLE = "新しいチャット";
 
@@ -13,6 +13,7 @@ type ChatThreadRecord = {
   title: string;
   created_at: string;
   updated_at: string;
+  version?: number;
 };
 
 type ChatMessageRecord = {
@@ -93,14 +94,36 @@ export const listChatMessages = async (userId: string, threadId: string): Promis
   })) as UIMessage[];
 };
 
+// Phase A4: this path currently has no live caller (Phase A0 confirmed
+// zero callers), so this is unexercised by production traffic. Implemented
+// anyway for correctness if something starts using it: reads the thread's
+// current `version`, sends it as expectedVersion, and — on a 409 conflict
+// (another writer replaced this thread's messages first) — refetches the
+// now-current version and retries once. A conflict on the retry propagates
+// to the caller rather than looping indefinitely or attempting to merge
+// content (per Phase A4's "keep conflict resolution simple" direction).
 export const replaceChatMessages = async (userId: string, threadId: string, messages: UIMessage[]) => {
   void userId;
   const headers = await readBackendAuthHeaders();
-  await fetchBackendJson("/api/app/chat/messages/replace", {
-    method: "POST",
-    headers,
-    body: JSON.stringify({ threadId, messages }),
-  });
+
+  const attempt = async (): Promise<void> => {
+    const thread = await getChatThread(userId, threadId);
+    await fetchBackendJson("/api/app/chat/messages/replace", {
+      method: "POST",
+      headers,
+      body: JSON.stringify({ threadId, messages, expectedVersion: thread?.version }),
+    });
+  };
+
+  try {
+    await attempt();
+  } catch (error) {
+    if (error instanceof BackendApiError && error.status === 409) {
+      await attempt(); // one retry against the now-current version
+      return;
+    }
+    throw error;
+  }
 };
 
 export { DEFAULT_THREAD_TITLE };
