@@ -237,6 +237,66 @@ response_error_rate : 0.000  (直近7日, n=10)
 
 ---
 
+## 9. 追加対応: `testset_gen.py`の質問生成にOpenAIフォールバックを追加
+
+運用者が実際にサーバー上で`generate_eval_testset.py`を実行したところ、全件が`httpx.HTTPStatusError: Client error '404 Not Found' for url 'http://localhost:11434/api/chat'`で失敗した。原因は、サーバーのOllamaに`nomic-embed-text`(embedding専用)しかインストールされておらず、チャット用モデルが一切無いことだった。GPU(GTX 1660 6GB)の制約からチャット用モデルの追加インストールは行わず、OpenAI(`gpt-5.4-mini`、運用者と合意済み)へのフォールバックで対応する方針となった。
+
+### 採用した実装: `testset_gen.py`個別対応ではなく、`local_llm.py::LLMRouter`側の根本原因を修正
+
+指示書は「`LLMRouter`に乗せる方が一貫性がある」ことを優先的に検討するよう求めていたが、実際に調査した結果、**`testset_gen.py`側にフォールバックを個別実装する必要はなく、`LLMRouter`側のバグを直接修正するだけで解決する**ことが分かった。
+
+`local_llm.py::LocalLLMClient.is_available()`は、これまで`GET /api/tags`が200を返すことしか確認しておらず、「Ollamaプロセスが起動しているか」しか見ていなかった。**「設定されているチャットモデル(`settings.ollama_model`)が実際にインストールされているか」は一度も確認していなかった。** そのため、Ollamaは応答するがチャットモデルが無い今回のような状況でも`is_available()`は`True`を返し、`LLMRouter._get_backend()`はOllamaを選択し、`LocalLLMClient.chat()`が`POST /api/chat`を叩いて404で例外を投げていた。**`LLMRouter.chat()`はバックエンドを一度選んだらそれで確定であり、呼び出し失敗時にOpenAIへ再フォールバックする仕組みは元々存在しない**ため、404がそのまま呼び出し元まで伝播していた。
+
+`is_available()`を、`/api/tags`のレスポンスに含まれるモデル一覧(`name`/`model`フィールド、タグ有無の揺れも吸収するbase-name一致も許容)に対して、実際に設定されているチャットモデルが含まれているかを確認するよう修正した。これにより`LLMRouter`を使う**全てのTaskType**(後述)が、Ollama起動チェックだけでなく実際のモデル有無まで見た上でルーティングされるようになった。
+
+### 判断根拠: なぜ`testset_gen.py`個別実装ではなく`LLMRouter`修正を選んだか
+
+1. **指示書自身が「一貫性があるため優先的に検討すること」と明示していた。**
+2. **影響範囲の調査で、この不具合は`testset_gen.py`(`TaskType.EVAL_GENERATION`)だけの問題ではないと判明した。** `TaskType.ROUTING`・`MEMORY_EXTRACTION`・`SUMMARIZE`・`DECISION_DETECTION`・`SELF_REFLECT`も同じ`is_available()`を経由しており、`memory_extractor.py`(チャット毎の事実抽出)・`decision_log.py`(Phase A3の決定検出・週次パターン分析)・`curiosity_engine.py`・`experience_layer.py`・`memory_validator.py`・`research_agent.py`・`x_reply_classifier.py`・`self_improvement.py`など、非常に広い範囲がこの同じ経路を使っている。**もしサーバーの`LOCAL_LLM_ENABLED`が`true`であれば、これらの処理も同様に404で失敗していた可能性が高い**(これらの多くはfire-and-forgetでtry/except全体を握りつぶす設計になっているため、ユーザーに見える形でエラーが出ず、`generate_eval_testset.py`のような同期的スクリプトで初めて表面化した可能性がある)。`testset_gen.py`だけを個別に直しても、これらの経路は直らないままになる。
+3. `testset_gen.py`個別にフォールバックロジックを書くと、`LLMRouter`の既存フォールバック機構と機能が重複し、将来的にどちらが「正」のフォールバック実装かが曖昧になる。
+
+**運用者への確認依頼**: サーバーの`LOCAL_LLM_ENABLED`が実際に`true`だった場合、上記の各処理が過去にどの程度404で失敗していたか、ログで確認いただくことを推奨する。今回の修正はこれらの経路も同時に修正しているはずだが、実際の過去ログでの裏付けは私からは確認できていない(0章と同じ理由でサーバーアクセスがないため)。
+
+### `gpt-5.4-mini`固定の実装方法
+
+`TaskType.EVAL_GENERATION`のOpenAIモデル選択だけを、既存の`openai_nano_model`(`gpt-5.4-nano`、他のnano階層タスクが使う)から切り離し、新設した`settings.eval_generation_model`(デフォルト`"gpt-5.4-mini"`)を使うようにした。既存の`openai_nano_model`をそのまま流用しなかった理由: `ROUTING`・`MEMORY_EXTRACTION`・`SUMMARIZE`・`DECISION_DETECTION`の4タスクは今回変更対象外であり、これらのOpenAIモデル選択を変更する合意は得ていない。専用の設定値を新設することで、「`gpt-5.4-mini`固定」という合意事項をこの用途だけに閉じ込め、他タスクのモデル選択に意図せず影響しないようにした。
+
+### Ollamaモデル不在の早期検知
+
+`is_available()`の戻り値は`LLMRouter._get_backend()`が`self._local_available`としてルーターのライフタイム中1回だけキャッシュする(既存の設計)。今回の修正によりこの1回の判定自体が正確になったため、**チャットモデル不在時は最初の呼び出しの時点でOpenAIへの切り替えが確定し、以降`/api/chat`への404リクエストが繰り返されることはない**。
+
+### 実際に生成されたテストセットのサンプル
+
+モック環境(Ollamaは`/api/tags`のみ本物同様に「embeddingモデルのみ」を返すよう再現し、OpenAI呼び出しはモック)で`testset_gen.py::_build_fact_entries`を実行し、実際に生成された質問文:
+
+```
+id=fact-f1  question="私が使っているノートパソコンの型番は?"       expected_fact_keys=['devices/laptop']
+id=fact-f2  question="車種は何ですか?"                           expected_fact_keys=['environment/car']
+```
+
+使用されたOpenAIモデルは両方とも`gpt-5.4-mini`であることをテストで直接検証した(要件4)。実際の285件に対する本番実行結果は、引き続き運用者側での実行が必要(0章・6章と同じ制約)。
+
+### テスト結果
+
+いずれもモック(実Ollama・実OpenAIには一切接続していない)。
+
+```
+PASS: is_available() correctly returns False when Ollama has only nomic-embed-text (no chat model) —
+      this is exactly the production scenario from the bug report
+PASS: is_available() returns True once the configured chat model is actually installed
+PASS: base-name match handles a tag mismatch (configured 'qwen2.5' vs installed 'qwen2.5:latest')
+PASS: connection failure still degrades to False gracefully (pre-existing behavior preserved)
+PASS: LLMRouter routes EVAL_GENERATION to OpenAI when Ollama lacks a chat model
+      (no repeated /api/chat 404 attempts — is_available() short-circuits it up front)
+PASS: LLMRouter still prefers Ollama once a chat model becomes available
+      (this is a fallback, not a permanent OpenAI pin — requirement 2)
+PASS: EVAL_GENERATION pinned to eval_generation_model (gpt-5.4-mini); other TaskTypes' OpenAI tiers are unchanged
+```
+
+1つ目のケースが、報告された本番のバグそのものを再現し、修正後にFalseを返す(=OpenAIへ切り替わる)ことを直接確認している。加えて、`testset_gen._build_fact_entries()`をモックしたルーター経由でエンドツーエンド実行し、Ollamaにチャットモデルが無い状態でも質問生成が正常に完了することを確認した(上記サンプル参照)。既存のembedding生成(Phase A5)のテストも再実行し、全て引き続きPASSすることを確認した(要件3)。`backend/tests/`(既存8件)全てPASS、`import app.main`成功。
+
+---
+
 ## Related Documents
 
 - [phase_a5_report.md](phase_a5_report.md) — 7章で触れたembeddingモデル由来混在リスクの発端

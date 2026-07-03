@@ -66,9 +66,39 @@ class LocalLLMClient:
         return data["message"]["content"]
 
     async def is_available(self) -> bool:
+        """Whether Ollama is not just reachable, but actually has the
+        configured chat model (self._model) installed.
+
+        A bare "does /api/tags respond" check used to be enough to mark
+        Ollama "available" and route chat-eligible tasks to it — but a
+        server can have Ollama running with only an embedding model
+        installed (e.g. nomic-embed-text) and no chat model at all. That
+        looked "available" here, so every local-eligible TaskType got
+        routed to Ollama and then hit a 404 on POST /api/chat, with no
+        fallback (LLMRouter.chat() picks a backend once via this check and
+        does not retry on failure). Checking the model list directly here
+        means the OpenAI fallback triggers up front instead.
+        """
         try:
             r = await self._client.get(f"{self._base_url}/api/tags")
-            return r.is_success
+            if not r.is_success:
+                return False
+            data = r.json()
+            models = data.get("models", [])
+            installed = {
+                str(entry.get(field))
+                for entry in models
+                if isinstance(entry, dict)
+                for field in ("name", "model")
+                if entry.get(field)
+            }
+            if self._model in installed:
+                return True
+            # Fall back to a base-name match (ignoring the ":tag" suffix) in
+            # case the configured model omits a tag that Ollama fills in
+            # (e.g. ":latest") or vice versa.
+            base_name = self._model.split(":", 1)[0]
+            return any(name.split(":", 1)[0] == base_name for name in installed)
         except Exception:
             return False
 
@@ -77,12 +107,17 @@ def _openai_model_for_task(task: TaskType) -> str:
     """Map TaskType to the appropriate OpenAI model tier."""
     if task in {TaskType.SELF_REFLECT, TaskType.COMPLEX_REASONING}:
         return settings.sigmaris_reflect_model or settings.openai_advanced_model
+    if task is TaskType.EVAL_GENERATION:
+        # Pinned to gpt-5.4-mini per an explicit operator decision (Phase
+        # C-mini testset generation) — deliberately kept separate from
+        # openai_nano_model so it doesn't drift if that tier's model choice
+        # changes for unrelated reasons.
+        return settings.eval_generation_model
     if task in {
         TaskType.ROUTING,
         TaskType.MEMORY_EXTRACTION,
         TaskType.SUMMARIZE,
         TaskType.DECISION_DETECTION,
-        TaskType.EVAL_GENERATION,
     }:
         return settings.openai_nano_model
     return settings.openai_model

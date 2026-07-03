@@ -43,6 +43,7 @@ class Settings(BaseSettings):
     ollama_model: str = "qwen2.5:14b"
     ollama_embed_model: str = "nomic-embed-text"
     openai_embedding_model: str = "text-embedding-3-small"
+    eval_generation_model: str = "gpt-5.4-mini"   # Phase C-mini testset question generation (OpenAI fallback)
     x_api_key: str | None = None
     x_api_secret: str | None = None
     x_access_token: str | None = None
