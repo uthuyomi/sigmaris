@@ -6,7 +6,9 @@ import time
 import uuid
 from collections.abc import AsyncGenerator
 from dataclasses import dataclass
+from datetime import datetime
 from typing import Any
+from zoneinfo import ZoneInfo
 
 from app.config import settings
 from app.services.app_chat_data import create_chat_thread, get_chat_thread, get_recent_messages_across_threads
@@ -128,6 +130,44 @@ async def _cached_active_trends(jwt: str) -> list:
 # ─── Context builders ─────────────────────────────────────────────────────────
 
 
+def _format_self_model_freshness(last_reflected_at: Any) -> str:
+    """Day-granularity "how stale is this" label for identity_statement.
+
+    identity_statement is written by a ~daily self-reflection cycle
+    (heartbeat.py's 24h cooldown) and, unlike fact-memory/RAG context, was
+    being injected into every turn with zero indication of when it was
+    written — so the model had no way to tell a months-old self-description
+    from something that "just happened". Deliberately rounded to whole days
+    (JST calendar-day difference, not hours/minutes): base_system already
+    isn't turn-stable for OpenAI's prefix cache because of the fact-memory
+    RAG portion (see chat_prompts.py's ordering comment), so this adds no
+    *additional* cache churn beyond what already exists — but keeping it at
+    day-resolution rather than finer avoids making that pre-existing
+    situation any worse.
+    """
+    if not last_reflected_at:
+        return "(最終更新: 不明 — 古い情報の可能性があるため断定的に話さないこと)"
+    try:
+        reflected_dt = datetime.fromisoformat(str(last_reflected_at).replace("Z", "+00:00"))
+    except ValueError:
+        return "(最終更新: 不明 — 古い情報の可能性があるため断定的に話さないこと)"
+
+    tz = ZoneInfo("Asia/Tokyo")
+    days_elapsed = (datetime.now(tz).date() - reflected_dt.astimezone(tz).date()).days
+
+    if days_elapsed <= 0:
+        when = "本日"
+    elif days_elapsed == 1:
+        when = "1日前"
+    else:
+        when = f"{days_elapsed}日前"
+
+    note = f"(最終更新: {when}"
+    if days_elapsed >= 7:
+        note += " — 古い情報である可能性が高いため、現在進行中の出来事であるかのように話さないこと"
+    return note + ")"
+
+
 def _build_self_model_context(model: dict | None) -> str | None:
     if not model:
         return None
@@ -136,8 +176,9 @@ def _build_self_model_context(model: dict | None) -> str | None:
         return None
     # Trim identity to 150 chars to keep context light
     identity_short = identity[:150] + ("…" if len(identity) > 150 else "")
+    freshness_note = _format_self_model_freshness(model.get("last_reflected_at"))
     goals = model.get("current_goals") or []
-    lines = [f"[シグマリス自己認識]\n{identity_short}"]
+    lines = [f"[シグマリス自己認識] {freshness_note}\n{identity_short}"]
     if goals:
         goal_str = "・".join(str(g) for g in goals[:3])  # max 3 goals
         lines.append(f"目標: {goal_str}")
