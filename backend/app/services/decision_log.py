@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
+from datetime import UTC, datetime
 from typing import Any
 
 from app.config import settings
@@ -12,8 +13,17 @@ from app.services.user_fact_data import build_facts_context
 logger = logging.getLogger(__name__)
 
 _TABLE = "sigmaris_decision_log"
+_PATTERNS_TABLE = "sigmaris_user_preference_patterns"
 
 _VALID_TYPES = frozenset({"proposal", "refusal", "notification", "action", "policy_change"})
+
+# Phase B14: don't even attempt extraction below this many total decisions
+# (there's nothing to find a *recurring* pattern across).
+_MIN_DECISIONS_FOR_ANALYSIS = 3
+# A candidate pattern needs evidence from at least this many *distinct*
+# decisions to be persisted — a single decision is never enough to
+# conclude "this is how 海星さん thinks" (explicit task requirement).
+_MIN_SUPPORTING_DECISIONS = 2
 
 _DETECT_SYSTEM = (
     "あなたはシグマリスの意思決定検出システムです。会話のやり取りに、決定・"
@@ -67,6 +77,51 @@ _ANALYZE_PROMPT = """以下のシグマリスの意思決定ログを分析し�
   "improvement_suggestions": ["改善提案1", "改善提案2"],
   "notes": "全体的な傾向メモ"
 }}"""
+
+# Phase B14: distinct from _ANALYZE_PROMPT above. analyze_decision_patterns()
+# analyzes Sigmaris's OWN behavior distribution (proposal_rate/refusal_rate —
+# how often *Sigmaris* proposes vs refuses). This instead extracts 海星さん's
+# own judgment axes/values from decision content — a different subject and
+# a different, more conservative extraction contract (never conclude from
+# one data point).
+_EXTRACT_PREFERENCE_SYSTEM = (
+    "あなたはシグマリスの判断傾向分析システムです。海星さんの過去の決定記"
+    "録から、複数の決定に共通する判断傾向(判断軸)を抽出します。単発の決"
+    "定からは絶対に傾向を導かないでください。必ず有効なJSONのみを返してく"
+    "ださい。"
+)
+
+_EXTRACT_PREFERENCE_PROMPT = """以下は海星さんに関する決定記録です(sigmaris_decision_log)。
+decision_type が policy_change のものは、海星さん自身が実際に下した決定・
+方針転換を表します。それ以外(proposal/refusal/notification/action)はシ
+グマリス側の行動記録ですが、reasonやoutcomeに海星さんの価値観が読み取れる
+場合は参考にしてよいです。
+
+## 決定記録({n}件)
+{decisions}
+
+---
+これらの決定に共通する、海星さんの判断傾向(判断軸)を抽出してください。
+
+**重要な制約:**
+- 1件の決定だけを根拠に傾向を導き出さないこと。同じ傾向を裏付ける決定が
+  最低2件以上ないかぎり、その傾向は出力しないこと
+- 根拠が薄い場合は無理に傾向を捏造せず、patternsを空リストにしてよい
+- 各傾向について、根拠とした決定の id を(上記の決定記録に付与されている
+  ものをそのまま)全て列挙すること
+
+以下のJSON形式で出力してください:
+{{
+  "patterns": [
+    {{
+      "pattern_key": "snake_caseの短い識別子（例: prefers_speed_over_cost）",
+      "pattern_statement": "傾向の説明（日本語、1文程度）",
+      "supporting_decision_ids": ["id1", "id2", "..."]
+    }}
+  ]
+}}
+根拠が2件未満の傾向は絶対に含めないこと。何も見つからなければ
+{{"patterns": []}} を返してください。"""
 
 
 def _svc_headers(*, prefer: str | None = None) -> dict[str, str]:
@@ -251,6 +306,187 @@ async def analyze_decision_patterns() -> dict[str, Any] | None:
     except Exception:
         logger.exception("decision_log: failed to analyze_decision_patterns")
         return None
+
+
+async def _upsert_preference_pattern(
+    *,
+    pattern_key: str,
+    pattern_statement: str,
+    supporting_decision_ids: list[str],
+    analyzed_decision_count: int,
+) -> str | None:
+    """Insert a new pattern, or merge new evidence into an existing one
+    (matched by pattern_key). Evidence accumulates across runs — a pattern
+    first seen with 2 supporting decisions can grow to 5+ over subsequent
+    weekly extractions without losing the earlier evidence."""
+    base_url, _ = _require_supabase_config()
+    client = await _get_client()
+    now = datetime.now(UTC).isoformat()
+
+    existing_resp = await client.get(
+        f"{base_url}/rest/v1/{_PATTERNS_TABLE}",
+        headers=_svc_headers(),
+        params={"pattern_key": f"eq.{pattern_key}", "select": "id,supporting_decision_ids"},
+    )
+    existing_resp.raise_for_status()
+    existing_rows = existing_resp.json()
+    existing = existing_rows[0] if isinstance(existing_rows, list) and existing_rows else None
+
+    if existing:
+        prior_ids = existing.get("supporting_decision_ids")
+        prior_ids = prior_ids if isinstance(prior_ids, list) else []
+        merged_ids = list(dict.fromkeys([*prior_ids, *supporting_decision_ids]))
+        payload = {
+            "pattern_statement": pattern_statement,
+            "supporting_decision_ids": merged_ids,
+            "evidence_count": len(merged_ids),
+            "last_confirmed_at": now,
+            "last_analyzed_decision_count": analyzed_decision_count,
+        }
+        resp = await client.patch(
+            f"{base_url}/rest/v1/{_PATTERNS_TABLE}",
+            headers=_svc_headers(prefer="return=representation"),
+            params={"id": f"eq.{existing['id']}"},
+            json=payload,
+        )
+    else:
+        payload = {
+            "pattern_key": pattern_key,
+            "pattern_statement": pattern_statement,
+            "supporting_decision_ids": supporting_decision_ids,
+            "evidence_count": len(supporting_decision_ids),
+            "last_confirmed_at": now,
+            "last_analyzed_decision_count": analyzed_decision_count,
+        }
+        resp = await client.post(
+            f"{base_url}/rest/v1/{_PATTERNS_TABLE}",
+            headers=_svc_headers(prefer="return=representation"),
+            json=payload,
+        )
+
+    resp.raise_for_status()
+    rows = resp.json()
+    return rows[0].get("id") if isinstance(rows, list) and rows else None
+
+
+async def get_active_preference_patterns(limit: int = 5) -> list[dict[str, Any]]:
+    """Return stored judgment/preference patterns, most-evidenced first."""
+    try:
+        base_url, _ = _require_supabase_config()
+        client = await _get_client()
+        r = await client.get(
+            f"{base_url}/rest/v1/{_PATTERNS_TABLE}",
+            headers=_svc_headers(),
+            params={"order": "evidence_count.desc,last_confirmed_at.desc", "limit": str(limit)},
+        )
+        r.raise_for_status()
+        data = r.json()
+        return data if isinstance(data, list) else []
+    except Exception:
+        logger.exception("decision_log: failed to get_active_preference_patterns")
+        return []
+
+
+async def extract_preference_patterns() -> dict[str, Any]:
+    """Sunday 4:45 AM scheduled (right after analyze_decision_patterns, same
+    underlying table): LLM extraction of recurring judgment patterns from
+    sigmaris_decision_log, persisted to sigmaris_user_preference_patterns.
+
+    Deliberately conservative: below _MIN_DECISIONS_FOR_ANALYSIS total
+    decisions, extraction isn't even attempted (nothing to find a
+    *recurring* pattern across) — this is reported as insufficient_data,
+    not silently skipped, so it's visible in job logs that the feature is
+    waiting on more data rather than broken.
+    """
+    result: dict[str, Any] = {
+        "analyzed": 0,
+        "patterns_found": 0,
+        "patterns_stored": 0,
+        "errors": 0,
+        "insufficient_data": False,
+    }
+    try:
+        decisions = await get_recent_decisions(limit=100)
+        result["analyzed"] = len(decisions)
+        if len(decisions) < _MIN_DECISIONS_FOR_ANALYSIS:
+            result["insufficient_data"] = True
+            logger.info(
+                "decision_log: preference pattern extraction skipped — only %d decisions "
+                "(need >= %d) to look for a recurring pattern",
+                len(decisions), _MIN_DECISIONS_FOR_ANALYSIS,
+            )
+            return result
+
+        decision_ids = {d.get("id") for d in decisions if d.get("id")}
+        lines = [
+            f"- id={d.get('id')} type={d.get('decision_type')} title={d.get('title')} "
+            f"reason={(d.get('reason') or 'N/A')[:150]} outcome={(d.get('outcome') or 'N/A')[:150]}"
+            for d in decisions
+        ]
+
+        router = get_llm_router()
+        raw = await router.chat(
+            TaskType.SELF_REFLECT,
+            [
+                {"role": "system", "content": _EXTRACT_PREFERENCE_SYSTEM},
+                {"role": "user", "content": _EXTRACT_PREFERENCE_PROMPT.format(
+                    n=len(decisions), decisions="\n".join(lines),
+                )},
+            ],
+            temperature=0.2,
+            max_tokens=800,
+            json_mode=True,
+        )
+        parsed = json.loads(raw) if isinstance(raw, str) else raw
+        candidates = parsed.get("patterns") if isinstance(parsed, dict) else None
+        if not isinstance(candidates, list):
+            candidates = []
+        result["patterns_found"] = len(candidates)
+
+        for candidate in candidates:
+            if not isinstance(candidate, dict):
+                continue
+            pattern_key = str(candidate.get("pattern_key") or "").strip()
+            pattern_statement = str(candidate.get("pattern_statement") or "").strip()
+            if not pattern_key or not pattern_statement:
+                continue
+
+            raw_ids = candidate.get("supporting_decision_ids")
+            # Only trust ids that actually exist among the decisions we sent
+            # the LLM — never take an LLM-invented id at face value.
+            supporting_ids = list(dict.fromkeys(
+                sid for sid in (raw_ids if isinstance(raw_ids, list) else [])
+                if isinstance(sid, str) and sid in decision_ids
+            ))
+            if len(supporting_ids) < _MIN_SUPPORTING_DECISIONS:
+                logger.debug(
+                    "decision_log: discarding candidate pattern '%s' — only %d verifiable "
+                    "supporting decisions (need >= %d)",
+                    pattern_key, len(supporting_ids), _MIN_SUPPORTING_DECISIONS,
+                )
+                continue
+
+            try:
+                await _upsert_preference_pattern(
+                    pattern_key=pattern_key,
+                    pattern_statement=pattern_statement,
+                    supporting_decision_ids=supporting_ids,
+                    analyzed_decision_count=len(decisions),
+                )
+                result["patterns_stored"] += 1
+            except Exception:
+                logger.exception("decision_log: failed to store preference pattern key=%s", pattern_key)
+                result["errors"] += 1
+
+        logger.info(
+            "decision_log: preference pattern extraction done analyzed=%d found=%d stored=%d",
+            result["analyzed"], result["patterns_found"], result["patterns_stored"],
+        )
+        return result
+    except Exception:
+        logger.exception("decision_log: failed to extract_preference_patterns")
+        result["errors"] += 1
+        return result
 
 
 def _format_transcript(messages: list[dict[str, str]]) -> str:

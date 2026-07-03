@@ -21,6 +21,7 @@ from app.services.orchestrator.response_guard import replace_forbidden_assistant
 from app.services.orchestrator.schedule_agent_client import call_schedule_agent, call_schedule_agent_stream
 from app.services.supabase_rest import get_current_user
 from app.services.memory_search import search_relevant_memories
+from app.services.decision_log import get_active_preference_patterns
 from app.services.self_model import get_self_model
 from app.services.user_fact_data import (
     build_facts_context,
@@ -84,6 +85,17 @@ async def _cached_self_model() -> dict | None:
     return result
 
 
+async def _cached_preference_patterns() -> list[dict[str, Any]]:
+    hit, val = _cache_get("preference_patterns")
+    if hit:
+        return val
+    result = await _timed(
+        get_active_preference_patterns(limit=5), timeout=3.0, default=[], label="preference_patterns"
+    )
+    _cache_set("preference_patterns", result)
+    return result or []
+
+
 async def _cached_user_profile(jwt: str) -> dict | None:
     key = f"profile:{jwt[:20]}"
     hit, val = _cache_get(key)
@@ -130,20 +142,23 @@ async def _cached_active_trends(jwt: str) -> list:
 # ─── Context builders ─────────────────────────────────────────────────────────
 
 
-def _format_self_model_freshness(last_reflected_at: Any) -> str:
-    """Day-granularity "how stale is this" label for identity_statement.
+def _format_freshness_note(last_reflected_at: Any) -> str:
+    """Day-granularity "how stale is this" label, shared by self_model's
+    identity_statement (Phase: ShiftPilotAI-naming incident fix) and B14's
+    preference patterns.
 
     identity_statement is written by a ~daily self-reflection cycle
-    (heartbeat.py's 24h cooldown) and, unlike fact-memory/RAG context, was
-    being injected into every turn with zero indication of when it was
-    written — so the model had no way to tell a months-old self-description
-    from something that "just happened". Deliberately rounded to whole days
-    (JST calendar-day difference, not hours/minutes): base_system already
-    isn't turn-stable for OpenAI's prefix cache because of the fact-memory
-    RAG portion (see chat_prompts.py's ordering comment), so this adds no
-    *additional* cache churn beyond what already exists — but keeping it at
-    day-resolution rather than finer avoids making that pre-existing
-    situation any worse.
+    (heartbeat.py's 24h cooldown), and preference patterns by a weekly
+    batch job (proactive/scheduler.py's preference_pattern_extract) — both
+    were, before their respective fixes, injected into every turn with zero
+    indication of when they were written, so the model had no way to tell
+    stale content from something that "just happened". Deliberately rounded
+    to whole days (JST calendar-day difference, not hours/minutes):
+    base_system already isn't turn-stable for OpenAI's prefix cache because
+    of the fact-memory RAG portion (see chat_prompts.py's ordering comment),
+    so this adds no *additional* cache churn beyond what already exists —
+    but keeping it at day-resolution rather than finer avoids making that
+    pre-existing situation any worse.
     """
     if not last_reflected_at:
         return "(最終更新: 不明 — 古い情報の可能性があるため断定的に話さないこと)"
@@ -176,13 +191,50 @@ def _build_self_model_context(model: dict | None) -> str | None:
         return None
     # Trim identity to 150 chars to keep context light
     identity_short = identity[:150] + ("…" if len(identity) > 150 else "")
-    freshness_note = _format_self_model_freshness(model.get("last_reflected_at"))
+    freshness_note = _format_freshness_note(model.get("last_reflected_at"))
     goals = model.get("current_goals") or []
     lines = [f"[シグマリス自己認識] {freshness_note}\n{identity_short}"]
     if goals:
         goal_str = "・".join(str(g) for g in goals[:3])  # max 3 goals
         lines.append(f"目標: {goal_str}")
     return "\n".join(lines)
+
+
+# Phase B14: below this many supporting decisions, a pattern is treated as
+# persona.md section 5's "仮説層" (low confidence — must hedge, e.g.
+# 「もしかしたら〜かもしれません」). At or above it, "傾向層" (soft
+# assertion allowed, e.g. 「〜な傾向がありますね」) — still never a flat
+# assertion ("事実層"), since this is always inferred, never confirmed
+# outright by 海星さん. Kept low (evidence_count already requires >= 2 to
+# be stored at all — see decision_log.py's _MIN_SUPPORTING_DECISIONS) so
+# most freshly-detected patterns start in the more heavily-hedged tier.
+_PREFERENCE_PATTERN_HYPOTHESIS_MAX_EVIDENCE = 3
+
+
+def _build_preference_patterns_context(patterns: list[dict[str, Any]] | None) -> str | None:
+    if not patterns:
+        return None
+    lines = [
+        "[海星さんの判断傾向(推測・参考情報)]",
+        "以下は過去の決定記録から推測された傾向であり、断定してはいけません。"
+        "根拠件数が少ないものは「もしかしたら〜かもしれません」のように必ずヘッジし、"
+        "根拠が十分にあるものでも「〜な傾向がありますね」のように柔らかく言い切るに留め、"
+        "「あなたはこういう人だから」と決めつける口調は使わないこと。",
+    ]
+    for pattern in patterns:
+        statement = str(pattern.get("pattern_statement") or "").strip()
+        if not statement:
+            continue
+        evidence_count = int(pattern.get("evidence_count") or 0)
+        tier = (
+            "仮説層(要ヘッジ)"
+            if evidence_count <= _PREFERENCE_PATTERN_HYPOTHESIS_MAX_EVIDENCE
+            else "傾向層(柔らかい言い切り可)"
+        )
+        freshness_note = _format_freshness_note(pattern.get("last_confirmed_at"))
+        lines.append(f"- {statement} (根拠決定{evidence_count}件、{tier}、{freshness_note})")
+
+    return "\n".join(lines) if len(lines) > 2 else None
 
 
 def _build_trends_context(trends: list) -> str | None:
@@ -435,10 +487,11 @@ async def run_orchestrator_chat(
     agent = get_schedule_agent()
 
     # Auth + stable context in one parallel gather, then facts after user_id is known.
-    user, fact_profile, self_model, active_trends, session = await asyncio.gather(
+    user, fact_profile, self_model, preference_patterns, active_trends, session = await asyncio.gather(
         _timed(get_current_user(jwt), timeout=8.0),
         _cached_user_profile(jwt),
         _cached_self_model(),
+        _cached_preference_patterns(),
         _cached_active_trends(jwt),
         _prepare_session_messages(jwt=jwt, thread_id=thread_id, messages=messages),
         return_exceptions=False,
@@ -508,6 +561,7 @@ async def run_orchestrator_chat(
 
     call_name = extract_call_name(fact_profile) or _user_display_name(user)
     self_model_context = _build_self_model_context(self_model)
+    preference_patterns_context = _build_preference_patterns_context(preference_patterns)
 
     try:
         schedule_result = await call_schedule_agent(
@@ -521,6 +575,7 @@ async def run_orchestrator_chat(
             reason=f"orchestrator:{invocation_id}:{reason}",
             user_profile_context=profile_context,
             self_model_context=self_model_context,
+            preference_patterns_context=preference_patterns_context,
             persist_thread=persist_thread,
         )
         if CONFIRMATION_MARKER_RE.search(schedule_result.text):
@@ -644,10 +699,11 @@ async def run_orchestrator_chat_stream(
     agent = get_schedule_agent()
 
     # Auth + stable context in one parallel gather, then facts after user_id is known.
-    user, fact_profile, self_model, active_trends, session = await asyncio.gather(
+    user, fact_profile, self_model, preference_patterns, active_trends, session = await asyncio.gather(
         _timed(get_current_user(jwt), timeout=8.0),
         _cached_user_profile(jwt),
         _cached_self_model(),
+        _cached_preference_patterns(),
         _cached_active_trends(jwt),
         _prepare_session_messages(jwt=jwt, thread_id=thread_id, messages=messages),
         return_exceptions=False,
@@ -717,6 +773,7 @@ async def run_orchestrator_chat_stream(
 
     call_name = extract_call_name(fact_profile) or _user_display_name(user)
     self_model_context = _build_self_model_context(self_model)
+    preference_patterns_context = _build_preference_patterns_context(preference_patterns)
     schedule_text = ""
     returned_thread_id = effective_thread_id
     schedule_message_id: str | None = None
@@ -736,6 +793,7 @@ async def run_orchestrator_chat_stream(
             reason=f"orchestrator:{invocation_id}:{reason}",
             user_profile_context=profile_context,
             self_model_context=self_model_context,
+            preference_patterns_context=preference_patterns_context,
             persist_thread=persist_thread,
         ):
             if event.tool_event:

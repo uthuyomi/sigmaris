@@ -166,6 +166,15 @@ async def _decision_analyze() -> None:
         logger.exception("Decision analyze job raised unexpectedly")
 
 
+async def _preference_pattern_extract() -> None:
+    from app.services.decision_log import extract_preference_patterns  # noqa: PLC0415
+    try:
+        result = await extract_preference_patterns()
+        logger.info("Preference pattern extraction job done: %s", result)
+    except Exception:
+        logger.exception("Preference pattern extraction job raised unexpectedly")
+
+
 def startup_scheduler() -> None:
     global _scheduler
 
@@ -189,6 +198,7 @@ def startup_scheduler() -> None:
     _scheduler.add_job(_curiosity_search,     CronTrigger(hour=6,  minute=15,                    timezone=tz), id="curiosity_search",     replace_existing=True)
     _scheduler.add_job(_experience_analyze,   CronTrigger(day_of_week="sun", hour=4,  minute=0,  timezone=tz), id="experience_analyze",   replace_existing=True)
     _scheduler.add_job(_decision_analyze,     CronTrigger(day_of_week="sun", hour=4,  minute=30, timezone=tz), id="decision_analyze",     replace_existing=True)
+    _scheduler.add_job(_preference_pattern_extract, CronTrigger(day_of_week="sun", hour=4, minute=45, timezone=tz), id="preference_pattern_extract", replace_existing=True)
     _scheduler.add_job(_self_interest_queries,CronTrigger(day_of_week="sun", hour=5,  minute=30, timezone=tz), id="self_interest_queries",replace_existing=True)
 
     _scheduler.start()
