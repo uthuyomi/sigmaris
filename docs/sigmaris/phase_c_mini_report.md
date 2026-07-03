@@ -203,26 +203,44 @@ response_error_rate : 0.000  (直近7日, n=10)
 
 ## 6. 実際に計測した初回のスコア(ベースライン)について
 
-**依然として未計測。** 準備タスクとして改めてbaseline計測を試みたが、この環境では実行不能なままだった。試したこと・確認したことを以下に記す(機密情報は含めていない):
+**計測完了。** これまでの複数回の準備タスクではローカル環境からSupabase・LLMへのアクセス手段が一切なく実行不能だったが、運用者(海星さん)が実クレデンシャルを持つ環境で`generate_eval_testset.py`・`run_eval.py`を実際に実行し、以下の値を取得した。**これをPhase B群の効果測定における正式なbaselineとして記録する。**
 
-- `backend/.env`: 引き続き`AGENT_SECRETS`・`LOCAL_LLM_ENABLED`・`OLLAMA_BASE_URL`・`OLLAMA_EMBED_MODEL`の4項目のみ。`SUPABASE_SERVICE_ROLE_KEY`・`SIGMARIS_REFRESH_TOKEN`・`SIGMARIS_USER_JWT`・`OPENAI_API_KEY`はいずれも未設定。
-- `sigmaris@192.168.179.11`(本番サーバー)へのSSH接続を試みたが、`Permission denied (publickey,password)`(この環境に秘密鍵が存在しないため)。
-- ローカルのOllama(`http://localhost:11434`)への接続も不可(接続拒否)。
+```
+実行日時: 2026-07-03(Phase A0〜A5・C-mini・JWT永続化・LLMRouterモデル存在確認修正・FREE LIMIT削除 完了後)
+testset_size: 20 (評価対象20件, skip 0件、fact由来20件 / decision由来0件)
+memory_precision: 0.100
+memory_recall: 0.100
+memory_f1_score: 0.100
+rag_ndcg_score: 0.100
+response_error_rate: 0.042 (直近7日, n=48)
+sigmaris_eval_runs id: 7796146c-2f6c-403c-a440-e3421d63267e
+```
 
-つまり、テストセット生成(`generate_eval_testset.py`)・スコア計測(`run_eval.py`)のどちらも、この実行環境からは物理的に実行できる経路が存在しない。指示書の「baseline計測時にエラーが発生し実行自体ができない場合のみ、作業を止めて報告すること」という基準に該当するため、実行できない旨をここに明記し、架空の数値を作ることはしていない。5章の数値はあくまでモックによるパイプライン動作確認であり、Phase Bの基準点として使えるものではない(この位置づけは変わっていない)。
+### この数値の解釈にあたっての注釈(必読)
 
-**運用者(海星さん、または実クレデンシャルを持つ今後のセッション)にお願いしたいこと:**
+この数値を、そのまま「シグマリスの記憶検索性能が低い」と読むべきではない。以下の背景を踏まえて解釈すること。
 
-1. `backend/.env`に`SUPABASE_SERVICE_ROLE_KEY`・`SIGMARIS_REFRESH_TOKEN`(または`SIGMARIS_USER_JWT`)・(`LOCAL_LLM_ENABLED=false`の場合)`OPENAI_API_KEY`が揃っている環境(本番サーバー等)で、`python scripts/generate_eval_testset.py`を実行してテストセットを生成する。
-2. 生成された`backend/eval/testset.json`の中身(特にLLMが生成した質問文の自然さ)を一度目視確認する(1章・2章で述べた「LLM自動生成の限界」への対処)。
-3. `python scripts/run_eval.py --notes "Phase C-mini直後・Phase B着手前のベースライン"`を実行する。これが`sigmaris_eval_runs`に記録される最初の行になり、以降のPhase B各機能の効果測定の基準点になる。
-4. マイグレーション`202607060028_sigmaris_eval_runs.sql`を他の未適用分と合わせて適用する(`python3 scripts/apply_migration.py 202607060028`)。
+**1. decision由来の質問が0件だったことについて**
+
+本セッション中に、`LLMRouter.is_available()`がOllamaの疎通確認しかしておらず、実際にチャット用モデルがインストールされているかを確認していなかったバグが発覚し、修正した(9章)。このバグにより、`decision_log.py`の決定検出処理(Phase A3で本稼働させたもの)が、過去複数日にわたりサイレント失敗していた可能性が高いことが判明している(fire-and-forgetでtry/exceptに包まれているため、失敗してもユーザーには見えない)。この結果、`sigmaris_decision_log`に十分なデータが蓄積されておらず、今回のテストセット生成でdecision由来の設問が1件も作れなかった(2章で説明した通り、`memory_refs`が空の決定は候補から除外されるため)。同じ理由で`memory_extractor.py`のfact抽出も一部影響を受けていた可能性があり、`user_fact_items`の網羅性にも同様の留保がつく。
+
+**2. 本baseline取得の直前に、複数の関連修正が同日に行われたことについて**
+
+JWT永続化・`LLMRouter`のモデル存在確認・FREE LIMIT削除・`self_model`の鮮度情報追加・禁止ルール文の削除など、複数の修正がこのbaseline取得の直前に行われている。したがってこの数値は「これらの修正が全て反映された直後の状態」を表しており、**今後Phase B群の各機能を実装した際の比較対象としては使えるが、これらの修正が入る前の状態との比較には使えない**(修正前のbaselineは取得していない)。
+
+**3. `memory_f1_score`/`rag_ndcg_score`が0.100という値の解釈**
+
+1章で繰り返し強調している通り、これは客観的ベンチマーク(LongMemEval/LoCoMo)と比較可能な数値ではなく、本プロジェクト独自に生成したテストセットに基づく内部指標である。低い値の要因として、(a)テストセット生成ロジック自体の質(LLM逆生成の精度)、(b)Phase B群(ハイブリッド検索等)が未実装であること、(c)上記1で述べた記憶蓄積不足、が複合的に影響している可能性があり、単一の原因には切り分けられていない。原因の切り分けは今後Phase Bの各機能を実装しながら追跡していく。
+
+**4. 次のアクション**
+
+`sigmaris_decision_log`にデータが十分蓄積された時点(例えば数日〜1週間程度の通常利用後、かつ今回修正した`LLMRouter`のバグが解消された状態で決定検出が正常に動き続けた後)で、一度baselineを再取得し、今回の値と比較することを推奨する。これにより「decision_logの機能不全が解消されたことによる改善」と「Phase B群の実装による改善」を分けて評価しやすくなる。
 
 ---
 
 ## 7. Phase A5で申し送りされた「embeddingのモデル由来混在リスク」が、今回の計測結果に影響していそうか
 
-**この環境では観察できなかった(準備タスクでの再試行後も同様)。** 6章の通りbaseline計測自体が実行不能なため、実際に本番の`search_relevant_memories`を呼んでいない。Ollama製とOpenAI製のembeddingが混在した状態でのスコアへの影響は、この環境では原理的に観測しようがない。
+**私(この作業セッション)からは引き続き観察できていない。** 6章の通りbaselineは運用者側の環境で実行されたものであり、私自身は`search_relevant_memories`の実際の呼び出し・個々の設問ごとの類似度スコアの内訳(`sigmaris_eval_runs.details.per_query`)にアクセスできていない(この環境からのDBアクセス手段が無いままのため)。したがって、embeddingモデル由来混在が6章のスコアに実際に影響しているかどうかは、今回も確認できていない。
 
 ただし設計面から言えることが1つある: `memory_f1_score`・`rag_ndcg_score`は「前回計測との差分」を見る運用を想定した指標であり、**もし本番運用中に`LOCAL_LLM_ENABLED`の値やOllamaの疎通状態が切り替わるタイミングがあれば、その前後でスコアが変動しても、それはPhase Bの機能自体の効果ではなく、Phase A5で申し送りしたembeddingモデル由来混在の影響である可能性がある**。運用者が6章の手順でベースラインを取る際は、その時点の`LOCAL_LLM_ENABLED`の値と、Ollamaが実際に疎通していたかを`run_eval.py --notes`に書き残しておくことを推奨する(`sigmaris_eval_runs.notes`列はこの用途のために自由記述にしてある)。
 
