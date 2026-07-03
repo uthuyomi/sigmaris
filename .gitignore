@@ -47,6 +47,11 @@ yarn-error.log*
 # intentionally NOT excluded here and stays tracked.
 /backend/eval/testset.json
 
+# JWT persistence: live Supabase session (access+refresh token), written by
+# jwt_manager.py after every successful rotation. Equivalent sensitivity to
+# .env — must never be committed.
+/backend/.state/
+
 # vercel
 .vercel
 
