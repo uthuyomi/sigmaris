@@ -41,6 +41,12 @@ yarn-error.log*
 .env*
 /frontend/.env*
 
+# Phase C-mini: live-generated eval testset contains real user_fact_items
+# content (PII-adjacent), regenerated/edited over time — not a source
+# artifact. testset.example.json (the demo/pipeline-check fixture) is
+# intentionally NOT excluded here and stays tracked.
+/backend/eval/testset.json
+
 # vercel
 .vercel
 

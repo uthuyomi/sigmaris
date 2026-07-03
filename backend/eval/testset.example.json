@@ -1,0 +1,117 @@
+{
+  "schema_version": 1,
+  "generated_at": null,
+  "generated_by": "manual_example",
+  "user_id": null,
+  "_readme": "これはPhase C-miniのパイプライン(スコア計算ロジック・run_eval.pyの一連の流れ)を実データ・実LLM無しで検証するための手作りの例示テストセットである。backend/scripts/seed_fact_memory.py に実際に投入された既知の実データを元に手で質問文を書いたものであり、指示書が求める『LLMによる逆生成・20〜30件』の本番テストセットの代わりにはならない。本番運用では backend/scripts/generate_eval_testset.py を実データ・実LLM環境で実行して backend/eval/testset.json を生成すること。詳細は docs/sigmaris/phase_c_mini_report.md 4章参照。",
+  "entries": [
+    {
+      "id": "example-1",
+      "question": "私が今使っているノートパソコンのスペックを教えて",
+      "source": "fact",
+      "expected_fact_keys": ["devices/laptop"],
+      "notes": null,
+      "generated_by": "manual_example",
+      "reviewed": true
+    },
+    {
+      "id": "example-2",
+      "question": "苦手な食べ物ってあったっけ?",
+      "source": "fact",
+      "expected_fact_keys": ["preferences/food_dislikes"],
+      "notes": null,
+      "generated_by": "manual_example",
+      "reviewed": true
+    },
+    {
+      "id": "example-3",
+      "question": "好きな食べ物のジャンルは何?",
+      "source": "fact",
+      "expected_fact_keys": ["preferences/food_likes"],
+      "notes": null,
+      "generated_by": "manual_example",
+      "reviewed": true
+    },
+    {
+      "id": "example-4",
+      "question": "私が乗っている車って何だっけ",
+      "source": "fact",
+      "expected_fact_keys": ["environment/car"],
+      "notes": null,
+      "generated_by": "manual_example",
+      "reviewed": true
+    },
+    {
+      "id": "example-5",
+      "question": "自転車はどんなの使ってる?",
+      "source": "fact",
+      "expected_fact_keys": ["environment/bicycle"],
+      "notes": null,
+      "generated_by": "manual_example",
+      "reviewed": true
+    },
+    {
+      "id": "example-6",
+      "question": "私の趣味を一通り挙げてみて",
+      "source": "fact",
+      "expected_fact_keys": ["preferences/hobbies"],
+      "notes": null,
+      "generated_by": "manual_example",
+      "reviewed": true
+    },
+    {
+      "id": "example-7",
+      "question": "今の職業って何て説明してたっけ",
+      "source": "fact",
+      "expected_fact_keys": ["profile/occupation"],
+      "notes": null,
+      "generated_by": "manual_example",
+      "reviewed": true
+    },
+    {
+      "id": "example-8",
+      "question": "どこに住んでいるんだっけ",
+      "source": "fact",
+      "expected_fact_keys": ["profile/residence"],
+      "notes": null,
+      "generated_by": "manual_example",
+      "reviewed": true
+    },
+    {
+      "id": "example-9",
+      "question": "睡眠のタイプは朝型・夜型どっちだったか覚えてる?",
+      "source": "fact",
+      "expected_fact_keys": ["lifestyle/sleep_pattern"],
+      "notes": null,
+      "generated_by": "manual_example",
+      "reviewed": true
+    },
+    {
+      "id": "example-10",
+      "question": "短期的な目標って何を挙げてたっけ",
+      "source": "fact",
+      "expected_fact_keys": ["goals/short_term_1", "goals/short_term_2", "goals/short_term_3"],
+      "notes": null,
+      "generated_by": "manual_example",
+      "reviewed": true
+    },
+    {
+      "id": "example-11",
+      "question": "長期的なゴールは何だったか思い出させて",
+      "source": "fact",
+      "expected_fact_keys": ["goals/long_term_1", "goals/long_term_2"],
+      "notes": null,
+      "generated_by": "manual_example",
+      "reviewed": true
+    },
+    {
+      "id": "example-12",
+      "question": "デスクトップPCのスペックは?",
+      "source": "fact",
+      "expected_fact_keys": ["devices/desktop"],
+      "notes": null,
+      "generated_by": "manual_example",
+      "reviewed": true
+    }
+  ]
+}

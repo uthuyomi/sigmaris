@@ -19,6 +19,7 @@ class TaskType(str, enum.Enum):
     SUMMARIZE = "summarize"
     COMPLEX_REASONING = "complex_reasoning"
     DECISION_DETECTION = "decision_detection"
+    EVAL_GENERATION = "eval_generation"
 
 
 _LOCAL_TASK_TYPES = {
@@ -27,6 +28,7 @@ _LOCAL_TASK_TYPES = {
     TaskType.SELF_REFLECT,
     TaskType.SUMMARIZE,
     TaskType.DECISION_DETECTION,
+    TaskType.EVAL_GENERATION,
 }
 
 
@@ -75,7 +77,13 @@ def _openai_model_for_task(task: TaskType) -> str:
     """Map TaskType to the appropriate OpenAI model tier."""
     if task in {TaskType.SELF_REFLECT, TaskType.COMPLEX_REASONING}:
         return settings.sigmaris_reflect_model or settings.openai_advanced_model
-    if task in {TaskType.ROUTING, TaskType.MEMORY_EXTRACTION, TaskType.SUMMARIZE, TaskType.DECISION_DETECTION}:
+    if task in {
+        TaskType.ROUTING,
+        TaskType.MEMORY_EXTRACTION,
+        TaskType.SUMMARIZE,
+        TaskType.DECISION_DETECTION,
+        TaskType.EVAL_GENERATION,
+    }:
         return settings.openai_nano_model
     return settings.openai_model
 
