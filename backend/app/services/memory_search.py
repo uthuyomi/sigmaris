@@ -34,6 +34,29 @@ _TRGM_HIGH_CONFIDENCE_SIMILARITY = 0.5
 # sensitive to tune further for a candidate pool this small).
 _RRF_K = 60
 
+# Phase B17: how much user_fact_items.importance_score (0.0-1.0, already
+# used by build_facts_context()'s top-N sort and memory_validator.py's
+# logical-deletion threshold) nudges search ranking. A pure multiplier
+# capped at +15% at importance=1.0 — small enough that it breaks ties among
+# similarly-relevant results without overriding a real relevance gap
+# (requirement 3: this must never make a clearly-worse match outrank a
+# clearly-better one just because it's tagged more important). See
+# phase_b17_report.md section 1 for the values actually tried.
+_IMPORTANCE_RANKING_WEIGHT = 0.15
+
+# The DB column's own default (202606270019_trend_memory.sql) — used when a
+# row has no importance_score at all, which happens for every result until
+# migration 202607090031 is applied (the RPCs simply won't return the
+# field yet). Defaulting to the column's own neutral default means ranking
+# behaves identically pre- and post-migration.
+_DEFAULT_IMPORTANCE_SCORE = 0.5
+
+
+def _importance_weighted_score(base_score: float, row: dict[str, Any]) -> float:
+    importance = row.get("importance_score")
+    importance = float(importance) if importance is not None else _DEFAULT_IMPORTANCE_SCORE
+    return base_score * (1.0 + importance * _IMPORTANCE_RANKING_WEIGHT)
+
 # Lazily probed once per process: whether the local Ollama instance actually
 # answers. Mirrors LLMRouter's _local_available pattern in local_llm.py —
 # LOCAL_LLM_ENABLED=true alone doesn't guarantee Ollama is reachable, so a
@@ -217,14 +240,24 @@ def _merge_hybrid_results(
         in_trgm = row_id in trgm_ids
         row["match_source"] = "both" if in_vector and in_trgm else ("vector" if in_vector else "trgm")
 
-    high_confidence_ids = [
-        row["id"]
-        for row in trgm_rows
-        if row.get("id") and float(row.get("similarity") or 0.0) >= _TRGM_HIGH_CONFIDENCE_SIMILARITY
-    ]
+    # Phase B17: importance_score nudges ordering *within* each tier (the
+    # near-exact-keyword tier and the RRF-ranked tier) — it never moves a
+    # result between tiers, so a highly-important-but-only-loosely-relevant
+    # fact still can't outrank a genuine near-exact keyword match.
+    high_confidence_ids = sorted(
+        (
+            row["id"]
+            for row in trgm_rows
+            if row.get("id") and float(row.get("similarity") or 0.0) >= _TRGM_HIGH_CONFIDENCE_SIMILARITY
+        ),
+        key=lambda row_id: _importance_weighted_score(
+            float(rows_by_id[row_id].get("similarity") or 0.0), rows_by_id[row_id]
+        ),
+        reverse=True,
+    )
     remaining_ids = sorted(
         (row_id for row_id in scores if row_id not in high_confidence_ids),
-        key=lambda row_id: scores[row_id],
+        key=lambda row_id: _importance_weighted_score(scores[row_id], rows_by_id[row_id]),
         reverse=True,
     )
     ordered_ids = [*dict.fromkeys(high_confidence_ids), *remaining_ids]

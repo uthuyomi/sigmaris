@@ -30,6 +30,33 @@ _PHYSICAL_DELETE_DAYS = 30
 # LLM contradiction check budget per run (cost control)
 _MAX_CONTRADICTION_CHECKS = 5
 
+# Phase B17: importance_score (0.0-1.0) softens confidence decay (Phase 1
+# below) — NOT a full exemption (requirement: "重要度に応じて減衰の閾値・
+# 速度を調整する形にすること", explicitly not full immunity), and does not
+# touch contradiction detection (Phase 2) at all, so a high-importance fact
+# that's genuinely contradicted still gets flagged (requirement 3).
+#
+# At importance=1.0: decay onset is delayed to 2x the base category window,
+# and the confidence drop when decay does trigger is halved (severity
+# 1-decay_factor cut by 50%). At importance=0.0: unchanged from the
+# pre-B17 category-only behavior. Both scale linearly with importance in
+# between. Phase 3 (logical deletion) already multiplies importance x
+# confidence against _FORGET_THRESHOLD — no change needed there, it was
+# already importance-aware.
+_IMPORTANCE_DECAY_ONSET_EXTENSION = 1.0
+_IMPORTANCE_DECAY_SEVERITY_DAMPENING = 0.5
+
+
+def _importance_adjusted_decay(
+    base_decay_days: int, base_decay_factor: float, importance_score: float
+) -> tuple[int, float]:
+    importance = max(0.0, min(1.0, importance_score))
+    effective_days = round(base_decay_days * (1.0 + importance * _IMPORTANCE_DECAY_ONSET_EXTENSION))
+    severity = 1.0 - base_decay_factor
+    dampened_severity = severity * (1.0 - importance * _IMPORTANCE_DECAY_SEVERITY_DAMPENING)
+    effective_factor = 1.0 - dampened_severity
+    return effective_days, effective_factor
+
 
 async def validate_all_facts(jwt: str) -> dict[str, Any]:
     """
@@ -69,10 +96,15 @@ async def validate_all_facts(jwt: str) -> dict[str, Any]:
             if rule is None or rule[0] is None:
                 continue
 
-            decay_days, decay_factor = rule
+            base_decay_days, base_decay_factor = rule
             updated_str = item.get("updated_at")
             if not updated_str:
                 continue
+
+            importance = float(item.get("importance_score") or 0.5)
+            decay_days, decay_factor = _importance_adjusted_decay(
+                base_decay_days, base_decay_factor, importance
+            )
 
             updated_at = datetime.fromisoformat(updated_str.replace("Z", "+00:00"))
             if (now - updated_at).days < decay_days:
