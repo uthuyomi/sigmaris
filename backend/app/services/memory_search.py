@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import logging
 from typing import Any
 
@@ -14,6 +15,24 @@ logger = logging.getLogger(__name__)
 
 EMBEDDING_DIMENSIONS = 768
 EMBED_BATCH_SIZE = 10
+
+# Phase B1: hybrid search tuning. Trigram similarity scores for short
+# Japanese/mixed-language strings rarely reach the 0.7+ range vector cosine
+# similarity does, so this is a separate, much lower threshold — not the
+# same `threshold` param search_relevant_memories() uses for vector search.
+TRGM_MATCH_THRESHOLD = 0.15
+
+# A trigram hit at or above this similarity is treated as a near-exact
+# keyword/substring match (e.g. a literal product name) and is surfaced
+# ahead of the RRF-ranked results, regardless of how the vector search
+# ranked it — this is the direct fix for vector search missing proper
+# nouns, see phase_b1_report.md section 2.
+_TRGM_HIGH_CONFIDENCE_SIMILARITY = 0.5
+
+# Standard Reciprocal Rank Fusion constant (the usual default is 60; it
+# controls how much rank position 1 is favored over lower ranks — not
+# sensitive to tune further for a candidate pool this small).
+_RRF_K = 60
 
 # Lazily probed once per process: whether the local Ollama instance actually
 # answers. Mirrors LLMRouter's _local_available pattern in local_llm.py —
@@ -125,19 +144,9 @@ async def generate_embedding(text: str) -> list[float]:
     return await _generate_embedding_openai(cleaned)
 
 
-async def search_relevant_memories(
-    query: str,
-    user_id: str,
-    threshold: float = 0.7,
-    limit: int = 5,
-    *,
-    jwt: str | None = None,
+async def _search_fact_memory_vector(
+    token: str, embedding: list[float], user_id: str, threshold: float, limit: int
 ) -> list[dict[str, Any]]:
-    embedding = await generate_embedding(query)
-    if not embedding:
-        return []
-
-    token = jwt or await get_sigmaris_jwt()
     result = await rest_rpc(
         token,
         "search_fact_memory",
@@ -151,6 +160,115 @@ async def search_relevant_memories(
     rows = result if isinstance(result, list) else []
     rows.sort(key=lambda item: float(item.get("similarity") or 0.0), reverse=True)
     return rows
+
+
+async def _search_fact_memory_trgm(
+    token: str, query: str, user_id: str, limit: int
+) -> list[dict[str, Any]]:
+    cleaned = query.strip()
+    if not cleaned:
+        return []
+    result = await rest_rpc(
+        token,
+        "search_fact_memory_trgm",
+        {
+            "query_text": cleaned,
+            "user_id_param": user_id,
+            "match_threshold": TRGM_MATCH_THRESHOLD,
+            "match_count": limit,
+        },
+    )
+    rows = result if isinstance(result, list) else []
+    rows.sort(key=lambda item: float(item.get("similarity") or 0.0), reverse=True)
+    return rows
+
+
+def _merge_hybrid_results(
+    vector_rows: list[dict[str, Any]], trgm_rows: list[dict[str, Any]], *, limit: int
+) -> list[dict[str, Any]]:
+    """Reciprocal Rank Fusion across the two ranked lists, with an explicit
+    boost so a near-exact trigram/keyword hit is never buried beneath
+    semantically-adjacent-but-wrong vector results (requirement: proper
+    nouns like "ThinkPad T14" must surface even if the embedding missed
+    them entirely)."""
+    scores: dict[str, float] = {}
+    rows_by_id: dict[str, dict[str, Any]] = {}
+    for ranked_list in (vector_rows, trgm_rows):
+        for rank, row in enumerate(ranked_list, start=1):
+            row_id = row.get("id")
+            if not row_id:
+                continue
+            scores[row_id] = scores.get(row_id, 0.0) + 1.0 / (_RRF_K + rank)
+            existing = rows_by_id.get(row_id)
+            if existing is None or float(row.get("similarity") or 0.0) > float(
+                existing.get("similarity") or 0.0
+            ):
+                rows_by_id[row_id] = row
+
+    high_confidence_ids = [
+        row["id"]
+        for row in trgm_rows
+        if row.get("id") and float(row.get("similarity") or 0.0) >= _TRGM_HIGH_CONFIDENCE_SIMILARITY
+    ]
+    remaining_ids = sorted(
+        (row_id for row_id in scores if row_id not in high_confidence_ids),
+        key=lambda row_id: scores[row_id],
+        reverse=True,
+    )
+    ordered_ids = [*dict.fromkeys(high_confidence_ids), *remaining_ids]
+    return [rows_by_id[row_id] for row_id in ordered_ids[:limit]]
+
+
+async def search_relevant_memories(
+    query: str,
+    user_id: str,
+    threshold: float = 0.7,
+    limit: int = 5,
+    *,
+    jwt: str | None = None,
+) -> list[dict[str, Any]]:
+    """Hybrid search (Phase B1): pgvector semantic similarity merged with
+    pg_trgm keyword/fuzzy matching via Reciprocal Rank Fusion. Vector search
+    alone tends to miss exact proper nouns (product names, etc.) since a
+    short keyword's embedding doesn't reliably land near a fact containing
+    that same keyword verbatim; trigram search catches those directly and
+    doesn't depend on embedding/LLM availability at all, so it also serves
+    as a fallback when embedding generation itself fails.
+    """
+    token = jwt or await get_sigmaris_jwt()
+
+    # Embedding generation (an LLM call) and the trigram DB query are
+    # independent, so they run concurrently rather than back-to-back —
+    # keeps hybrid search's added latency close to zero versus vector-only.
+    embedding_result, trgm_result = await asyncio.gather(
+        generate_embedding(query),
+        _search_fact_memory_trgm(token, query, user_id, limit),
+        return_exceptions=True,
+    )
+
+    if isinstance(embedding_result, BaseException):
+        logger.exception("memory_search: embedding generation failed, continuing with trigram-only results", exc_info=embedding_result)
+        embedding = []
+    else:
+        embedding = embedding_result
+
+    if isinstance(trgm_result, BaseException):
+        logger.exception("memory_search: trigram search failed, continuing with vector-only results", exc_info=trgm_result)
+        trgm_rows = []
+    else:
+        trgm_rows = trgm_result
+
+    vector_rows: list[dict[str, Any]] = []
+    if embedding:
+        try:
+            vector_rows = await _search_fact_memory_vector(token, embedding, user_id, threshold, limit)
+        except Exception:
+            logger.exception("memory_search: vector search failed, continuing with trigram-only results")
+
+    if not vector_rows and not trgm_rows:
+        return []
+
+    return _merge_hybrid_results(vector_rows, trgm_rows, limit=limit)
 
 
 async def update_fact_embeddings(
