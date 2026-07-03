@@ -140,6 +140,72 @@ PASS: 'Z'-suffixed UTC timestamp (as Supabase sometimes returns) parses correctl
 
 ---
 
+## 8. 追加対応: 名前禁止ルール文の削除・トーンダウン(実験的対処)
+
+鮮度情報修正の適用後も実際に対話で検証したところ、名前の話題を振ると**聞かれてもいないのに「さっき別名で名乗ってしまった」という趣旨の、具体性のない謝罪を自発的に付け加える**現象が再現性をもって発生した。`sigmaris_self_model.identity_statement`の中身を確認したところShiftPilotAIへの言及は一切なく(4章で仮説として挙げていたself_model由来ではなかったことが確定)、5章で挙げていた**「禁止ルール文自体が作話の引き金になっている」**という経路が最有力と判断し、この節で対応した。
+
+### 変更前・変更後(diff)
+
+`backend/app/services/chat_prompts.py::build_system_prompt()`の`rules`配列内、identity_ruleの直後の要素のみを変更した。
+
+```diff
+     rules = [
+         identity_rule,
+         (
+             "あなたの名前はシグマリスです。"
+-            "ShiftPilotAI・shift-pilot-ai・ShiftPilotという名前は絶対に使わないでください。"
+-            "自己紹介を求められたら必ず『シグマリス』と名乗ってください。"
++            "自己紹介を求められたら『シグマリス』と名乗ってください。"
+         ),
+         "日本語で自然に話してください。",
+```
+
+判断根拠:
+
+- **「ShiftPilotAI・shift-pilot-ai・ShiftPilot」という具体的な文字列そのものを、プロンプトから完全に削除した。** トーンダウン(弱い禁止表現に言い換える)ではなく完全削除を選んだ理由: これらの文字列が存在する限り、LLMが「なぜこの名前が名指しで列挙されているのか」を推論する余地が残る。文字列自体をプロンプトから消すことで、作話の直接的なトリガーとなる語彙を根本から取り除いた。
+- **「絶対に」「必ず」という強調語も削除した。** これらの語調自体が「よほど重大な過去の失敗があったのだろう」という推論を誘発しうると判断したため。
+- **肯定的な自己認識の記述(「あなたの名前はシグマリスです」「自己紹介を求められたら『シグマリス』と名乗ってください」)は残した。** これは一般的なペルソナ設定の一部であり、特定の過去の出来事や禁止対象を示唆しない、ごく普通の自己紹介指示のため、作話の引き金になるリスクは低いと判断した。
+- **`identity_rule`(agent_mode分岐、`rules`配列の1つ目の要素)には触れていない。** ここには元々ShiftPilotAI等の文字列は含まれておらず、対象外。
+- **`rules`配列の構造・要素数・Phase A2のプレフィックスキャッシュ順序(固定rulesが先頭)には一切影響を与えていない。** 該当要素の中身を書き換えただけで、配列内の位置・他の要素は変更していない。
+
+### `response_guard.py`について: 変更していないことの確認
+
+`git diff --stat backend/app/services/orchestrator/response_guard.py`で差分ゼロを確認した(このタスクで一切触れていない)。`FORBIDDEN_ASSISTANT_NAME_PATTERN`の正規表現ソース文字列も変更前と完全に一致することをテストで直接検証した(9章参照)。この強制置換ガードは、`/chat`・WearOS・`/sigmaris`のいずれの応答経路でも(Phase A1-bで統一済みの`replace_forbidden_assistant_names`呼び出し経由で)引き続き適用される。
+
+### 実モデルでの確認結果
+
+**実行できなかった。** これまでのタスクと同様、ローカル環境に`OPENAI_API_KEY`が無く、ローカルOllamaにも接続できず(疎通確認済み、接続拒否)、サーバーへのSSHアクセスも無いため、実際に「なぜShiftPilotAIと名乗ってはいけないの?」を送信して応答を確認することはできなかった。指示書の許容範囲に従い、コードレベルの変更確認と`response_guard.py`のユニットテストで代替した(9章)。
+
+**実モデルでの確認は運用者側にお願いしたい。** 具体的には、名前の話題を振った際に「さっき別名で名乗ってしまった」という趣旨の自発的な言及が今回の変更後も再現するかどうかを確認していただきたい。
+
+### 【重要】これは実験的対処であり、経過観察が必要
+
+この修正は「禁止ルール文が引き金になっている」という仮説に基づく**1段階目の対処**であり、確定的な解決ではない。以下の方針で経過観察をお願いしたい:
+
+- **今回は「過去の失敗を自発的に語らないこと」という抑制ルールの追加(2段階目)を意図的に行っていない。** これは今回の変更(ルール文の削除)単体で作話が収まるかどうかを、まず確認するためである。2段階目を同時に入れてしまうと、どちらの変更が効いたのか切り分けられなくなる。
+- **様子見の結果、自発的な謝罪言及が再発する場合は、2段階目(抑制ルールの追加)を別タスクとして検討すること。**
+- 5章で評価した「禁止ルール文からの作話」という仮説は、あくまで最有力候補であって確定ではない。今回の変更後も再発する場合、他の経路(例えば`persona.md`本体・`persona_rewriter.py`の"legacy project names"という言い回し・LLM自体の一般的な傾向としての自己言及的な作話性向)も改めて疑う必要がある。今回のタスクでは`persona_rewriter.py`には触れていない(指示書のスコープが`chat_prompts.py`の`rules`に明示的に限定されていたため)。
+
+---
+
+## 9. テスト結果(名前禁止ルール変更分)
+
+モックのみ(`build_system_prompt()`・`replace_forbidden_assistant_names()`はいずれも純粋関数)。5ケース全てPASS:
+
+```
+PASS: chat_prompts.py rules no longer name-drop ShiftPilotAI/shift-pilot-ai/ShiftPilot
+      or use '絶対に...使わないでください' phrasing, but still state the assistant's name positively
+PASS: agent_mode identity_rule untouched by this change, no leaked prohibition phrasing there either
+PASS: response_guard.py's replace_forbidden_assistant_names() still catches and replaces
+      all 3 forbidden name variants — the safety net is fully intact
+PASS: FORBIDDEN_ASSISTANT_NAME_PATTERN regex source is byte-for-byte unchanged
+PASS: fixed rules still lead the prompt (Phase A2 cache-prefix ordering preserved)
+```
+
+要件1(強い禁止表現の除去)・要件2(response_guard.pyが不変かつ機能すること)・要件3(Phase A2のキャッシュ構造への非影響)を直接検証している。`backend/tests/`(既存8件)全てPASS、`import app.main`成功。
+
+---
+
 ## Related Documents
 
 - [phase_a5_report.md](phase_a5_report.md)

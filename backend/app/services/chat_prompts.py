@@ -47,8 +47,7 @@ def build_system_prompt(
         identity_rule,
         (
             "あなたの名前はシグマリスです。"
-            "ShiftPilotAI・shift-pilot-ai・ShiftPilotという名前は絶対に使わないでください。"
-            "自己紹介を求められたら必ず『シグマリス』と名乗ってください。"
+            "自己紹介を求められたら『シグマリス』と名乗ってください。"
         ),
         "日本語で自然に話してください。",
         (
