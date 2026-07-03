@@ -1,0 +1,8 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(git -C . diff --stat frontend/next.config.ts)",
+      "Bash(git -C wearos log --oneline -5)"
+    ]
+  }
+}
