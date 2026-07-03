@@ -6,6 +6,8 @@
 
 **前置き:** 指示書は`docs/sigmaris/sigmaris_roadmap.md`(v2)を根拠文書として参照しているが、**このファイルは現時点のリポジトリ内に存在しない**(`git log --all`でも見つからず)。おそらく別セッション・別ツールでの検討がまだこのリポジトリにコミットされていないと思われる。指示書自体は3指標の定義・実施内容・要件が自己完結して書かれていたため、roadmapファイルを探すために作業を止めることはせず、指示書の記述のみを根拠に実装した。roadmapが実際にコミットされた際は、本レポートの前提(特に1章「客観的ベンチマークではない」という位置づけ)と齟齬がないか確認することを推奨する。
 
+**追記(準備タスク時点):** `docs/sigmaris/sigmaris_roadmap.md`は上記の懸念を受けて別タスクでコミット済み。内容を確認したところ、本レポート1章の「客観的ベンチマークではない」という位置づけ・Phase A0〜A5の内容・`user_fact_items.importance_score`列の存在(B17の前提)・`active_inquiry.py`/`memory_validator.py`の存在(B3/B5の前提)は全て実際のリポジトリ状態と整合しており、齟齬は見つからなかった。roadmap文中で`docs/sigmaris/`配下に張られているリンクは`global_state_migration_audit.md`の1件のみで、これも実在するファイル名と一致している。
+
 ---
 
 ## 0. 【最重要】実データ・実LLMでの検証ができなかったことについて
@@ -201,7 +203,13 @@ response_error_rate : 0.000  (直近7日, n=10)
 
 ## 6. 実際に計測した初回のスコア(ベースライン)について
 
-**未計測。** 0章で述べた通り、実際の285件のfact・実LLMへのアクセスがこの環境には一切ない。5章の数値はモックによるパイプライン動作確認であり、Phase Bの基準点として使えるものではない。
+**依然として未計測。** 準備タスクとして改めてbaseline計測を試みたが、この環境では実行不能なままだった。試したこと・確認したことを以下に記す(機密情報は含めていない):
+
+- `backend/.env`: 引き続き`AGENT_SECRETS`・`LOCAL_LLM_ENABLED`・`OLLAMA_BASE_URL`・`OLLAMA_EMBED_MODEL`の4項目のみ。`SUPABASE_SERVICE_ROLE_KEY`・`SIGMARIS_REFRESH_TOKEN`・`SIGMARIS_USER_JWT`・`OPENAI_API_KEY`はいずれも未設定。
+- `sigmaris@192.168.179.11`(本番サーバー)へのSSH接続を試みたが、`Permission denied (publickey,password)`(この環境に秘密鍵が存在しないため)。
+- ローカルのOllama(`http://localhost:11434`)への接続も不可(接続拒否)。
+
+つまり、テストセット生成(`generate_eval_testset.py`)・スコア計測(`run_eval.py`)のどちらも、この実行環境からは物理的に実行できる経路が存在しない。指示書の「baseline計測時にエラーが発生し実行自体ができない場合のみ、作業を止めて報告すること」という基準に該当するため、実行できない旨をここに明記し、架空の数値を作ることはしていない。5章の数値はあくまでモックによるパイプライン動作確認であり、Phase Bの基準点として使えるものではない(この位置づけは変わっていない)。
 
 **運用者(海星さん、または実クレデンシャルを持つ今後のセッション)にお願いしたいこと:**
 
@@ -214,7 +222,7 @@ response_error_rate : 0.000  (直近7日, n=10)
 
 ## 7. Phase A5で申し送りされた「embeddingのモデル由来混在リスク」が、今回の計測結果に影響していそうか
 
-**この環境では観察できなかった。** 実際に本番の`search_relevant_memories`を呼んでいないため、Ollama製とOpenAI製のembeddingが混在した状態でのスコアへの影響は実測できていない。
+**この環境では観察できなかった(準備タスクでの再試行後も同様)。** 6章の通りbaseline計測自体が実行不能なため、実際に本番の`search_relevant_memories`を呼んでいない。Ollama製とOpenAI製のembeddingが混在した状態でのスコアへの影響は、この環境では原理的に観測しようがない。
 
 ただし設計面から言えることが1つある: `memory_f1_score`・`rag_ndcg_score`は「前回計測との差分」を見る運用を想定した指標であり、**もし本番運用中に`LOCAL_LLM_ENABLED`の値やOllamaの疎通状態が切り替わるタイミングがあれば、その前後でスコアが変動しても、それはPhase Bの機能自体の効果ではなく、Phase A5で申し送りしたembeddingモデル由来混在の影響である可能性がある**。運用者が6章の手順でベースラインを取る際は、その時点の`LOCAL_LLM_ENABLED`の値と、Ollamaが実際に疎通していたかを`run_eval.py --notes`に書き残しておくことを推奨する(`sigmaris_eval_runs.notes`列はこの用途のために自由記述にしてある)。
 
