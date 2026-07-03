@@ -60,8 +60,18 @@ async def record_experience(
     adoption_rate: float | None = None,
     confidence_delta: float = 0.0,
     related_fact_ids: list[str] | None = None,
+    thread_id: str | None = None,
+    invocation_id: str | None = None,
 ) -> str | None:
-    """Insert a new experience record. Returns the created row ID or None."""
+    """Insert a new experience record. Returns the created row ID or None.
+
+    thread_id/invocation_id (Phase B4 provenance) are optional: this
+    function is currently only reachable via the external-agent route
+    POST /agent/experience/record, and no caller of that route is known to
+    supply a chat-turn context today — see phase_b4_report.md section 1 for
+    why this is documented as "ready to receive provenance" rather than
+    "actively populated", unlike user_fact_items/sigmaris_decision_log.
+    """
     try:
         if experience_type not in _VALID_TYPES:
             logger.warning("experience_layer: invalid type=%s", experience_type)
@@ -88,6 +98,10 @@ async def record_experience(
             payload["adoption_rate"] = max(0.0, min(1.0, adoption_rate))
         if related_fact_ids is not None:
             payload["related_fact_ids"] = related_fact_ids
+        if thread_id is not None:
+            payload["thread_id"] = thread_id
+        if invocation_id is not None:
+            payload["invocation_id"] = invocation_id
 
         base_url, _ = _require_supabase_config()
         client = await _get_client()

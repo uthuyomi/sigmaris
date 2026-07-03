@@ -1024,6 +1024,8 @@ class ExperienceRecordRequest(BaseModel):
     adoption_rate: float | None = None
     confidence_delta: float = 0.0
     related_fact_ids: list[str] | None = None
+    thread_id: str | None = None
+    invocation_id: str | None = None
 
 
 @router.post("/experience/record")
@@ -1047,6 +1049,8 @@ async def experience_record(
             adoption_rate=payload.adoption_rate,
             confidence_delta=payload.confidence_delta,
             related_fact_ids=payload.related_fact_ids,
+            thread_id=payload.thread_id,
+            invocation_id=payload.invocation_id,
         )
     except Exception as exc:
         logger.exception("experience/record endpoint failed")

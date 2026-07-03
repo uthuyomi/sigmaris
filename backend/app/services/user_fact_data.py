@@ -114,8 +114,16 @@ async def upsert_fact_item(
     reason: str = "",
     notes: str | None = None,
     expires_at: str | None = None,
+    thread_id: str | None = None,
+    invocation_id: str | None = None,
 ) -> dict[str, Any]:
-    """Atomically upserts one fact item and appends a history row via RPC."""
+    """Atomically upserts one fact item and appends a history row via RPC.
+
+    thread_id/invocation_id (Phase B4 provenance) are only applied by the
+    RPC when this call creates a *new* row — they record where a fact was
+    first generated, not who last touched it, so passing them on an update
+    to an existing (category, key) is harmless (the RPC ignores them then).
+    """
     return await rest_rpc(jwt, "upsert_fact_item", {
         "p_category": category,
         "p_key": key,
@@ -125,6 +133,8 @@ async def upsert_fact_item(
         "p_reason": reason,
         "p_notes": notes,
         "p_expires_at": expires_at,
+        "p_thread_id": thread_id,
+        "p_invocation_id": invocation_id,
     })
 
 

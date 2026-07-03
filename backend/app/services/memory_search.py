@@ -193,6 +193,8 @@ def _merge_hybrid_results(
     them entirely)."""
     scores: dict[str, float] = {}
     rows_by_id: dict[str, dict[str, Any]] = {}
+    vector_ids = {row["id"] for row in vector_rows if row.get("id")}
+    trgm_ids = {row["id"] for row in trgm_rows if row.get("id")}
     for ranked_list in (vector_rows, trgm_rows):
         for rank, row in enumerate(ranked_list, start=1):
             row_id = row.get("id")
@@ -204,6 +206,16 @@ def _merge_hybrid_results(
                 existing.get("similarity") or 0.0
             ):
                 rows_by_id[row_id] = row
+
+    # Phase B1 follow-up: tag which search path(s) produced each hit. Not
+    # persisted anywhere — this is a lightweight debugging/tuning aid (see
+    # phase_b4_report.md section 3) for eyeballing match_threshold/
+    # _TRGM_HIGH_CONFIDENCE_SIMILARITY against real logs, not a feature in
+    # its own right, so it isn't written to a table.
+    for row_id, row in rows_by_id.items():
+        in_vector = row_id in vector_ids
+        in_trgm = row_id in trgm_ids
+        row["match_source"] = "both" if in_vector and in_trgm else ("vector" if in_vector else "trgm")
 
     high_confidence_ids = [
         row["id"]
@@ -268,7 +280,15 @@ async def search_relevant_memories(
     if not vector_rows and not trgm_rows:
         return []
 
-    return _merge_hybrid_results(vector_rows, trgm_rows, limit=limit)
+    merged = _merge_hybrid_results(vector_rows, trgm_rows, limit=limit)
+    logger.info(
+        "memory_search: hybrid merge vector_hits=%d trgm_hits=%d merged=%d sources=%s",
+        len(vector_rows),
+        len(trgm_rows),
+        len(merged),
+        [row.get("match_source") for row in merged],
+    )
+    return merged
 
 
 async def update_fact_embeddings(

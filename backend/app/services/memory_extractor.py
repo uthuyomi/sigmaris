@@ -58,11 +58,18 @@ JSON形式で返してください:
 async def extract_from_conversation(
     messages: list[dict[str, str]],
     jwt: str,
+    *,
+    thread_id: str | None = None,
+    invocation_id: str | None = None,
 ) -> list[dict[str, Any]]:
     """Extract facts from a conversation and upsert them into user_fact_items.
 
     Runs as a background task — never raises; returns [] on any failure.
     Skips facts where an existing fact already has higher confidence.
+
+    thread_id/invocation_id (Phase B4 provenance) record which conversation
+    turn a newly-created fact originated from; optional so existing callers
+    that don't have this context keep working unchanged.
     """
     if not messages:
         return []
@@ -141,6 +148,8 @@ async def extract_from_conversation(
                 confidence=new_conf,
                 source="chat",
                 reason=str(fact.get("reason", ""))[:200],
+                thread_id=thread_id,
+                invocation_id=invocation_id,
             )
             upserted.append(result)
         except Exception:

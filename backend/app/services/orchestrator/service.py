@@ -587,7 +587,12 @@ async def run_orchestrator_chat(
     from app.services.memory_extractor import extract_from_conversation  # noqa: PLC0415
     full_messages = list(messages) + [{"role": "assistant", "content": response_text}]
     asyncio.create_task(
-        extract_from_conversation(messages=full_messages, jwt=jwt),
+        extract_from_conversation(
+            messages=full_messages,
+            jwt=jwt,
+            thread_id=effective_thread_id,
+            invocation_id=invocation_id,
+        ),
         name=f"memory_extract:{invocation_id}",
     )
 
@@ -821,7 +826,12 @@ async def run_orchestrator_chat_stream(
     from app.services.memory_extractor import extract_from_conversation  # noqa: PLC0415
     full_messages = list(messages) + [{"role": "assistant", "content": response_text}]
     asyncio.create_task(
-        extract_from_conversation(messages=full_messages, jwt=jwt),
+        extract_from_conversation(
+            messages=full_messages,
+            jwt=jwt,
+            thread_id=effective_thread_id,
+            invocation_id=invocation_id,
+        ),
         name=f"memory_extract:{invocation_id}",
     )
     latest_user = _latest_user_message(messages)
