@@ -14,6 +14,7 @@ logger = logging.getLogger(__name__)
 
 _TABLE = "sigmaris_decision_log"
 _PATTERNS_TABLE = "sigmaris_user_preference_patterns"
+_FACT_ITEMS_TABLE = "user_fact_items"
 
 _VALID_TYPES = frozenset({"proposal", "refusal", "notification", "action", "policy_change"})
 
@@ -24,6 +25,12 @@ _MIN_DECISIONS_FOR_ANALYSIS = 3
 # decisions to be persisted — a single decision is never enough to
 # conclude "this is how 海星さん thinks" (explicit task requirement).
 _MIN_SUPPORTING_DECISIONS = 2
+
+# Phase B13: how many recent decisions recompute_adoption_counts() scans.
+# A single generous page rather than full pagination (like
+# update_fact_embeddings()'s batch loop) — deliberately scoped down given
+# current decision volume is low; see phase_b13_report.md section 1.
+_ADOPTION_RECOMPUTE_DECISION_LIMIT = 500
 
 _DETECT_SYSTEM = (
     "あなたはシグマリスの意思決定検出システムです。会話のやり取りに、決定・"
@@ -485,6 +492,76 @@ async def extract_preference_patterns() -> dict[str, Any]:
         return result
     except Exception:
         logger.exception("decision_log: failed to extract_preference_patterns")
+        result["errors"] += 1
+        return result
+
+
+async def recompute_adoption_counts() -> dict[str, Any]:
+    """Sunday 4:50 AM scheduled (right after preference_pattern_extract,
+    same underlying sigmaris_decision_log source): count how many distinct
+    decisions actually referenced each fact via memory_refs, and write that
+    count to user_fact_items.adoption_count.
+
+    This is the implicit-feedback signal memory_search.py's ranking uses
+    (Phase B13) — "海星さん's own decisions actually relied on this fact",
+    as opposed to a fact merely having been retrieved by search and never
+    acted on. Positive-only by design: a fact that's never appeared in any
+    memory_refs simply keeps its default adoption_count of 0 (this
+    function never writes a value it would consider a penalty — see
+    phase_b13_report.md section 1 for why "no evidence of adoption" must
+    not be treated as "evidence of non-adoption").
+
+    Uses service-role headers (like the rest of this module) to write
+    directly to user_fact_items, bypassing that table's normal per-user JWT
+    RLS path — appropriate here since this is Sigmaris's own derived
+    understanding being written back, not a user-initiated edit, and it
+    avoids this batch job needing to hold a live user session/JWT at all.
+    """
+    result: dict[str, Any] = {"decisions_scanned": 0, "facts_with_adoption": 0, "facts_updated": 0, "errors": 0}
+    try:
+        decisions = await get_recent_decisions(limit=_ADOPTION_RECOMPUTE_DECISION_LIMIT)
+        result["decisions_scanned"] = len(decisions)
+
+        counts: dict[str, int] = {}
+        for decision in decisions:
+            refs = decision.get("memory_refs")
+            if not isinstance(refs, list):
+                continue
+            # A fact referenced twice within the *same* decision still only
+            # counts once here — the signal is "how many distinct decisions
+            # relied on this fact", not raw mention count.
+            for fact_id in set(refs):
+                if isinstance(fact_id, str) and fact_id:
+                    counts[fact_id] = counts.get(fact_id, 0) + 1
+
+        result["facts_with_adoption"] = len(counts)
+        if not counts:
+            logger.info("decision_log: adoption count recompute — no memory_refs found in %d decisions", len(decisions))
+            return result
+
+        base_url, _ = _require_supabase_config()
+        client = await _get_client()
+        for fact_id, count in counts.items():
+            try:
+                resp = await client.patch(
+                    f"{base_url}/rest/v1/{_FACT_ITEMS_TABLE}",
+                    headers=_svc_headers(prefer="return=minimal"),
+                    params={"id": f"eq.{fact_id}"},
+                    json={"adoption_count": count},
+                )
+                resp.raise_for_status()
+                result["facts_updated"] += 1
+            except Exception:
+                logger.exception("decision_log: failed to update adoption_count fact_id=%s", fact_id)
+                result["errors"] += 1
+
+        logger.info(
+            "decision_log: adoption count recompute done scanned=%d facts_with_adoption=%d updated=%d",
+            result["decisions_scanned"], result["facts_with_adoption"], result["facts_updated"],
+        )
+        return result
+    except Exception:
+        logger.exception("decision_log: failed to recompute_adoption_counts")
         result["errors"] += 1
         return result
 

@@ -57,6 +57,57 @@ def _importance_weighted_score(base_score: float, row: dict[str, Any]) -> float:
     importance = float(importance) if importance is not None else _DEFAULT_IMPORTANCE_SCORE
     return base_score * (1.0 + importance * _IMPORTANCE_RANKING_WEIGHT)
 
+
+# Phase B13: implicit feedback from sigmaris_decision_log.memory_refs — how
+# many *distinct* past decisions actually relied on a fact (populated by
+# decision_log.py::recompute_adoption_counts(), a weekly batch job).
+# Positive-only: a fact search surfaces but that has never appeared in any
+# decision's memory_refs simply gets no boost at all — this must never
+# become a penalty (see phase_b13_report.md section 1 for why "no evidence
+# of adoption" isn't treated as "evidence of non-adoption"; that inference
+# isn't supportable from this signal alone).
+#
+# Below this many distinct adoptions, treated as no signal — the same
+# "don't trust sparse evidence" reasoning as Phase B14's
+# _MIN_SUPPORTING_DECISIONS, kept at the same value for consistency across
+# the B-group's evidence-gating philosophy.
+_MIN_ADOPTION_COUNT_FOR_BOOST = 2
+
+# adoption_count's effect saturates here — beyond this many distinct
+# adoptions, no further boost. Keeps one very-frequently-cited fact from
+# permanently dominating rankings regardless of relevance to the *current*
+# query (requirement: this is a tie-breaker among similarly-relevant
+# results, not a relevance override).
+_ADOPTION_COUNT_SATURATION = 5
+
+# Composes multiplicatively with _IMPORTANCE_RANKING_WEIGHT (see
+# _apply_ranking_weights below), so kept smaller than it: the worst-case
+# combined boost (importance=1.0 AND adoption_count>=saturation
+# simultaneously) is (1.15)*(1.10)=1.265, a bounded ~27% ceiling rather than
+# two independently-maxed 15% boosts compounding past 30%. See
+# phase_b13_report.md section 2 for the empirical rank-gap values actually
+# tried (0.10 chosen over 0.15/0.30, mirroring B17's own methodology).
+_ADOPTION_RANKING_WEIGHT = 0.10
+
+
+def _adoption_weighted_score(base_score: float, row: dict[str, Any]) -> float:
+    adoption_count = int(row.get("adoption_count") or 0)
+    if adoption_count < _MIN_ADOPTION_COUNT_FOR_BOOST:
+        return base_score
+    normalized = min(adoption_count, _ADOPTION_COUNT_SATURATION) / _ADOPTION_COUNT_SATURATION
+    return base_score * (1.0 + normalized * _ADOPTION_RANKING_WEIGHT)
+
+
+def _apply_ranking_weights(base_score: float, row: dict[str, Any]) -> float:
+    """Phase B17 (importance_score) + Phase B13 (implicit adoption
+    feedback), composed multiplicatively. Multiplication commutes, so
+    application order doesn't change the result — importance is applied
+    first simply to match the order these two features were built in."""
+    score = _importance_weighted_score(base_score, row)
+    score = _adoption_weighted_score(score, row)
+    return score
+
+
 # Lazily probed once per process: whether the local Ollama instance actually
 # answers. Mirrors LLMRouter's _local_available pattern in local_llm.py —
 # LOCAL_LLM_ENABLED=true alone doesn't guarantee Ollama is reachable, so a
@@ -250,14 +301,14 @@ def _merge_hybrid_results(
             for row in trgm_rows
             if row.get("id") and float(row.get("similarity") or 0.0) >= _TRGM_HIGH_CONFIDENCE_SIMILARITY
         ),
-        key=lambda row_id: _importance_weighted_score(
+        key=lambda row_id: _apply_ranking_weights(
             float(rows_by_id[row_id].get("similarity") or 0.0), rows_by_id[row_id]
         ),
         reverse=True,
     )
     remaining_ids = sorted(
         (row_id for row_id in scores if row_id not in high_confidence_ids),
-        key=lambda row_id: _importance_weighted_score(scores[row_id], rows_by_id[row_id]),
+        key=lambda row_id: _apply_ranking_weights(scores[row_id], rows_by_id[row_id]),
         reverse=True,
     )
     ordered_ids = [*dict.fromkeys(high_confidence_ids), *remaining_ids]
