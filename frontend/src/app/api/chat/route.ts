@@ -7,40 +7,8 @@
 import type { UIMessage } from "ai";
 import { readBackendAuthHeaders } from "@/lib/backend/auth";
 import { getBackendBaseUrl } from "@/lib/backend/client";
-import { isProBillingStatus, readBillingStatus } from "@/lib/billing";
-import { readChatUsageStatus, type ChatUsageStatus } from "@/lib/chat-usage";
 import { translateOrchestratorStream } from "@/lib/orchestrator/stream-translator";
-import { PRO_MONTHLY_PRICE_JPY } from "@/lib/stripe";
 import { createClient } from "@/lib/supabase/server";
-
-const createUpgradeStream = (usage: ChatUsageStatus) => {
-  const encoder = new TextEncoder();
-  const messageId = crypto.randomUUID();
-  const textPartId = crypto.randomUUID();
-  const price = PRO_MONTHLY_PRICE_JPY.toLocaleString("ja-JP");
-  const message = [
-    `無料チャット上限 ${usage.limit} 回に達しました。`,
-    "",
-    `このまま続ける場合は、シグマリス Proが月額${price}円です。`,
-    "Settings の Proプランから手続きできます。",
-  ].join("\n");
-  const events = [
-    { type: "start", messageId },
-    { type: "text-start", id: textPartId },
-    { type: "text-delta", id: textPartId, delta: message },
-    { type: "text-end", id: textPartId },
-    { type: "finish", finishReason: "stop" },
-  ];
-
-  return new ReadableStream({
-    start(controller) {
-      for (const event of events) {
-        controller.enqueue(encoder.encode(`data: ${JSON.stringify(event)}\n\n`));
-      }
-      controller.close();
-    },
-  });
-};
 
 type IncomingBody = {
   messages?: UIMessage[];
@@ -68,8 +36,6 @@ export async function POST(req: Request) {
   }
 
   let authHeaders: Record<string, string>;
-  let userId: string;
-  let userEmail: string | null | undefined;
   try {
     const supabase = await createClient();
     const {
@@ -79,8 +45,6 @@ export async function POST(req: Request) {
       throw new Error("Authentication is required.");
     }
 
-    userId = user.id;
-    userEmail = user.email;
     authHeaders = await readBackendAuthHeaders();
   } catch (error) {
     return new Response(
@@ -92,22 +56,6 @@ export async function POST(req: Request) {
         headers: { "Content-Type": "application/json" },
       },
     );
-  }
-
-  const [billing, usage] = await Promise.all([
-    readBillingStatus(userId, userEmail),
-    readChatUsageStatus(userId),
-  ]);
-  if (!isProBillingStatus(billing) && usage.limited) {
-    return new Response(createUpgradeStream(usage), {
-      status: 200,
-      headers: {
-        "content-type": "text/event-stream",
-        "cache-control": "no-cache",
-        "x-vercel-ai-ui-message-stream": "v1",
-        "x-shiftpilotai-limit": "free-chat",
-      },
-    });
   }
 
   const orchestratorMessages = (body.messages ?? [])

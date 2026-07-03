@@ -24,23 +24,17 @@ import {
   ArrowDownIcon,
   ArrowUpIcon,
   CheckIcon,
-  CreditCardIcon,
   PlusIcon,
   SquareIcon,
   XIcon,
 } from "lucide-react";
-import Link from "next/link";
 import { type FC, useCallback, useEffect, useRef, useState } from "react";
-import type { ChatUsageStatus } from "@/lib/chat-usage";
-import { PRO_MONTHLY_PRICE_JPY } from "@/lib/stripe";
 
 type ThreadProps = {
   locale: AppLocale;
-  freeChatUsage: ChatUsageStatus | null;
-  initialUserMessageCount: number;
 };
 
-export const Thread: FC<ThreadProps> = ({ locale, freeChatUsage, initialUserMessageCount }) => {
+export const Thread: FC<ThreadProps> = ({ locale }) => {
   const viewportRef = useRef<HTMLDivElement | null>(null);
   const touchStartRef = useRef<{ x: number; y: number } | null>(null);
   const showScrollButtonRef = useRef(false);
@@ -48,14 +42,6 @@ export const Thread: FC<ThreadProps> = ({ locale, freeChatUsage, initialUserMess
   const messages = useAuiState((s) => s.thread.messages);
   const isRunning = useAuiState((s) => s.thread.isRunning);
   const [statusStep, setStatusStep] = useState(0);
-  const currentUserMessageCount = messages.filter((message) => message.role === "user").length;
-  const usedChatCount = freeChatUsage
-    ? freeChatUsage.used + Math.max(0, currentUserMessageCount - initialUserMessageCount)
-    : 0;
-  const chatLimitReached = Boolean(freeChatUsage && usedChatCount >= freeChatUsage.limit);
-  const remainingChatCount = freeChatUsage
-    ? Math.max(0, freeChatUsage.limit - usedChatCount)
-    : null;
 
   const latestAssistantText = (() => {
     for (let index = messages.length - 1; index >= 0; index -= 1) {
@@ -236,17 +222,7 @@ export const Thread: FC<ThreadProps> = ({ locale, freeChatUsage, initialUserMess
         <div className="pointer-events-none absolute inset-x-0 bottom-0 z-10 px-3 pb-[calc(0.75rem+env(safe-area-inset-bottom))] pt-10 sm:px-6 sm:pb-6">
           <div className="pointer-events-none absolute inset-x-0 bottom-0 h-28 bg-[linear-gradient(180deg,rgba(33,33,33,0),rgba(33,33,33,0.92)_48%,rgba(33,33,33,1)_100%)]" />
           <div className="pointer-events-auto relative">
-            {freeChatUsage ? (
-              <ChatLimitNotice
-                limit={freeChatUsage.limit}
-                remaining={remainingChatCount ?? 0}
-                reached={chatLimitReached}
-              />
-            ) : null}
-            <Composer
-              placeholder="シグマリスにメッセージする"
-              disabled={chatLimitReached}
-            />
+            <Composer placeholder="シグマリスにメッセージする" />
           </div>
         </div>
       </div>
@@ -415,48 +391,11 @@ const UserMessage: FC = () => {
   );
 };
 
-const ChatLimitNotice: FC<{ limit: number; remaining: number; reached: boolean }> = ({
-  limit,
-  remaining,
-  reached,
-}) => {
-  const price = PRO_MONTHLY_PRICE_JPY.toLocaleString("ja-JP");
-
-  return (
-    <div className="mb-3 rounded-2xl border border-amber-300/35 bg-amber-300/12 px-4 py-3 text-sm text-amber-50 shadow-[0_22px_60px_-34px_rgba(0,0,0,0.9)] ring-1 ring-amber-300/15">
-      <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-        <div className="min-w-0">
-          <div className="mb-1 inline-flex rounded-full bg-amber-200/20 px-2.5 py-1 text-[11px] font-bold uppercase tracking-wide text-amber-100">
-            Free limit
-          </div>
-          <p className="text-base font-semibold leading-6">
-            {reached
-              ? `無料チャット上限 ${limit} 回に達しました。`
-              : `無料チャットは残り ${remaining} / ${limit} 回です。`}
-          </p>
-          <p className="mt-1 text-xs leading-5 text-amber-100/80">
-            {reached
-              ? `このまま続ける場合は、シグマリス Proが月額${price}円です。`
-              : `上限後も使う場合は、Proプランが月額${price}円です。`}
-          </p>
-        </div>
-        <Link
-          href="/settings"
-          className="inline-flex min-h-11 shrink-0 items-center justify-center gap-2 rounded-xl bg-white px-5 text-sm font-semibold text-[#212121] shadow-[0_16px_35px_-24px_rgba(0,0,0,0.9)] transition hover:bg-[#f2f2f2] focus:outline-none focus:ring-2 focus:ring-[#9b59b6]/40"
-        >
-          <CreditCardIcon className="size-4" />
-          Proプランを見る
-        </Link>
-      </div>
-    </div>
-  );
-};
-
-const Composer: FC<{ placeholder: string; disabled: boolean }> = ({ placeholder, disabled }) => {
+const Composer: FC<{ placeholder: string }> = ({ placeholder }) => {
   const isRunning = useAuiState((s) => s.thread.isRunning);
   const composerText = useAuiState((s) => s.composer.text);
   const inputRef = useRef<HTMLTextAreaElement | null>(null);
-  const canSend = composerText.trim().length > 0 && !disabled;
+  const canSend = composerText.trim().length > 0;
 
   useEffect(() => {
     const input = inputRef.current;
@@ -479,7 +418,6 @@ const Composer: FC<{ placeholder: string; disabled: boolean }> = ({ placeholder,
         <div className="flex min-h-12 items-end gap-2">
           <ComposerPrimitive.AddAttachment
             multiple
-            disabled={disabled}
             className="mb-0.5 inline-flex size-9 shrink-0 items-center justify-center rounded-full text-[#b4b4b4] transition hover:bg-white/10 hover:text-[#ececec] disabled:cursor-not-allowed disabled:opacity-40"
             aria-label="ファイルを追加"
           >
@@ -489,7 +427,6 @@ const Composer: FC<{ placeholder: string; disabled: boolean }> = ({ placeholder,
           <ComposerPrimitive.Input
             ref={inputRef}
             placeholder={placeholder}
-            disabled={disabled}
             submitMode="enter"
             minRows={1}
             maxRows={8}
