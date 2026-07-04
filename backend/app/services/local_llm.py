@@ -21,6 +21,7 @@ class TaskType(str, enum.Enum):
     DECISION_DETECTION = "decision_detection"
     EPISODE_DETECTION = "episode_detection"
     TOPIC_DETECTION = "topic_detection"
+    QUERY_DECOMPOSITION = "query_decomposition"
     EVAL_GENERATION = "eval_generation"
 
 
@@ -32,6 +33,7 @@ _LOCAL_TASK_TYPES = {
     TaskType.DECISION_DETECTION,
     TaskType.EPISODE_DETECTION,
     TaskType.TOPIC_DETECTION,
+    TaskType.QUERY_DECOMPOSITION,
     TaskType.EVAL_GENERATION,
 }
 
@@ -124,6 +126,7 @@ def _openai_model_for_task(task: TaskType) -> str:
         TaskType.DECISION_DETECTION,
         TaskType.EPISODE_DETECTION,
         TaskType.TOPIC_DETECTION,
+        TaskType.QUERY_DECOMPOSITION,
     }:
         return settings.openai_nano_model
     return settings.openai_model

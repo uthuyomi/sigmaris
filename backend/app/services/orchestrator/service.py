@@ -20,7 +20,7 @@ from app.services.orchestrator.persona_rewriter import rewrite_with_persona, rew
 from app.services.orchestrator.response_guard import replace_forbidden_assistant_names
 from app.services.orchestrator.schedule_agent_client import call_schedule_agent, call_schedule_agent_stream
 from app.services.supabase_rest import get_current_user
-from app.services.memory_search import search_relevant_memories
+from app.services.multihop_search import search_with_decomposition
 from app.services.decision_log import get_active_preference_patterns
 from app.services.self_model import get_self_model
 from app.services.topic_tracker import get_current_and_previous_topic
@@ -277,6 +277,28 @@ def _build_topic_context(
     return "\n".join(lines)
 
 
+# Phase B7: reuses the same current/previous topic rows _build_topic_
+# context() above already fetched (via _cached_current_and_previous_topic)
+# rather than issuing a second, deeper topic_tracker.get_recent_topics()
+# call — B6 only ever holds 2 meaningfully-labeled rows in this codepath
+# anyway at this point in the session, and this hint is a lightweight,
+# optional disambiguation aid for multihop_search.decompose_query(), not a
+# strict dependency (see phase_b7_report.md section 1 for why a second
+# fetch wasn't added).
+def _topic_labels_for_hint(
+    current_topic: dict[str, Any] | None,
+    previous_topic: dict[str, Any] | None,
+) -> list[str] | None:
+    labels = []
+    for topic in (previous_topic, current_topic):
+        if not topic:
+            continue
+        label = str(topic.get("topic_label") or "").strip()
+        if label:
+            labels.append(label)
+    return labels or None
+
+
 def _build_trends_context(trends: list) -> str | None:
     if not trends:
         return None
@@ -332,6 +354,7 @@ async def _build_memory_context(
     fact_profile: dict | None,
     fact_items: list | None,
     active_trends: list,
+    recent_topic_labels: list[str] | None = None,
 ) -> str | None:
     profile_context = build_profile_context(fact_profile)
     if profile_context and len(profile_context) > 200:
@@ -344,16 +367,24 @@ async def _build_memory_context(
     # (see memory_search.py), so real similarity search works in both modes
     # and this branch is unconditional. LOCAL_LLM_ENABLED=true behavior is
     # unchanged — this is exactly its old branch, just no longer gated.
+    #
+    # Phase B7: search_relevant_memories() is now called indirectly via
+    # search_with_decomposition(), which transparently decomposes this
+    # query into sub-queries first when the LLM judges it necessary (a
+    # question spanning multiple distinct facts) and otherwise falls
+    # through to the exact same single-query call this used to make
+    # directly — see multihop_search.py's module docstring.
     relevant_context = None
     latest_user_text = _latest_user_content(messages)
     if latest_user_text:
         try:
-            relevant = await search_relevant_memories(
+            relevant, _was_decomposed = await search_with_decomposition(
                 latest_user_text,
                 user_id,
                 threshold=0.7,
                 limit=5,
                 jwt=jwt,
+                recent_topic_labels=recent_topic_labels,
             )
             relevant_context = _build_relevant_memories_context(relevant)
         except Exception:
@@ -673,6 +704,7 @@ async def run_orchestrator_chat(
         fact_profile=fact_profile,
         fact_items=fact_items,
         active_trends=active_trends,
+        recent_topic_labels=_topic_labels_for_hint(current_topic, previous_topic),
     )
 
     call_name = extract_call_name(fact_profile) or _user_display_name(user)
@@ -890,6 +922,7 @@ async def run_orchestrator_chat_stream(
         fact_profile=fact_profile,
         fact_items=fact_items,
         active_trends=active_trends,
+        recent_topic_labels=_topic_labels_for_hint(current_topic, previous_topic),
     )
 
     call_name = extract_call_name(fact_profile) or _user_display_name(user)
