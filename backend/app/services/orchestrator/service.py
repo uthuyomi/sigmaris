@@ -476,6 +476,46 @@ async def _prepare_session_messages(
 # ─── Background tasks ─────────────────────────────────────────────────────────
 
 
+async def _extract_facts_bg(
+    *,
+    messages: list[dict[str, str]],
+    jwt: str,
+    user_id: str,
+    thread_id: str | None,
+    invocation_id: str,
+) -> None:
+    """Fire-and-forget: extract memorable facts from this conversation turn,
+    then invalidate the per-user facts cache only after extraction has
+    actually finished writing.
+
+    Previously the cache was popped synchronously in the main flow right
+    after dispatching extract_from_conversation() via asyncio.create_task —
+    before extraction had actually run, let alone written anything. That
+    left a window where a request arriving shortly after the response
+    could still see the pre-extraction cached facts despite the "invalidate
+    after this turn" comment implying otherwise. Wrapping the call and
+    popping the cache in this function's own finally block (mirroring
+    _cognitive_layer_bg's "topic" cache invalidation below, added in Phase
+    B6) closes that gap: the pop can only happen once the write attempt has
+    genuinely completed, success or failure."""
+    from app.services.memory_extractor import extract_from_conversation  # noqa: PLC0415
+    try:
+        await extract_from_conversation(
+            messages=messages,
+            jwt=jwt,
+            thread_id=thread_id,
+            invocation_id=invocation_id,
+        )
+    except Exception:
+        # extract_from_conversation() is documented to never raise (it
+        # returns [] on any internal failure) — this is a second layer of
+        # protection only, matching _cognitive_layer_bg's own belt-and-
+        # suspenders try/except below.
+        logger.exception("extract_facts_bg: failed for invocation=%s", invocation_id)
+    finally:
+        _cache.pop(f"facts:{user_id}", None)
+
+
 async def _cognitive_layer_bg(
     *,
     invocation_id: str,
@@ -537,8 +577,8 @@ async def _cognitive_layer_bg(
     finally:
         # Invalidate regardless of gather outcome (partial failure of one
         # of the four calls above must not leave a stale topic cached for
-        # the rest of _CACHE_TTL — matches the existing "always refresh
-        # facts next turn" behavior for the same reason).
+        # the rest of _CACHE_TTL) — same finally-based invalidation
+        # approach _extract_facts_bg above uses for the facts cache.
         _cache.pop("topic", None)
 
 
@@ -717,12 +757,16 @@ async def run_orchestrator_chat(
         pass  # Never block the response for inquiry failures
 
     # Fire-and-forget: extract memorable facts from this conversation turn.
-    from app.services.memory_extractor import extract_from_conversation  # noqa: PLC0415
+    # (Facts cache invalidation now happens inside _extract_facts_bg's own
+    # finally block, after extraction actually completes — see that
+    # function's docstring for why popping it here in the main flow used to
+    # be too early.)
     full_messages = list(messages) + [{"role": "assistant", "content": response_text}]
     asyncio.create_task(
-        extract_from_conversation(
+        _extract_facts_bg(
             messages=full_messages,
             jwt=jwt,
+            user_id=user_id,
             thread_id=effective_thread_id,
             invocation_id=invocation_id,
         ),
@@ -747,10 +791,6 @@ async def run_orchestrator_chat(
         ),
         name=f"cognitive_layer:{invocation_id}",
     )
-
-    # Invalidate context cache after response so next turn picks up any new facts
-    # (only invalidate facts — profile and self_model change less frequently)
-    _cache.pop(f"facts:{user_id}", None)
 
     return {
         "ok": True,
@@ -964,12 +1004,12 @@ async def run_orchestrator_chat_stream(
     except (asyncio.TimeoutError, Exception):
         pass
 
-    from app.services.memory_extractor import extract_from_conversation  # noqa: PLC0415
     full_messages = list(messages) + [{"role": "assistant", "content": response_text}]
     asyncio.create_task(
-        extract_from_conversation(
+        _extract_facts_bg(
             messages=full_messages,
             jwt=jwt,
+            user_id=user_id,
             thread_id=effective_thread_id,
             invocation_id=invocation_id,
         ),
@@ -989,7 +1029,6 @@ async def run_orchestrator_chat_stream(
         ),
         name=f"cognitive_layer:{invocation_id}",
     )
-    _cache.pop(f"facts:{user_id}", None)
 
     yield OrchestratorStreamEvent(
         done=True,
