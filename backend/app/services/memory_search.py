@@ -383,6 +383,19 @@ def _merge_hybrid_results(
     return [rows_by_id[row_id] for row_id in ordered_ids[:limit]]
 
 
+# Phase B10: how many candidates the first stage retrieves when a second
+# (listwise LLM) reranking pass will run over them — wider than the final
+# `limit` so there's an actually-meaningful pool for the second stage to
+# reorder. 20 matches the task's own example figure. Widening a SQL LIMIT
+# from 5 to 20 is a negligible DB-side cost on its own; the real added
+# cost is the listwise rerank LLM call itself, which memory_rerank.
+# rerank_candidates() already skips entirely when the pool doesn't exceed
+# limit (see that function's docstring) — so this constant alone doesn't
+# guarantee an LLM call happens, only that a wide-enough pool exists if
+# one does.
+_RERANK_CANDIDATE_POOL_SIZE = 20
+
+
 async def search_relevant_memories(
     query: str,
     user_id: str,
@@ -391,6 +404,7 @@ async def search_relevant_memories(
     *,
     jwt: str | None = None,
     time_sensitive_query: bool = False,
+    rerank: bool = True,
 ) -> list[dict[str, Any]]:
     """Hybrid search (Phase B1): pgvector semantic similarity merged with
     pg_trgm keyword/fuzzy matching via Reciprocal Rank Fusion. Vector search
@@ -406,15 +420,27 @@ async def search_relevant_memories(
     without requiring a dedicated LLM call here; the judgment itself is
     made once, upstream, by multihop_search.decompose_query() as an extra
     field on the same response it already produces for Phase B7.
+
+    rerank (Phase B10): when True (default), retrieves a wider candidate
+    pool and listwise-reranks it via memory_rerank.rerank_candidates()
+    before truncating to `limit` — see that module's docstring for why a
+    dedicated LLM call was chosen here (Option B) over hosting a real
+    cross-encoder model (Option A), and phase_b10_report.md section 1 for
+    the full investigation. Set False to opt out entirely (byte-identical
+    to pre-B10 behavior) — no current caller does this, but it's kept as
+    an escape hatch for callers where the extra call would be unwanted
+    (e.g. a future latency-sensitive path, or eval/debugging code that
+    wants to see pre-rerank ordering directly).
     """
     token = jwt or await get_sigmaris_jwt()
+    fetch_limit = _RERANK_CANDIDATE_POOL_SIZE if rerank else limit
 
     # Embedding generation (an LLM call) and the trigram DB query are
     # independent, so they run concurrently rather than back-to-back —
     # keeps hybrid search's added latency close to zero versus vector-only.
     embedding_result, trgm_result = await asyncio.gather(
         generate_embedding(query),
-        _search_fact_memory_trgm(token, query, user_id, limit),
+        _search_fact_memory_trgm(token, query, user_id, fetch_limit),
         return_exceptions=True,
     )
 
@@ -433,7 +459,7 @@ async def search_relevant_memories(
     vector_rows: list[dict[str, Any]] = []
     if embedding:
         try:
-            vector_rows = await _search_fact_memory_vector(token, embedding, user_id, threshold, limit)
+            vector_rows = await _search_fact_memory_vector(token, embedding, user_id, threshold, fetch_limit)
         except Exception:
             logger.exception("memory_search: vector search failed, continuing with trigram-only results")
 
@@ -441,7 +467,7 @@ async def search_relevant_memories(
         return []
 
     merged = _merge_hybrid_results(
-        vector_rows, trgm_rows, limit=limit, time_sensitive_query=time_sensitive_query
+        vector_rows, trgm_rows, limit=fetch_limit, time_sensitive_query=time_sensitive_query
     )
     logger.info(
         "memory_search: hybrid merge vector_hits=%d trgm_hits=%d merged=%d sources=%s",
@@ -450,7 +476,15 @@ async def search_relevant_memories(
         len(merged),
         [row.get("match_source") for row in merged],
     )
-    return merged
+
+    if not rerank:
+        return merged
+
+    from app.services.memory_rerank import rerank_candidates  # noqa: PLC0415 (memory_rerank imports this module, so this must stay a local import)
+
+    return await rerank_candidates(
+        query, merged, limit=limit, time_sensitive_query=time_sensitive_query
+    )
 
 
 async def update_fact_embeddings(
