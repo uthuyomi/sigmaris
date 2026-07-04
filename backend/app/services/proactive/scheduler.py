@@ -194,6 +194,22 @@ async def _episode_consolidate() -> None:
         logger.exception("Episode consolidation job raised unexpectedly")
 
 
+async def _goal_alignment_extract() -> None:
+    from app.services.goal_alignment import extract_goal_alignment_flags  # noqa: PLC0415
+    from app.services.supabase_rest import get_current_user  # noqa: PLC0415
+    try:
+        jwt = await get_sigmaris_jwt()
+        user = await get_current_user(jwt)
+        user_id = user.get("id")
+        if not isinstance(user_id, str):
+            logger.warning("Goal alignment job skipped: authenticated user id is missing")
+            return
+        result = await extract_goal_alignment_flags(user_id)
+        logger.info("Goal alignment extraction job done: %s", result)
+    except Exception:
+        logger.exception("Goal alignment extraction job raised unexpectedly")
+
+
 def startup_scheduler() -> None:
     global _scheduler
 
@@ -217,6 +233,7 @@ def startup_scheduler() -> None:
     _scheduler.add_job(_curiosity_search,     CronTrigger(hour=6,  minute=15,                    timezone=tz), id="curiosity_search",     replace_existing=True)
     _scheduler.add_job(_experience_analyze,   CronTrigger(day_of_week="sun", hour=4,  minute=0,  timezone=tz), id="experience_analyze",   replace_existing=True)
     _scheduler.add_job(_decision_analyze,     CronTrigger(day_of_week="sun", hour=4,  minute=30, timezone=tz), id="decision_analyze",     replace_existing=True)
+    _scheduler.add_job(_goal_alignment_extract, CronTrigger(day_of_week="sun", hour=4, minute=35, timezone=tz), id="goal_alignment_extract", replace_existing=True)
     _scheduler.add_job(_preference_pattern_extract, CronTrigger(day_of_week="sun", hour=4, minute=45, timezone=tz), id="preference_pattern_extract", replace_existing=True)
     _scheduler.add_job(_adoption_count_recompute, CronTrigger(day_of_week="sun", hour=4, minute=50, timezone=tz), id="adoption_count_recompute", replace_existing=True)
     _scheduler.add_job(_episode_consolidate, CronTrigger(day_of_week="sun", hour=4, minute=55, timezone=tz), id="episode_consolidate", replace_existing=True)

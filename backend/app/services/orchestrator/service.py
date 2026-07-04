@@ -21,6 +21,7 @@ from app.services.orchestrator.response_guard import replace_forbidden_assistant
 from app.services.orchestrator.schedule_agent_client import call_schedule_agent, call_schedule_agent_stream
 from app.services.supabase_rest import get_current_user
 from app.services.abstention_feedback import get_threshold_adjustment, record_pending_hedge
+from app.services.goal_alignment import get_active_goal_alignment_flags, mark_pending_surfaced
 from app.services.memory_confidence import classify_confidence_tier, confidence_guidance_note
 from app.services.memory_compression import compress_memories_if_needed
 from app.services.multihop_search import search_with_decomposition
@@ -97,6 +98,17 @@ async def _cached_preference_patterns() -> list[dict[str, Any]]:
         get_active_preference_patterns(limit=5), timeout=3.0, default=[], label="preference_patterns"
     )
     _cache_set("preference_patterns", result)
+    return result or []
+
+
+async def _cached_goal_alignment_flags() -> list[dict[str, Any]]:
+    hit, val = _cache_get("goal_alignment_flags")
+    if hit:
+        return val
+    result = await _timed(
+        get_active_goal_alignment_flags(limit=1), timeout=3.0, default=[], label="goal_alignment_flags"
+    )
+    _cache_set("goal_alignment_flags", result)
     return result or []
 
 
@@ -261,6 +273,38 @@ def _build_preference_patterns_context(patterns: list[dict[str, Any]] | None) ->
         lines.append(f"- {statement} (根拠決定{evidence_count}件、{tier}、{freshness_note})")
 
     return "\n".join(lines) if len(lines) > 2 else None
+
+
+# Phase B16: unlike this file's other _build_*_context helpers, this one
+# has a side effect (mark_pending_surfaced) — deliberate: the moment a flag
+# is actually included in a prompt is the moment its 14-day surface
+# cooldown (goal_alignment.py's _SURFACE_COOLDOWN_DAYS) should start,
+# and that moment is exactly "this function ran with a non-empty flags
+# list", nowhere else. The actual DB write is deferred to _cognitive_
+# layer_bg's fire-and-forget flush (flush_pending_surfaced_flags below),
+# so this function itself makes no I/O call and adds no response-path
+# latency.
+def _build_goal_alignment_context(flags: list[dict[str, Any]] | None) -> str | None:
+    if not flags:
+        return None
+    flag = flags[0]  # at most one per turn — a single gentle nudge, never a list of grievances
+    statement = str(flag.get("flag_statement") or "").strip()
+    if not statement:
+        return None
+
+    mark_pending_surfaced(flag.get("id"))
+
+    lines = [
+        "[長期ゴールとの整合性について(参考情報)]",
+        "以下は、直近の決定・話題が長期的な目標から乖離している可能性がある、と"
+        "いう観察です。persona.md 9章(制止する時のルール)に厳密に従い、「ちょ"
+        "っと待ってください。一度整理しましょう」「その前に確認したいことがあり"
+        "ます」のような、確認・提案の形でのみ触れてよいものです。「却下」という"
+        "言い方や、断定的に「目標からズレています」と指摘することは絶対にしない"
+        "でください。会話の流れに合わない場合は、無理に触れる必要はありません。",
+        f"- {statement}",
+    ]
+    return "\n".join(lines)
 
 
 # Phase B6: distinct from _build_trends_context below, despite both
@@ -605,22 +649,24 @@ async def _cognitive_layer_bg(
 ) -> None:
     """Fire-and-forget: detect+record real decisions and episodic memory,
     reflect any pending memory re-confirmation (Phase B3) and pending
-    abstention-hedge reaction (Phase B15), and nudge internal state, after
-    each chat turn. Replaces the old unconditional generic "chat_turn" log
-    entry (Phase A3) — detect_and_record_decision() only writes a row when
-    the turn actually contained a decision or policy change, and
-    (Phase B2) detect_and_record_episode() only writes a row when the turn
-    contained an event worth remembering episodically. All five
-    LLM-judgment calls run concurrently since they're independent reads of
-    the same turn_messages. jwt is only needed by
-    reflect_pending_confirmation() (it may write to user_fact_items through
-    the per-user RLS path) — decision/episode/topic/abstention-reaction
-    detection use service-role access and don't touch it."""
+    abstention-hedge reaction (Phase B15), persist any pending goal-
+    alignment-flag surface timestamp (Phase B16), and nudge internal state,
+    after each chat turn. Replaces the old unconditional generic
+    "chat_turn" log entry (Phase A3) — detect_and_record_decision() only
+    writes a row when the turn actually contained a decision or policy
+    change, and (Phase B2) detect_and_record_episode() only writes a row
+    when the turn contained an event worth remembering episodically. All
+    six calls run concurrently since they're independent. jwt is only
+    needed by reflect_pending_confirmation() (it may write to
+    user_fact_items through the per-user RLS path) —
+    decision/episode/topic/abstention-reaction detection and the goal-
+    alignment flush use service-role access and don't touch it."""
     try:
         from app.services.abstention_feedback import reflect_abstention_reaction  # noqa: PLC0415
         from app.services.active_inquiry import reflect_pending_confirmation  # noqa: PLC0415
         from app.services.decision_log import detect_and_record_decision  # noqa: PLC0415
         from app.services.experience_layer import detect_and_record_episode  # noqa: PLC0415
+        from app.services.goal_alignment import flush_pending_surfaced_flags  # noqa: PLC0415
         from app.services.internal_state import get_internal_state, update_internal_state  # noqa: PLC0415
         from app.services.topic_tracker import detect_and_record_topic_transition  # noqa: PLC0415
 
@@ -651,6 +697,7 @@ async def _cognitive_layer_bg(
                 turn_messages=turn_messages,
                 invocation_id=invocation_id,
             ),
+            flush_pending_surfaced_flags(),
         )
 
         state = await get_internal_state()
@@ -662,12 +709,13 @@ async def _cognitive_layer_bg(
         logger.exception("cognitive_layer_bg: failed for invocation=%s", invocation_id)
     finally:
         # Invalidate regardless of gather outcome (partial failure of one
-        # of the five calls above must not leave a stale topic/threshold-
-        # adjustment cached for the rest of _CACHE_TTL) — same
-        # finally-based invalidation approach _extract_facts_bg above uses
-        # for the facts cache.
+        # of the six calls above must not leave a stale topic/threshold-
+        # adjustment/goal-alignment-flags value cached for the rest of
+        # _CACHE_TTL) — same finally-based invalidation approach
+        # _extract_facts_bg above uses for the facts cache.
         _cache.pop("topic", None)
         _cache.pop("abstention_threshold_adjustment", None)
+        _cache.pop("goal_alignment_flags", None)
 
 
 # ─── Main entry point ─────────────────────────────────────────────────────────
@@ -689,13 +737,14 @@ async def run_orchestrator_chat(
     agent = get_schedule_agent()
 
     # Auth + stable context in one parallel gather, then facts after user_id is known.
-    user, fact_profile, self_model, preference_patterns, topic_state, threshold_adjustment, active_trends, session = await asyncio.gather(
+    user, fact_profile, self_model, preference_patterns, topic_state, threshold_adjustment, goal_alignment_flags, active_trends, session = await asyncio.gather(
         _timed(get_current_user(jwt), timeout=8.0),
         _cached_user_profile(jwt),
         _cached_self_model(),
         _cached_preference_patterns(),
         _cached_current_and_previous_topic(),
         _cached_threshold_adjustment(),
+        _cached_goal_alignment_flags(),
         _cached_active_trends(jwt),
         _prepare_session_messages(jwt=jwt, thread_id=thread_id, messages=messages),
         return_exceptions=False,
@@ -771,6 +820,7 @@ async def run_orchestrator_chat(
     self_model_context = _build_self_model_context(self_model)
     preference_patterns_context = _build_preference_patterns_context(preference_patterns)
     topic_context = _build_topic_context(current_topic, previous_topic)
+    goal_alignment_context = _build_goal_alignment_context(goal_alignment_flags)
 
     try:
         schedule_result = await call_schedule_agent(
@@ -786,6 +836,7 @@ async def run_orchestrator_chat(
             self_model_context=self_model_context,
             preference_patterns_context=preference_patterns_context,
             topic_context=topic_context,
+            goal_alignment_context=goal_alignment_context,
             persist_thread=persist_thread,
         )
         if CONFIRMATION_MARKER_RE.search(schedule_result.text):
@@ -910,13 +961,14 @@ async def run_orchestrator_chat_stream(
     agent = get_schedule_agent()
 
     # Auth + stable context in one parallel gather, then facts after user_id is known.
-    user, fact_profile, self_model, preference_patterns, topic_state, threshold_adjustment, active_trends, session = await asyncio.gather(
+    user, fact_profile, self_model, preference_patterns, topic_state, threshold_adjustment, goal_alignment_flags, active_trends, session = await asyncio.gather(
         _timed(get_current_user(jwt), timeout=8.0),
         _cached_user_profile(jwt),
         _cached_self_model(),
         _cached_preference_patterns(),
         _cached_current_and_previous_topic(),
         _cached_threshold_adjustment(),
+        _cached_goal_alignment_flags(),
         _cached_active_trends(jwt),
         _prepare_session_messages(jwt=jwt, thread_id=thread_id, messages=messages),
         return_exceptions=False,
@@ -992,6 +1044,7 @@ async def run_orchestrator_chat_stream(
     self_model_context = _build_self_model_context(self_model)
     preference_patterns_context = _build_preference_patterns_context(preference_patterns)
     topic_context = _build_topic_context(current_topic, previous_topic)
+    goal_alignment_context = _build_goal_alignment_context(goal_alignment_flags)
     schedule_text = ""
     returned_thread_id = effective_thread_id
     schedule_message_id: str | None = None
@@ -1013,6 +1066,7 @@ async def run_orchestrator_chat_stream(
             self_model_context=self_model_context,
             preference_patterns_context=preference_patterns_context,
             topic_context=topic_context,
+            goal_alignment_context=goal_alignment_context,
             persist_thread=persist_thread,
         ):
             if event.tool_event:
