@@ -116,13 +116,17 @@ async def upsert_fact_item(
     expires_at: str | None = None,
     thread_id: str | None = None,
     invocation_id: str | None = None,
+    source_experience_ids: list[str] | None = None,
 ) -> dict[str, Any]:
     """Atomically upserts one fact item and appends a history row via RPC.
 
-    thread_id/invocation_id (Phase B4 provenance) are only applied by the
-    RPC when this call creates a *new* row — they record where a fact was
-    first generated, not who last touched it, so passing them on an update
-    to an existing (category, key) is harmless (the RPC ignores them then).
+    thread_id/invocation_id (Phase B4 provenance) and source_experience_ids
+    (Phase B2 provenance) are only applied by the RPC when this call creates
+    a *new* row — they record where a fact was first generated (and, for
+    source_experience_ids, which sigmaris_experience rows it was
+    consolidated from), not who last touched it, so passing them on an
+    update to an existing (category, key) is harmless (the RPC ignores them
+    then).
     """
     return await rest_rpc(jwt, "upsert_fact_item", {
         "p_category": category,
@@ -135,6 +139,7 @@ async def upsert_fact_item(
         "p_expires_at": expires_at,
         "p_thread_id": thread_id,
         "p_invocation_id": invocation_id,
+        "p_source_experience_ids": source_experience_ids,
     })
 
 

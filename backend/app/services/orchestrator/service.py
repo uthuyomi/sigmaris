@@ -443,20 +443,31 @@ async def _cognitive_layer_bg(
     turn_messages: list[dict[str, str]],
     fact_items: list[dict[str, Any]] | None,
 ) -> None:
-    """Fire-and-forget: detect+record real decisions, and nudge internal
-    state, after each chat turn. Replaces the old unconditional generic
-    "chat_turn" log entry (Phase A3) — detect_and_record_decision() only
-    writes a row when the turn actually contained a decision or policy
-    change."""
+    """Fire-and-forget: detect+record real decisions and episodic memory,
+    and nudge internal state, after each chat turn. Replaces the old
+    unconditional generic "chat_turn" log entry (Phase A3) —
+    detect_and_record_decision() only writes a row when the turn actually
+    contained a decision or policy change, and (Phase B2)
+    detect_and_record_episode() only writes a row when the turn contained an
+    event worth remembering episodically. Both LLM-judgment calls run
+    concurrently since they're independent reads of the same turn_messages."""
     try:
         from app.services.decision_log import detect_and_record_decision  # noqa: PLC0415
+        from app.services.experience_layer import detect_and_record_episode  # noqa: PLC0415
         from app.services.internal_state import get_internal_state, update_internal_state  # noqa: PLC0415
 
-        await detect_and_record_decision(
-            messages=turn_messages,
-            fact_items=fact_items,
-            thread_id=thread_id,
-            invocation_id=invocation_id,
+        await asyncio.gather(
+            detect_and_record_decision(
+                messages=turn_messages,
+                fact_items=fact_items,
+                thread_id=thread_id,
+                invocation_id=invocation_id,
+            ),
+            detect_and_record_episode(
+                messages=turn_messages,
+                thread_id=thread_id,
+                invocation_id=invocation_id,
+            ),
         )
 
         state = await get_internal_state()
