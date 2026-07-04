@@ -21,6 +21,7 @@ from app.services.orchestrator.response_guard import replace_forbidden_assistant
 from app.services.orchestrator.schedule_agent_client import call_schedule_agent, call_schedule_agent_stream
 from app.services.supabase_rest import get_current_user
 from app.services.memory_confidence import classify_confidence_tier, confidence_guidance_note
+from app.services.memory_compression import compress_memories_if_needed
 from app.services.multihop_search import search_with_decomposition
 from app.services.decision_log import get_active_preference_patterns
 from app.services.self_model import get_self_model
@@ -387,17 +388,27 @@ async def _build_memory_context(
                 jwt=jwt,
                 recent_topic_labels=recent_topic_labels,
             )
-            relevant_context = _build_relevant_memories_context(relevant)
             # Phase B11: calibrated abstention — reuses B7's/B8's already-
             # computed multihop/time-sensitive judgments and each result's
             # own similarity field, at zero additional LLM calls (see
             # memory_confidence.py's module docstring for the full
-            # rationale). Only adds a note when the top match is weak or
-            # absent; a genuinely confident match leaves this context
-            # completely unchanged from pre-B11 behavior.
+            # rationale). Classified on the pristine (pre-compression)
+            # results — compression below only ever shortens value text,
+            # never touches similarity, but keeping this ordering explicit
+            # avoids the two features' concerns ever becoming coupled.
             tier = classify_confidence_tier(
                 relevant, is_multihop=was_decomposed, is_time_sensitive=time_sensitive
             )
+            # Phase B12: rule-based post-retrieval compression — only
+            # triggers when the whole block is estimated to exceed a token
+            # budget, and even then leaves high-importance facts (Phase
+            # B17's importance_score) untouched. See memory_compression.py's
+            # module docstring for why this is rule-based rather than an
+            # LLM summarization call.
+            compressed_relevant, _was_compressed = compress_memories_if_needed(
+                relevant, query=latest_user_text
+            )
+            relevant_context = _build_relevant_memories_context(compressed_relevant)
             guidance = confidence_guidance_note(tier)
             if guidance:
                 relevant_context = f"{relevant_context}\n{guidance}" if relevant_context else guidance
