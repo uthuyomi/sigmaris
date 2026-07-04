@@ -65,6 +65,22 @@ _ABSTAIN_VECTOR_THRESHOLD_STRICT = 0.85
 # vector case (see phase_b11_report.md section 1 for the full reasoning).
 _ABSTAIN_TRGM_THRESHOLD = _TRGM_HIGH_CONFIDENCE_SIMILARITY
 
+# Phase B15: bounds how far a personalized threshold_adjustment (see
+# abstention_feedback.py) may shift any of the three thresholds above, in
+# either direction. Applied as the SAME single offset to all three
+# thresholds for a given person (never tuned independently per category),
+# so their relative ordering — baseline < strict, and both meaningfully
+# above the 0.7 search floor / meaningfully below 1.0 — is preserved
+# regardless of the adjustment's sign or magnitude. See
+# phase_b15_report.md section 3 for the empirical check of what 0.05
+# actually does to each threshold's safe range: baseline moves within
+# [0.73, 0.83], strict within [0.80, 0.90], trgm within [0.45, 0.55] — none
+# of which come close to "always confident" (would require the baseline
+# floor to approach 0.7) or "always hedges" (would require it to approach
+# 1.0). Enforced here (not just by whoever computes the adjustment) so
+# this function is safe regardless of caller error.
+_MAX_THRESHOLD_ADJUSTMENT = 0.05
+
 _NO_EVIDENCE_NOTE = (
     "[記憶の確信度に関する注意]\n"
     "今回の発言に関連する具体的な記憶は見つかりませんでした。もし何かを尋ねら"
@@ -87,6 +103,7 @@ def classify_confidence_tier(
     *,
     is_multihop: bool,
     is_time_sensitive: bool,
+    threshold_adjustment: float = 0.0,
 ) -> ConfidenceTier:
     """Classify how confidently the top search result supports answering
     the query, using only data already computed by search_relevant_
@@ -96,6 +113,13 @@ def classify_confidence_tier(
     supporting fact is weak, hedging the whole answer is appropriate
     regardless of how many additional weaker facts also came back
     (the common RAG-abstention practice of gating on top-1 relevance).
+
+    threshold_adjustment (Phase B15): a single per-person offset — positive
+    shifts every threshold up (more cautious, hedges more readily),
+    negative shifts every threshold down (more assertive) — derived from
+    how 海星さん has reacted to past hedged answers (see
+    abstention_feedback.py). Clamped here to +/-_MAX_THRESHOLD_ADJUSTMENT
+    regardless of what the caller passes.
     """
     if not memories:
         return "no_evidence"
@@ -109,6 +133,9 @@ def classify_confidence_tier(
     else:
         strict = is_multihop or is_time_sensitive
         floor = _ABSTAIN_VECTOR_THRESHOLD_STRICT if strict else _ABSTAIN_VECTOR_THRESHOLD_BASELINE
+
+    clamped_adjustment = max(-_MAX_THRESHOLD_ADJUSTMENT, min(_MAX_THRESHOLD_ADJUSTMENT, threshold_adjustment))
+    floor += clamped_adjustment
 
     return "confident" if similarity >= floor else "low_confidence"
 

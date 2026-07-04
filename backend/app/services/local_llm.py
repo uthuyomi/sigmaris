@@ -23,6 +23,7 @@ class TaskType(str, enum.Enum):
     TOPIC_DETECTION = "topic_detection"
     QUERY_DECOMPOSITION = "query_decomposition"
     MEMORY_RERANK = "memory_rerank"
+    ABSTENTION_REACTION_DETECTION = "abstention_reaction_detection"
     EVAL_GENERATION = "eval_generation"
 
 
@@ -36,6 +37,7 @@ _LOCAL_TASK_TYPES = {
     TaskType.TOPIC_DETECTION,
     TaskType.QUERY_DECOMPOSITION,
     TaskType.MEMORY_RERANK,
+    TaskType.ABSTENTION_REACTION_DETECTION,
     TaskType.EVAL_GENERATION,
 }
 
@@ -130,6 +132,7 @@ def _openai_model_for_task(task: TaskType) -> str:
         TaskType.TOPIC_DETECTION,
         TaskType.QUERY_DECOMPOSITION,
         TaskType.MEMORY_RERANK,
+        TaskType.ABSTENTION_REACTION_DETECTION,
     }:
         return settings.openai_nano_model
     return settings.openai_model

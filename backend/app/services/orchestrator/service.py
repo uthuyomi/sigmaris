@@ -20,6 +20,7 @@ from app.services.orchestrator.persona_rewriter import rewrite_with_persona, rew
 from app.services.orchestrator.response_guard import replace_forbidden_assistant_names
 from app.services.orchestrator.schedule_agent_client import call_schedule_agent, call_schedule_agent_stream
 from app.services.supabase_rest import get_current_user
+from app.services.abstention_feedback import get_threshold_adjustment, record_pending_hedge
 from app.services.memory_confidence import classify_confidence_tier, confidence_guidance_note
 from app.services.memory_compression import compress_memories_if_needed
 from app.services.multihop_search import search_with_decomposition
@@ -108,6 +109,17 @@ async def _cached_current_and_previous_topic() -> tuple[dict | None, dict | None
     )
     _cache_set("topic", result)
     return result or (None, None)
+
+
+async def _cached_threshold_adjustment() -> float:
+    hit, val = _cache_get("abstention_threshold_adjustment")
+    if hit:
+        return val
+    result = await _timed(
+        get_threshold_adjustment(), timeout=3.0, default=0.0, label="abstention_threshold_adjustment"
+    )
+    _cache_set("abstention_threshold_adjustment", result)
+    return result if result is not None else 0.0
 
 
 async def _cached_user_profile(jwt: str) -> dict | None:
@@ -357,6 +369,8 @@ async def _build_memory_context(
     fact_items: list | None,
     active_trends: list,
     recent_topic_labels: list[str] | None = None,
+    thread_id: str | None = None,
+    threshold_adjustment: float = 0.0,
 ) -> str | None:
     profile_context = build_profile_context(fact_profile)
     if profile_context and len(profile_context) > 200:
@@ -397,8 +411,17 @@ async def _build_memory_context(
             # never touches similarity, but keeping this ordering explicit
             # avoids the two features' concerns ever becoming coupled.
             tier = classify_confidence_tier(
-                relevant, is_multihop=was_decomposed, is_time_sensitive=time_sensitive
+                relevant,
+                is_multihop=was_decomposed,
+                is_time_sensitive=time_sensitive,
+                threshold_adjustment=threshold_adjustment,
             )
+            # Phase B15: record that this thread just received a hedged
+            # answer so the next turn's fire-and-forget cognitive layer
+            # (_cognitive_layer_bg) can classify 海星さん's reply to it —
+            # see abstention_feedback.py's module docstring.
+            if tier != "confident":
+                record_pending_hedge(thread_id)
             # Phase B12: rule-based post-retrieval compression — only
             # triggers when the whole block is estimated to exceed a token
             # budget, and even then leaves high-importance facts (Phase
@@ -581,18 +604,20 @@ async def _cognitive_layer_bg(
     jwt: str,
 ) -> None:
     """Fire-and-forget: detect+record real decisions and episodic memory,
-    reflect any pending memory re-confirmation (Phase B3), and nudge
-    internal state, after each chat turn. Replaces the old unconditional
-    generic "chat_turn" log entry (Phase A3) — detect_and_record_decision()
-    only writes a row when the turn actually contained a decision or policy
-    change, and (Phase B2) detect_and_record_episode() only writes a row
-    when the turn contained an event worth remembering episodically. All
-    three LLM-judgment calls run concurrently since they're independent
-    reads of the same turn_messages. jwt is only needed by
+    reflect any pending memory re-confirmation (Phase B3) and pending
+    abstention-hedge reaction (Phase B15), and nudge internal state, after
+    each chat turn. Replaces the old unconditional generic "chat_turn" log
+    entry (Phase A3) — detect_and_record_decision() only writes a row when
+    the turn actually contained a decision or policy change, and
+    (Phase B2) detect_and_record_episode() only writes a row when the turn
+    contained an event worth remembering episodically. All five
+    LLM-judgment calls run concurrently since they're independent reads of
+    the same turn_messages. jwt is only needed by
     reflect_pending_confirmation() (it may write to user_fact_items through
-    the per-user RLS path) — decision/episode detection use service-role
-    access and don't touch it."""
+    the per-user RLS path) — decision/episode/topic/abstention-reaction
+    detection use service-role access and don't touch it."""
     try:
+        from app.services.abstention_feedback import reflect_abstention_reaction  # noqa: PLC0415
         from app.services.active_inquiry import reflect_pending_confirmation  # noqa: PLC0415
         from app.services.decision_log import detect_and_record_decision  # noqa: PLC0415
         from app.services.experience_layer import detect_and_record_episode  # noqa: PLC0415
@@ -621,6 +646,11 @@ async def _cognitive_layer_bg(
                 thread_id=thread_id,
                 invocation_id=invocation_id,
             ),
+            reflect_abstention_reaction(
+                thread_id=thread_id,
+                turn_messages=turn_messages,
+                invocation_id=invocation_id,
+            ),
         )
 
         state = await get_internal_state()
@@ -632,10 +662,12 @@ async def _cognitive_layer_bg(
         logger.exception("cognitive_layer_bg: failed for invocation=%s", invocation_id)
     finally:
         # Invalidate regardless of gather outcome (partial failure of one
-        # of the four calls above must not leave a stale topic cached for
-        # the rest of _CACHE_TTL) — same finally-based invalidation
-        # approach _extract_facts_bg above uses for the facts cache.
+        # of the five calls above must not leave a stale topic/threshold-
+        # adjustment cached for the rest of _CACHE_TTL) — same
+        # finally-based invalidation approach _extract_facts_bg above uses
+        # for the facts cache.
         _cache.pop("topic", None)
+        _cache.pop("abstention_threshold_adjustment", None)
 
 
 # ─── Main entry point ─────────────────────────────────────────────────────────
@@ -657,12 +689,13 @@ async def run_orchestrator_chat(
     agent = get_schedule_agent()
 
     # Auth + stable context in one parallel gather, then facts after user_id is known.
-    user, fact_profile, self_model, preference_patterns, topic_state, active_trends, session = await asyncio.gather(
+    user, fact_profile, self_model, preference_patterns, topic_state, threshold_adjustment, active_trends, session = await asyncio.gather(
         _timed(get_current_user(jwt), timeout=8.0),
         _cached_user_profile(jwt),
         _cached_self_model(),
         _cached_preference_patterns(),
         _cached_current_and_previous_topic(),
+        _cached_threshold_adjustment(),
         _cached_active_trends(jwt),
         _prepare_session_messages(jwt=jwt, thread_id=thread_id, messages=messages),
         return_exceptions=False,
@@ -730,6 +763,8 @@ async def run_orchestrator_chat(
         fact_items=fact_items,
         active_trends=active_trends,
         recent_topic_labels=_topic_labels_for_hint(current_topic, previous_topic),
+        thread_id=effective_thread_id,
+        threshold_adjustment=threshold_adjustment,
     )
 
     call_name = extract_call_name(fact_profile) or _user_display_name(user)
@@ -875,12 +910,13 @@ async def run_orchestrator_chat_stream(
     agent = get_schedule_agent()
 
     # Auth + stable context in one parallel gather, then facts after user_id is known.
-    user, fact_profile, self_model, preference_patterns, topic_state, active_trends, session = await asyncio.gather(
+    user, fact_profile, self_model, preference_patterns, topic_state, threshold_adjustment, active_trends, session = await asyncio.gather(
         _timed(get_current_user(jwt), timeout=8.0),
         _cached_user_profile(jwt),
         _cached_self_model(),
         _cached_preference_patterns(),
         _cached_current_and_previous_topic(),
+        _cached_threshold_adjustment(),
         _cached_active_trends(jwt),
         _prepare_session_messages(jwt=jwt, thread_id=thread_id, messages=messages),
         return_exceptions=False,
@@ -948,6 +984,8 @@ async def run_orchestrator_chat_stream(
         fact_items=fact_items,
         active_trends=active_trends,
         recent_topic_labels=_topic_labels_for_hint(current_topic, previous_topic),
+        thread_id=effective_thread_id,
+        threshold_adjustment=threshold_adjustment,
     )
 
     call_name = extract_call_name(fact_profile) or _user_display_name(user)
