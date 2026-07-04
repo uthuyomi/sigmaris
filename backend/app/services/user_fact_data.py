@@ -103,6 +103,37 @@ async def get_fact_items_for_user(
     return result if isinstance(result, list) else []
 
 
+# Phase B5: columns needed by the memory freshness/contradiction dashboard.
+# Deliberately excludes `embedding` (vector(768), large and irrelevant to a
+# human-facing list) and the generated `search_text` column.
+_DASHBOARD_SELECT = (
+    "id,category,key,value,confidence,importance_score,is_stale,"
+    "adoption_count,source,thread_id,invocation_id,source_experience_ids,"
+    "created_at,updated_at"
+)
+
+
+async def get_memory_dashboard_items(jwt: str) -> list[dict[str, Any]]:
+    """Returns non-deleted user_fact_items for Phase B5's developer dashboard.
+
+    Ordered oldest-updated-first by default (the items most overdue for
+    review surface first); the frontend re-sorts/filters client-side from
+    this single snapshot rather than round-tripping for each view, since the
+    per-user row count is small (single-tenant system).
+
+    Includes is_stale rows on purpose (that's the whole point of the
+    dashboard) but excludes is_deleted rows (logically gone, nothing to
+    review).
+    """
+    params = {
+        "select": _DASHBOARD_SELECT,
+        "is_deleted": "eq.false",
+        "order": "updated_at.asc",
+    }
+    result = await rest_select(jwt, "user_fact_items", params)
+    return result if isinstance(result, list) else []
+
+
 async def upsert_fact_item(
     jwt: str,
     *,

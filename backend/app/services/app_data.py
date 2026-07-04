@@ -28,6 +28,7 @@ from app.services.app_event_data import (
     update_event_external_link,
 )
 from app.services.app_profile_data import get_profile_context
+from app.services.user_fact_data import get_memory_dashboard_items
 
 __all__ = [
     "DEFAULT_THREAD_TITLE",
@@ -35,6 +36,7 @@ __all__ = [
     "compact_parts",
     "derive_thread_title",
     "get_profile_context",
+    "get_memory_dashboard_items",
     "search_events",
     "list_events",
     "get_event_by_id",

@@ -13,6 +13,7 @@ from app.services.app_data import (
     delete_chat_thread as delete_chat_thread_record,
     get_chat_thread as get_chat_thread_record,
     get_chat_thread_version as get_chat_thread_version_record,
+    get_memory_dashboard_items,
     get_profile_context,
     list_chat_messages as list_chat_messages_record,
     list_chat_threads as list_chat_threads_record,
@@ -79,6 +80,16 @@ async def home_context(authorization: str | None = Header(default=None)):
         "aiTone": context["aiTone"],
         "savedLocations": context["savedLocations"],
     }
+
+
+@router.get("/memory-dashboard")
+async def memory_dashboard(authorization: str | None = Header(default=None)):
+    """Phase B5: read-only snapshot of user_fact_items for the developer-only
+    freshness/contradiction dashboard (/admin/memory). Does not touch the
+    /chat response path — plain request/response, no fire-and-forget."""
+    jwt = _require_jwt(authorization)
+    items = await get_memory_dashboard_items(jwt)
+    return {"ok": True, "items": items, "count": len(items)}
 
 
 @router.get("/chat/threads")
