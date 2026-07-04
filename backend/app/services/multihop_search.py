@@ -214,15 +214,17 @@ async def search_with_decomposition(
     threshold: float = 0.7,
     limit: int = 5,
     recent_topic_labels: list[str] | None = None,
-) -> tuple[list[dict[str, Any]], bool]:
+) -> tuple[list[dict[str, Any]], bool, bool]:
     """Search relevant memories, transparently decomposing `query` into
     sub-queries first when the LLM judges it necessary, and strengthening
     the freshness ranking weight (Phase B8) when the query is judged to be
     asking about current validity.
 
-    Returns (memories, was_decomposed). was_decomposed is purely
-    informational (logging/testing) — callers that only want the memories
-    can ignore it.
+    Returns (memories, was_decomposed, time_sensitive). Both flags are
+    purely informational for a caller that only wants the memories, but
+    Phase B11's calibrated abstention reuses them directly (already
+    computed here at zero marginal cost) to pick a stricter or more
+    lenient confidence threshold — see memory_confidence.py.
     """
     analysis = await decompose_query(query, recent_topic_labels=recent_topic_labels)
     if not analysis.sub_queries:
@@ -234,7 +236,7 @@ async def search_with_decomposition(
             jwt=jwt,
             time_sensitive_query=analysis.time_sensitive,
         )
-        return single, False
+        return single, False, analysis.time_sensitive
 
     # Independent searches — fan out concurrently so added latency stays
     # close to the single slowest sub-query, not sub_queries-count x a
@@ -261,11 +263,11 @@ async def search_with_decomposition(
         ranked_lists.append(result)
 
     if not ranked_lists:
-        return [], True
+        return [], True, analysis.time_sensitive
 
     merged = _rrf_merge_ranked_lists(ranked_lists, limit=_MULTIHOP_RESULT_LIMIT)
     logger.info(
         "multihop_search: decomposed into %d sub-queries, merged=%d results",
         len(analysis.sub_queries), len(merged),
     )
-    return merged, True
+    return merged, True, analysis.time_sensitive
