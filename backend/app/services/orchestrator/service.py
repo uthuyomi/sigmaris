@@ -442,16 +442,22 @@ async def _cognitive_layer_bg(
     thread_id: str | None,
     turn_messages: list[dict[str, str]],
     fact_items: list[dict[str, Any]] | None,
+    jwt: str,
 ) -> None:
     """Fire-and-forget: detect+record real decisions and episodic memory,
-    and nudge internal state, after each chat turn. Replaces the old
-    unconditional generic "chat_turn" log entry (Phase A3) —
-    detect_and_record_decision() only writes a row when the turn actually
-    contained a decision or policy change, and (Phase B2)
-    detect_and_record_episode() only writes a row when the turn contained an
-    event worth remembering episodically. Both LLM-judgment calls run
-    concurrently since they're independent reads of the same turn_messages."""
+    reflect any pending memory re-confirmation (Phase B3), and nudge
+    internal state, after each chat turn. Replaces the old unconditional
+    generic "chat_turn" log entry (Phase A3) — detect_and_record_decision()
+    only writes a row when the turn actually contained a decision or policy
+    change, and (Phase B2) detect_and_record_episode() only writes a row
+    when the turn contained an event worth remembering episodically. All
+    three LLM-judgment calls run concurrently since they're independent
+    reads of the same turn_messages. jwt is only needed by
+    reflect_pending_confirmation() (it may write to user_fact_items through
+    the per-user RLS path) — decision/episode detection use service-role
+    access and don't touch it."""
     try:
+        from app.services.active_inquiry import reflect_pending_confirmation  # noqa: PLC0415
         from app.services.decision_log import detect_and_record_decision  # noqa: PLC0415
         from app.services.experience_layer import detect_and_record_episode  # noqa: PLC0415
         from app.services.internal_state import get_internal_state, update_internal_state  # noqa: PLC0415
@@ -467,6 +473,11 @@ async def _cognitive_layer_bg(
                 messages=turn_messages,
                 thread_id=thread_id,
                 invocation_id=invocation_id,
+            ),
+            reflect_pending_confirmation(
+                thread_id=thread_id,
+                turn_messages=turn_messages,
+                jwt=jwt,
             ),
         )
 
@@ -642,7 +653,7 @@ async def run_orchestrator_chat(
         from app.services.active_inquiry import get_inquiry_question  # noqa: PLC0415
         full_messages_so_far = list(messages) + [{"role": "assistant", "content": response_text}]
         inquiry = await asyncio.wait_for(
-            get_inquiry_question(jwt, full_messages_so_far), timeout=2.0
+            get_inquiry_question(jwt, full_messages_so_far, thread_id=effective_thread_id), timeout=2.0
         )
         if inquiry:
             response_text = response_text + "\n\n" + inquiry
@@ -676,6 +687,7 @@ async def run_orchestrator_chat(
             thread_id=effective_thread_id,
             turn_messages=turn_messages,
             fact_items=fact_items,
+            jwt=jwt,
         ),
         name=f"cognitive_layer:{invocation_id}",
     )
@@ -883,7 +895,7 @@ async def run_orchestrator_chat_stream(
         from app.services.active_inquiry import get_inquiry_question  # noqa: PLC0415
         full_messages_so_far = list(messages) + [{"role": "assistant", "content": response_text}]
         inquiry = await asyncio.wait_for(
-            get_inquiry_question(jwt, full_messages_so_far), timeout=2.0
+            get_inquiry_question(jwt, full_messages_so_far, thread_id=effective_thread_id), timeout=2.0
         )
         if inquiry:
             inquiry_delta = "\n\n" + inquiry
@@ -913,6 +925,7 @@ async def run_orchestrator_chat_stream(
             thread_id=effective_thread_id,
             turn_messages=turn_messages,
             fact_items=fact_items,
+            jwt=jwt,
         ),
         name=f"cognitive_layer:{invocation_id}",
     )

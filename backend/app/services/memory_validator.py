@@ -46,6 +46,88 @@ _MAX_CONTRADICTION_CHECKS = 5
 _IMPORTANCE_DECAY_ONSET_EXTENSION = 1.0
 _IMPORTANCE_DECAY_SEVERITY_DAMPENING = 0.5
 
+# Phase B3: active-inquiry confirmation-candidate selection.
+#
+# 0.5 sits exactly on the boundary memory_extractor.py's own extraction
+# prompt already uses to calibrate confidence at creation time (0.4 =
+# "推測・間接的示唆", 0.6 = "会話から強く示唆される") — a fact at or below
+# that boundary was never more than a guess, or has decayed/been
+# contradicted down to guess-level (Phase 1/2 above write straight into
+# this same confidence column), so re-asking it isn't just "reusing the
+# same threshold for consistency", it's the same semantic line memory
+# extraction already draws.
+_CONFIRM_CONFIDENCE_THRESHOLD = 0.5
+# Categories with no decay rule at all (profile: (None, 1.0)) never get
+# touched by Phase 1 above, so without a separate age-based check a
+# profile fact could sit unconfirmed forever. 180 days matches the longest
+# existing category decay window (devices/environment) — chosen so this
+# check never fires *more* eagerly than decay already does for categories
+# that have a decay rule, while still giving decay-exempt categories an
+# eventual freshness check.
+_CONFIRM_STALENESS_DAYS = 180
+
+
+async def get_confirmation_candidates(jwt: str) -> list[dict[str, Any]]:
+    """Return user_fact_items rows worth re-confirming with the user —
+    low-confidence, contradiction-flagged, or long-unconfirmed facts.
+
+    Deliberately only considers rows that already have a value (a null
+    field is a *missing* fact, handled by active_inquiry.get_null_fields()
+    instead — a different question shape: "I don't know X yet" vs "you
+    told me X, is that still right?"). Returned rows are shaped compatibly
+    with get_null_fields()'s dicts (source/category/key/id) so
+    active_inquiry.py can pool and rank both kinds of candidate together,
+    plus the extra fields (value/confidence/confirm_reason) a confirmation
+    question actually needs.
+    """
+    try:
+        facts = await rest_select(jwt, "user_fact_items", {
+            "select": "*",
+            "is_deleted": "eq.false",
+        })
+        if not isinstance(facts, list):
+            return []
+    except Exception:
+        logger.exception("memory_validator: failed to fetch confirmation candidates")
+        return []
+
+    now = datetime.now(timezone.utc)
+    candidates: list[dict[str, Any]] = []
+    for item in facts:
+        if item.get("value") is None:
+            continue
+
+        confidence = float(item.get("confidence") if item.get("confidence") is not None else 1.0)
+        reason: str | None = None
+        if confidence < _CONFIRM_CONFIDENCE_THRESHOLD:
+            reason = "low_confidence"
+        elif item.get("is_stale"):
+            reason = "flagged_stale"
+        else:
+            updated_str = item.get("updated_at")
+            if updated_str:
+                try:
+                    updated_at = datetime.fromisoformat(str(updated_str).replace("Z", "+00:00"))
+                    if (now - updated_at).days >= _CONFIRM_STALENESS_DAYS:
+                        reason = "long_unupdated"
+                except ValueError:
+                    pass
+
+        if reason is None:
+            continue
+
+        candidates.append({
+            "source": "user_fact_items_confirm",
+            "category": item.get("category"),
+            "key": item.get("key"),
+            "id": item.get("id"),
+            "value": item.get("value"),
+            "confidence": confidence,
+            "confirm_reason": reason,
+        })
+
+    return candidates
+
 
 def _importance_adjusted_decay(
     base_decay_days: int, base_decay_factor: float, importance_score: float
