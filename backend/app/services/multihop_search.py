@@ -19,10 +19,21 @@ from __future__ import annotations
 # for exactly one cheap classification call and then proceed through the
 # unchanged single-query path; only genuinely compound questions pay for
 # the extra fan-out searches.
+#
+# Phase B8: the same LLM call also judges whether the query is asking
+# about current validity ("今も有効?"/"まだ続いてる?" — time-sensitive
+# queries per phase_b8_report.md section 2). This was deliberately folded
+# into decompose_query()'s existing response schema rather than added as a
+# second LLM call — the task explicitly asked for a new dedicated call to
+# be a last resort, and this question ("does the query need special
+# handling?") is answered by the exact same classification pass that
+# already runs on every turn for B7, so there's no marginal LLM round trip
+# for this feature at all, on either the simple or complex path.
 
 import asyncio
 import json
 import logging
+from dataclasses import dataclass
 from typing import Any
 
 from app.services.local_llm import TaskType, get_llm_router
@@ -49,30 +60,41 @@ _MAX_SUBQUERIES = 4
 _MULTIHOP_RESULT_LIMIT = 8
 
 _DECOMPOSE_SYSTEM = (
-    "あなたはシグマリスの記憶検索の前処理システムです。ユーザーの質問が、単一の"
-    "検索で答えられる単純な質問か、複数の異なる情報を組み合わせないと答えられな"
-    "い複雑な質問かを判定します。複雑な場合のみ、それぞれ単独で検索可能なサブク"
-    "エリに分解してください。必ず有効なJSONのみを返してください。"
+    "あなたはシグマリスの記憶検索の前処理システムです。ユーザーの質問について、"
+    "(1)単一の検索で答えられる単純な質問か、複数の異なる情報を組み合わせないと"
+    "答えられない複雑な質問かを判定し、複雑な場合はそれぞれ単独で検索可能なサブ"
+    "クエリに分解してください。(2)また、質問が「今も有効か」「まだ続いている"
+    "か」といった、情報の現在時点での有効性を問うものかどうかも判定してくださ"
+    "い。必ず有効なJSONのみを返してください。"
 )
 
 _DECOMPOSE_PROMPT = """ユーザーの質問:
 {query}
 {topic_hint}
 ---
-この質問が、複数の異なる記憶(事実)を組み合わせないと答えられない複雑な質問で
-あるかを判定してください。単一の話題についての単純な質問(例:「私の趣味は何で
-したっけ」)や、単なる雑談・挨拶では分解しないでください。
+この質問について、以下の2点を判定してください。
 
-複雑と判定した場合のみ、以下のJSONを出力してください:
+**1. 分解の要否**: 複数の異なる記憶(事実)を組み合わせないと答えられない複雑な
+質問であるかを判定してください。単一の話題についての単純な質問(例:「私の趣味
+は何でしたっけ」)や、単なる雑談・挨拶では分解しないでください。
+
+**2. 時系列的な性質**: 質問が「今も」「まだ」「最近は」「変わっていない?」のよ
+うに、記憶している情報が現在時点でも有効かどうかを問うものであれば
+time_sensitiveをtrueにしてください。単なる過去の事実の確認(例:「前に何て言っ
+てたっけ」)はtime_sensitiveには含めません。
+
+複雑と判定した場合は、以下のJSONを出力してください:
 {{
   "needs_decomposition": true,
-  "sub_queries": ["サブクエリ1", "サブクエリ2", "..."]
+  "sub_queries": ["サブクエリ1", "サブクエリ2", "..."],
+  "time_sensitive": true または false
 }}
 サブクエリは最大{max_subqueries}個までとし、それぞれ単独の検索質問として意味が
 通るようにしてください(元の質問の一部をそのまま使ってよい)。
 
-単純な質問の場合は以下のみ返してください:
-{{"needs_decomposition": false}}"""
+単純な質問の場合は以下を返してください(time_sensitiveの判定は分解の要否と独立
+に行うこと):
+{{"needs_decomposition": false, "time_sensitive": true または false}}"""
 
 
 def _format_topic_hint(recent_topic_labels: list[str] | None) -> str:
@@ -82,21 +104,34 @@ def _format_topic_hint(recent_topic_labels: list[str] | None) -> str:
     return f"\n直近の話題の推移(参考、無理に使う必要はない): {joined}\n"
 
 
+@dataclass(frozen=True)
+class QueryAnalysis:
+    sub_queries: list[str] | None
+    time_sensitive: bool
+
+
+_NOT_DECOMPOSED = QueryAnalysis(sub_queries=None, time_sensitive=False)
+
+
 async def decompose_query(
     query: str,
     *,
     recent_topic_labels: list[str] | None = None,
-) -> list[str] | None:
-    """Ask the LLM whether `query` needs multi-hop decomposition.
+) -> QueryAnalysis:
+    """Ask the LLM (one combined call) whether `query` needs multi-hop
+    decomposition and whether it's asking about current validity
+    (Phase B8's time_sensitive flag — see this module's docstring for why
+    it rides on this same call instead of a new one).
 
-    Returns None when a single search is sufficient (the common case) —
-    callers should fall back to a plain search_relevant_memories() call.
-    Returns a list of 2-_MAX_SUBQUERIES sub-queries when decomposition is
-    judged necessary.
+    sub_queries is None when a single search is sufficient (the common
+    case) — callers should fall back to a plain search_relevant_memories()
+    call. time_sensitive is independent of sub_queries: a simple
+    single-topic question can still be time-sensitive (e.g. "それって今も
+    変わってない?").
     """
     cleaned = query.strip()
     if not cleaned:
-        return None
+        return _NOT_DECOMPOSED
 
     try:
         router = get_llm_router()
@@ -115,12 +150,17 @@ async def decompose_query(
             json_mode=True,
         )
         parsed = json.loads(raw) if isinstance(raw, str) else raw
-        if not isinstance(parsed, dict) or not parsed.get("needs_decomposition"):
-            return None
+        if not isinstance(parsed, dict):
+            return _NOT_DECOMPOSED
+
+        time_sensitive = bool(parsed.get("time_sensitive"))
+
+        if not parsed.get("needs_decomposition"):
+            return QueryAnalysis(sub_queries=None, time_sensitive=time_sensitive)
 
         raw_sub_queries = parsed.get("sub_queries")
         if not isinstance(raw_sub_queries, list):
-            return None
+            return QueryAnalysis(sub_queries=None, time_sensitive=time_sensitive)
 
         sub_queries = [
             str(sq).strip()
@@ -136,12 +176,12 @@ async def decompose_query(
         # extra search round-trip that a plain single query would answer
         # just as well.
         if len(sub_queries) < 2:
-            return None
+            return QueryAnalysis(sub_queries=None, time_sensitive=time_sensitive)
 
-        return sub_queries
+        return QueryAnalysis(sub_queries=sub_queries, time_sensitive=time_sensitive)
     except Exception:
         logger.exception("multihop_search: decompose_query failed, falling back to single query")
-        return None
+        return _NOT_DECOMPOSED
 
 
 def _rrf_merge_ranked_lists(
@@ -176,15 +216,24 @@ async def search_with_decomposition(
     recent_topic_labels: list[str] | None = None,
 ) -> tuple[list[dict[str, Any]], bool]:
     """Search relevant memories, transparently decomposing `query` into
-    sub-queries first when the LLM judges it necessary.
+    sub-queries first when the LLM judges it necessary, and strengthening
+    the freshness ranking weight (Phase B8) when the query is judged to be
+    asking about current validity.
 
     Returns (memories, was_decomposed). was_decomposed is purely
     informational (logging/testing) — callers that only want the memories
     can ignore it.
     """
-    sub_queries = await decompose_query(query, recent_topic_labels=recent_topic_labels)
-    if not sub_queries:
-        single = await search_relevant_memories(query, user_id, threshold=threshold, limit=limit, jwt=jwt)
+    analysis = await decompose_query(query, recent_topic_labels=recent_topic_labels)
+    if not analysis.sub_queries:
+        single = await search_relevant_memories(
+            query,
+            user_id,
+            threshold=threshold,
+            limit=limit,
+            jwt=jwt,
+            time_sensitive_query=analysis.time_sensitive,
+        )
         return single, False
 
     # Independent searches — fan out concurrently so added latency stays
@@ -192,13 +241,20 @@ async def search_with_decomposition(
     # single search's latency.
     results = await asyncio.gather(
         *[
-            search_relevant_memories(sq, user_id, threshold=threshold, limit=limit, jwt=jwt)
-            for sq in sub_queries
+            search_relevant_memories(
+                sq,
+                user_id,
+                threshold=threshold,
+                limit=limit,
+                jwt=jwt,
+                time_sensitive_query=analysis.time_sensitive,
+            )
+            for sq in analysis.sub_queries
         ],
         return_exceptions=True,
     )
     ranked_lists: list[list[dict[str, Any]]] = []
-    for sq, result in zip(sub_queries, results):
+    for sq, result in zip(analysis.sub_queries, results):
         if isinstance(result, BaseException):
             logger.exception("multihop_search: sub-query search failed query=%r", sq, exc_info=result)
             continue
@@ -210,6 +266,6 @@ async def search_with_decomposition(
     merged = _rrf_merge_ranked_lists(ranked_lists, limit=_MULTIHOP_RESULT_LIMIT)
     logger.info(
         "multihop_search: decomposed into %d sub-queries, merged=%d results",
-        len(sub_queries), len(merged),
+        len(analysis.sub_queries), len(merged),
     )
     return merged, True

@@ -2,12 +2,14 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from datetime import datetime, timezone
 from typing import Any
 
 import httpx
 from openai import AsyncOpenAI
 
 from app.config import settings
+from app.services.memory_validator import compute_freshness_multiplier
 from app.services.proactive.jwt_manager import get_sigmaris_jwt
 from app.services.supabase_rest import get_current_user, rest_rpc, rest_select, rest_update
 
@@ -98,13 +100,71 @@ def _adoption_weighted_score(base_score: float, row: dict[str, Any]) -> float:
     return base_score * (1.0 + normalized * _ADOPTION_RANKING_WEIGHT)
 
 
-def _apply_ranking_weights(base_score: float, row: dict[str, Any]) -> float:
+# Phase B8: time-aware re-ranking. Unlike importance/adoption above, this
+# is a *penalty* (multiplier <= 1.0), not a boost — a stale fact can lose
+# some of its score, but the multiplier is bounded below by
+# (1 - weight), so staleness alone can never zero out a result no matter
+# how old it is (same "bounded, never a full override" philosophy as
+# B17/B13's boosts, just applied in the opposite direction).
+#
+# Two weights, not one: _FRESHNESS_RANKING_WEIGHT applies to ordinary
+# queries (a light touch — most searches aren't asking "is this still
+# true?"), _FRESHNESS_RANKING_WEIGHT_TIME_SENSITIVE applies when
+# multihop_search.decompose_query() judges the query itself to be asking
+# about current validity (requirement 3: the signal must be "適切に強く
+# 反映される" specifically for that kind of question, not for search in
+# general).
+#
+# Chosen via the same empirical rank-gap methodology as B17/B13 (see
+# phase_b8_report.md section 3 for the full table): with B17+B13 both
+# maxed on one item (combined 1.15*1.10=1.265 boost) and this weight's
+# worst case (a maximally-stale, otherwise-plain rank-1 item) on another,
+# 0.05 keeps the combined worst-case ceiling at rank 21 (a modest +4 vs
+# the pre-B8 baseline ceiling of rank 17 in that same test), while 0.12
+# (the time-sensitive case) reaches rank 27 (+10) — meaningfully stronger,
+# as intended, but still far from unbounded.
+_FRESHNESS_RANKING_WEIGHT = 0.05
+_FRESHNESS_RANKING_WEIGHT_TIME_SENSITIVE = 0.12
+
+
+def _freshness_weighted_score(
+    base_score: float, row: dict[str, Any], *, time_sensitive_query: bool
+) -> float:
+    updated_at_str = row.get("updated_at")
+    if not updated_at_str:
+        # Column not yet populated for this row (e.g. migration not yet
+        # applied, or a pre-migration row) — fail open, same as importance/
+        # adoption defaulting when their columns are absent.
+        return base_score
+    try:
+        updated_at = datetime.fromisoformat(str(updated_at_str).replace("Z", "+00:00"))
+    except ValueError:
+        return base_score
+
+    age_days = (datetime.now(timezone.utc) - updated_at).total_seconds() / 86400.0
+    if age_days < 0:
+        age_days = 0.0
+
+    importance = row.get("importance_score")
+    importance = float(importance) if importance is not None else _DEFAULT_IMPORTANCE_SCORE
+    category = str(row.get("category") or "")
+
+    freshness = compute_freshness_multiplier(category, age_days=age_days, importance_score=importance)
+    weight = _FRESHNESS_RANKING_WEIGHT_TIME_SENSITIVE if time_sensitive_query else _FRESHNESS_RANKING_WEIGHT
+    return base_score * (1.0 - weight * (1.0 - freshness))
+
+
+def _apply_ranking_weights(
+    base_score: float, row: dict[str, Any], *, time_sensitive_query: bool = False
+) -> float:
     """Phase B17 (importance_score) + Phase B13 (implicit adoption
-    feedback), composed multiplicatively. Multiplication commutes, so
-    application order doesn't change the result — importance is applied
-    first simply to match the order these two features were built in."""
+    feedback) + Phase B8 (time-aware freshness), composed multiplicatively.
+    Multiplication commutes, so application order doesn't change the
+    result — importance/adoption are applied first simply to match the
+    order these features were built in."""
     score = _importance_weighted_score(base_score, row)
     score = _adoption_weighted_score(score, row)
+    score = _freshness_weighted_score(score, row, time_sensitive_query=time_sensitive_query)
     return score
 
 
@@ -258,7 +318,11 @@ async def _search_fact_memory_trgm(
 
 
 def _merge_hybrid_results(
-    vector_rows: list[dict[str, Any]], trgm_rows: list[dict[str, Any]], *, limit: int
+    vector_rows: list[dict[str, Any]],
+    trgm_rows: list[dict[str, Any]],
+    *,
+    limit: int,
+    time_sensitive_query: bool = False,
 ) -> list[dict[str, Any]]:
     """Reciprocal Rank Fusion across the two ranked lists, with an explicit
     boost so a near-exact trigram/keyword hit is never buried beneath
@@ -302,13 +366,17 @@ def _merge_hybrid_results(
             if row.get("id") and float(row.get("similarity") or 0.0) >= _TRGM_HIGH_CONFIDENCE_SIMILARITY
         ),
         key=lambda row_id: _apply_ranking_weights(
-            float(rows_by_id[row_id].get("similarity") or 0.0), rows_by_id[row_id]
+            float(rows_by_id[row_id].get("similarity") or 0.0),
+            rows_by_id[row_id],
+            time_sensitive_query=time_sensitive_query,
         ),
         reverse=True,
     )
     remaining_ids = sorted(
         (row_id for row_id in scores if row_id not in high_confidence_ids),
-        key=lambda row_id: _apply_ranking_weights(scores[row_id], rows_by_id[row_id]),
+        key=lambda row_id: _apply_ranking_weights(
+            scores[row_id], rows_by_id[row_id], time_sensitive_query=time_sensitive_query
+        ),
         reverse=True,
     )
     ordered_ids = [*dict.fromkeys(high_confidence_ids), *remaining_ids]
@@ -322,6 +390,7 @@ async def search_relevant_memories(
     limit: int = 5,
     *,
     jwt: str | None = None,
+    time_sensitive_query: bool = False,
 ) -> list[dict[str, Any]]:
     """Hybrid search (Phase B1): pgvector semantic similarity merged with
     pg_trgm keyword/fuzzy matching via Reciprocal Rank Fusion. Vector search
@@ -330,6 +399,13 @@ async def search_relevant_memories(
     that same keyword verbatim; trigram search catches those directly and
     doesn't depend on embedding/LLM availability at all, so it also serves
     as a fallback when embedding generation itself fails.
+
+    time_sensitive_query (Phase B8): set when the caller has judged this
+    query to be asking about current validity ("is this still true?") —
+    strengthens the freshness ranking weight (see _apply_ranking_weights)
+    without requiring a dedicated LLM call here; the judgment itself is
+    made once, upstream, by multihop_search.decompose_query() as an extra
+    field on the same response it already produces for Phase B7.
     """
     token = jwt or await get_sigmaris_jwt()
 
@@ -364,7 +440,9 @@ async def search_relevant_memories(
     if not vector_rows and not trgm_rows:
         return []
 
-    merged = _merge_hybrid_results(vector_rows, trgm_rows, limit=limit)
+    merged = _merge_hybrid_results(
+        vector_rows, trgm_rows, limit=limit, time_sensitive_query=time_sensitive_query
+    )
     logger.info(
         "memory_search: hybrid merge vector_hits=%d trgm_hits=%d merged=%d sources=%s",
         len(vector_rows),

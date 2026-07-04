@@ -140,6 +140,52 @@ def _importance_adjusted_decay(
     return effective_days, effective_factor
 
 
+# Phase B8: time-aware search ranking, built as an *extension* of the decay
+# framework above rather than a second decay curve (explicit task
+# requirement) — reuses _DECAY_RULES and _importance_adjusted_decay()
+# exactly as Phase 1 (confidence decay) does, so search ranking and the
+# daily validate_all_facts() batch job can never disagree about what
+# "old" means for a given category/importance combination.
+#
+# The batch job applies decay as a single discrete step once age crosses
+# the (importance-adjusted) decay_days threshold, multiplying confidence
+# by decay_factor once per crossing (and each such write resets updated_at,
+# restarting the clock — see phase_b8_report.md section 1 for the full
+# trace of why this is a discrete geometric decay in decay_days-sized
+# steps). Ranking needs a smooth, real-time, non-mutating signal instead
+# (it must never write to the DB, and re-computing "how many times would
+# the batch job have applied by now" from a single updated_at timestamp
+# would require replaying history this function doesn't have). The
+# continuous curve below is the natural generalization of that discrete
+# step: it returns exactly decay_factor at age == decay_days (matching the
+# batch job's first step), decay_factor**2 at age == 2*decay_days (matching
+# a hypothetical second step), and interpolates smoothly in between and
+# beyond, rather than jumping stepwise. Below the onset threshold it
+# returns 1.0 (no decay at all yet), identically to the batch job's own
+# gate (`if age_days < decay_days: continue`).
+def compute_freshness_multiplier(
+    category: str, *, age_days: float, importance_score: float
+) -> float:
+    """Return a 0..1 multiplier reflecting how "fresh" a fact is, purely as
+    a function of elapsed time since it was last created/confirmed
+    (age_days, expected to be computed from updated_at — see
+    memory_search.py's _freshness_weighted_score). 1.0 means "no time-based
+    discount at all", which is always the answer for a no-decay category
+    (e.g. profile) regardless of age — requirement: permanent facts must
+    never be unfairly penalized just for being old.
+    """
+    rule = _DECAY_RULES.get(category)
+    if rule is None or rule[0] is None:
+        return 1.0
+
+    base_decay_days, base_decay_factor = rule
+    decay_days, decay_factor = _importance_adjusted_decay(base_decay_days, base_decay_factor, importance_score)
+    if age_days < decay_days or decay_days <= 0:
+        return 1.0
+
+    return decay_factor ** (age_days / decay_days)
+
+
 async def validate_all_facts(jwt: str) -> dict[str, Any]:
     """
     Full daily validation pass:
