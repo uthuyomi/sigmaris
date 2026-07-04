@@ -23,6 +23,7 @@ from app.services.supabase_rest import get_current_user
 from app.services.memory_search import search_relevant_memories
 from app.services.decision_log import get_active_preference_patterns
 from app.services.self_model import get_self_model
+from app.services.topic_tracker import get_current_and_previous_topic
 from app.services.user_fact_data import (
     build_facts_context,
     build_profile_context,
@@ -94,6 +95,17 @@ async def _cached_preference_patterns() -> list[dict[str, Any]]:
     )
     _cache_set("preference_patterns", result)
     return result or []
+
+
+async def _cached_current_and_previous_topic() -> tuple[dict | None, dict | None]:
+    hit, val = _cache_get("topic")
+    if hit:
+        return val
+    result = await _timed(
+        get_current_and_previous_topic(), timeout=3.0, default=(None, None), label="topic"
+    )
+    _cache_set("topic", result)
+    return result or (None, None)
 
 
 async def _cached_user_profile(jwt: str) -> dict | None:
@@ -235,6 +247,34 @@ def _build_preference_patterns_context(patterns: list[dict[str, Any]] | None) ->
         lines.append(f"- {statement} (根拠決定{evidence_count}件、{tier}、{freshness_note})")
 
     return "\n".join(lines) if len(lines) > 2 else None
+
+
+# Phase B6: distinct from _build_trends_context below, despite both
+# formatting a "[...]" block — user_trend_items (trend_analyzer.py) is an
+# unrelated feature (recurring lifestyle/behavior trends inferred over
+# weeks) that happens to also use a field named topic_label on its own
+# table. sigmaris_topic_log is instead a flat, turn-by-turn running log of
+# "what's being discussed right now" — see topic_tracker.py's module
+# docstring for the full role-separation writeup (Phase A1 vs B2 vs this).
+def _build_topic_context(
+    current_topic: dict[str, Any] | None,
+    previous_topic: dict[str, Any] | None,
+) -> str | None:
+    if not current_topic:
+        return None
+    current_label = str(current_topic.get("topic_label") or "").strip()
+    if not current_label:
+        return None
+    lines = ["[話題の推移(参考情報)]", f"現在の話題: {current_label}"]
+    if previous_topic:
+        previous_label = str(previous_topic.get("topic_label") or "").strip()
+        if previous_label:
+            lines.append(f"直前の話題: {previous_label}")
+    lines.append(
+        "必要だと感じた場合のみ、話題の切り替わりに自然に触れてよい"
+        "(例:「さっきまで〜の話をしてましたね」)。毎回言及する必要はない。"
+    )
+    return "\n".join(lines)
 
 
 def _build_trends_context(trends: list) -> str | None:
@@ -461,6 +501,7 @@ async def _cognitive_layer_bg(
         from app.services.decision_log import detect_and_record_decision  # noqa: PLC0415
         from app.services.experience_layer import detect_and_record_episode  # noqa: PLC0415
         from app.services.internal_state import get_internal_state, update_internal_state  # noqa: PLC0415
+        from app.services.topic_tracker import detect_and_record_topic_transition  # noqa: PLC0415
 
         await asyncio.gather(
             detect_and_record_decision(
@@ -479,6 +520,11 @@ async def _cognitive_layer_bg(
                 turn_messages=turn_messages,
                 jwt=jwt,
             ),
+            detect_and_record_topic_transition(
+                messages=turn_messages,
+                thread_id=thread_id,
+                invocation_id=invocation_id,
+            ),
         )
 
         state = await get_internal_state()
@@ -488,6 +534,12 @@ async def _cognitive_layer_bg(
         )
     except Exception:
         logger.exception("cognitive_layer_bg: failed for invocation=%s", invocation_id)
+    finally:
+        # Invalidate regardless of gather outcome (partial failure of one
+        # of the four calls above must not leave a stale topic cached for
+        # the rest of _CACHE_TTL — matches the existing "always refresh
+        # facts next turn" behavior for the same reason).
+        _cache.pop("topic", None)
 
 
 # ─── Main entry point ─────────────────────────────────────────────────────────
@@ -509,11 +561,12 @@ async def run_orchestrator_chat(
     agent = get_schedule_agent()
 
     # Auth + stable context in one parallel gather, then facts after user_id is known.
-    user, fact_profile, self_model, preference_patterns, active_trends, session = await asyncio.gather(
+    user, fact_profile, self_model, preference_patterns, topic_state, active_trends, session = await asyncio.gather(
         _timed(get_current_user(jwt), timeout=8.0),
         _cached_user_profile(jwt),
         _cached_self_model(),
         _cached_preference_patterns(),
+        _cached_current_and_previous_topic(),
         _cached_active_trends(jwt),
         _prepare_session_messages(jwt=jwt, thread_id=thread_id, messages=messages),
         return_exceptions=False,
@@ -525,6 +578,7 @@ async def run_orchestrator_chat(
         raise RuntimeError("Authenticated Supabase user did not include an id.")
     fact_items = await _cached_fact_items(jwt, user_id)
     effective_thread_id, session_messages, persist_thread = session
+    current_topic, previous_topic = topic_state
 
     reason = "User requested schedule assistance through the Sigmaris orchestrator."
     caller_agent_id = settings.schedule_agent_id
@@ -584,6 +638,7 @@ async def run_orchestrator_chat(
     call_name = extract_call_name(fact_profile) or _user_display_name(user)
     self_model_context = _build_self_model_context(self_model)
     preference_patterns_context = _build_preference_patterns_context(preference_patterns)
+    topic_context = _build_topic_context(current_topic, previous_topic)
 
     try:
         schedule_result = await call_schedule_agent(
@@ -598,6 +653,7 @@ async def run_orchestrator_chat(
             user_profile_context=profile_context,
             self_model_context=self_model_context,
             preference_patterns_context=preference_patterns_context,
+            topic_context=topic_context,
             persist_thread=persist_thread,
         )
         if CONFIRMATION_MARKER_RE.search(schedule_result.text):
@@ -722,11 +778,12 @@ async def run_orchestrator_chat_stream(
     agent = get_schedule_agent()
 
     # Auth + stable context in one parallel gather, then facts after user_id is known.
-    user, fact_profile, self_model, preference_patterns, active_trends, session = await asyncio.gather(
+    user, fact_profile, self_model, preference_patterns, topic_state, active_trends, session = await asyncio.gather(
         _timed(get_current_user(jwt), timeout=8.0),
         _cached_user_profile(jwt),
         _cached_self_model(),
         _cached_preference_patterns(),
+        _cached_current_and_previous_topic(),
         _cached_active_trends(jwt),
         _prepare_session_messages(jwt=jwt, thread_id=thread_id, messages=messages),
         return_exceptions=False,
@@ -738,6 +795,7 @@ async def run_orchestrator_chat_stream(
         raise RuntimeError("Authenticated Supabase user did not include an id.")
     fact_items = await _cached_fact_items(jwt, user_id)
     effective_thread_id, session_messages, persist_thread = session
+    current_topic, previous_topic = topic_state
 
     reason = "User requested schedule assistance through the Sigmaris orchestrator."
     caller_agent_id = settings.schedule_agent_id
@@ -797,6 +855,7 @@ async def run_orchestrator_chat_stream(
     call_name = extract_call_name(fact_profile) or _user_display_name(user)
     self_model_context = _build_self_model_context(self_model)
     preference_patterns_context = _build_preference_patterns_context(preference_patterns)
+    topic_context = _build_topic_context(current_topic, previous_topic)
     schedule_text = ""
     returned_thread_id = effective_thread_id
     schedule_message_id: str | None = None
@@ -817,6 +876,7 @@ async def run_orchestrator_chat_stream(
             user_profile_context=profile_context,
             self_model_context=self_model_context,
             preference_patterns_context=preference_patterns_context,
+            topic_context=topic_context,
             persist_thread=persist_thread,
         ):
             if event.tool_event:

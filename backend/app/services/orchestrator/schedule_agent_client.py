@@ -50,6 +50,7 @@ def _build_system_override(
     user_profile_context: str | None,
     self_model_context: str | None = None,
     preference_patterns_context: str | None = None,
+    topic_context: str | None = None,
 ) -> str:
     parts = []
     if user_profile_context:
@@ -58,6 +59,8 @@ def _build_system_override(
         parts.append(self_model_context)
     if preference_patterns_context:
         parts.append(preference_patterns_context)
+    if topic_context:
+        parts.append(topic_context)
     parts.append(_BASE_SYSTEM_OVERRIDE)
     return "\n\n".join(parts)
 
@@ -111,6 +114,7 @@ def _build_payload(
     user_profile_context: str | None = None,
     self_model_context: str | None = None,
     preference_patterns_context: str | None = None,
+    topic_context: str | None = None,
     persist_thread: bool = False,
 ) -> dict[str, Any]:
     return {
@@ -124,7 +128,7 @@ def _build_payload(
         ],
         "persist_thread": persist_thread,
         "system_override": _build_system_override(
-            user_profile_context, self_model_context, preference_patterns_context
+            user_profile_context, self_model_context, preference_patterns_context, topic_context
         ),
         "context": {
             "reason": reason,
@@ -147,6 +151,7 @@ async def call_schedule_agent(
     user_profile_context: str | None = None,
     self_model_context: str | None = None,
     preference_patterns_context: str | None = None,
+    topic_context: str | None = None,
     persist_thread: bool = False,
 ) -> ScheduleAgentResult:
     headers = _build_headers(
@@ -163,6 +168,7 @@ async def call_schedule_agent(
         user_profile_context=user_profile_context,
         self_model_context=self_model_context,
         preference_patterns_context=preference_patterns_context,
+        topic_context=topic_context,
         persist_thread=persist_thread,
     )
 
@@ -206,6 +212,7 @@ async def call_schedule_agent_stream(
     user_profile_context: str | None = None,
     self_model_context: str | None = None,
     preference_patterns_context: str | None = None,
+    topic_context: str | None = None,
     persist_thread: bool = False,
 ) -> AsyncGenerator[ScheduleAgentStreamEvent, None]:
     headers = _build_headers(
@@ -223,6 +230,7 @@ async def call_schedule_agent_stream(
         user_profile_context=user_profile_context,
         self_model_context=self_model_context,
         preference_patterns_context=preference_patterns_context,
+        topic_context=topic_context,
         persist_thread=persist_thread,
     )
     stream_endpoint = agent.chat_endpoint.replace("/complete", "/stream")
