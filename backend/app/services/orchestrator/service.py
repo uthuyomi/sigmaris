@@ -22,6 +22,7 @@ from app.services.orchestrator.schedule_agent_client import call_schedule_agent,
 from app.services.supabase_rest import get_current_user
 from app.services.abstention_feedback import get_threshold_adjustment, record_pending_hedge
 from app.services.goal_alignment import get_active_goal_alignment_flags, mark_pending_surfaced
+from app.services.knowledge_graph import build_entity_hint, get_entities_and_relations
 from app.services.memory_confidence import classify_confidence_tier, confidence_guidance_note
 from app.services.memory_compression import compress_memories_if_needed
 from app.services.multihop_search import search_with_decomposition
@@ -110,6 +111,17 @@ async def _cached_goal_alignment_flags() -> list[dict[str, Any]]:
     )
     _cache_set("goal_alignment_flags", result)
     return result or []
+
+
+async def _cached_entities_and_relations() -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    hit, val = _cache_get("entities_and_relations")
+    if hit:
+        return val
+    result = await _timed(
+        get_entities_and_relations(), timeout=3.0, default=([], []), label="entities_and_relations"
+    )
+    _cache_set("entities_and_relations", result)
+    return result or ([], [])
 
 
 async def _cached_current_and_previous_topic() -> tuple[dict | None, dict | None]:
@@ -415,6 +427,8 @@ async def _build_memory_context(
     recent_topic_labels: list[str] | None = None,
     thread_id: str | None = None,
     threshold_adjustment: float = 0.0,
+    entities: list[dict[str, Any]] | None = None,
+    relations: list[dict[str, Any]] | None = None,
 ) -> str | None:
     profile_context = build_profile_context(fact_profile)
     if profile_context and len(profile_context) > 200:
@@ -438,6 +452,11 @@ async def _build_memory_context(
     latest_user_text = _latest_user_content(messages)
     if latest_user_text:
         try:
+            # Phase B9: pure substring matching against the (TTL-cached)
+            # entity/relation snapshot — no LLM call, no I/O here. Only
+            # ever produces a non-None hint when the query actually
+            # mentions a known entity name.
+            entity_hint = build_entity_hint(entities or [], relations or [], latest_user_text)
             relevant, was_decomposed, time_sensitive = await search_with_decomposition(
                 latest_user_text,
                 user_id,
@@ -445,6 +464,7 @@ async def _build_memory_context(
                 limit=5,
                 jwt=jwt,
                 recent_topic_labels=recent_topic_labels,
+                entity_hint=entity_hint,
             )
             # Phase B11: calibrated abstention — reuses B7's/B8's already-
             # computed multihop/time-sensitive judgments and each result's
@@ -737,7 +757,7 @@ async def run_orchestrator_chat(
     agent = get_schedule_agent()
 
     # Auth + stable context in one parallel gather, then facts after user_id is known.
-    user, fact_profile, self_model, preference_patterns, topic_state, threshold_adjustment, goal_alignment_flags, active_trends, session = await asyncio.gather(
+    user, fact_profile, self_model, preference_patterns, topic_state, threshold_adjustment, goal_alignment_flags, entities_and_relations, active_trends, session = await asyncio.gather(
         _timed(get_current_user(jwt), timeout=8.0),
         _cached_user_profile(jwt),
         _cached_self_model(),
@@ -745,10 +765,12 @@ async def run_orchestrator_chat(
         _cached_current_and_previous_topic(),
         _cached_threshold_adjustment(),
         _cached_goal_alignment_flags(),
+        _cached_entities_and_relations(),
         _cached_active_trends(jwt),
         _prepare_session_messages(jwt=jwt, thread_id=thread_id, messages=messages),
         return_exceptions=False,
     )
+    entities, relations = entities_and_relations
     if not user:
         raise RuntimeError("Failed to authenticate user (timeout or error).")
     user_id = user.get("id")
@@ -814,6 +836,8 @@ async def run_orchestrator_chat(
         recent_topic_labels=_topic_labels_for_hint(current_topic, previous_topic),
         thread_id=effective_thread_id,
         threshold_adjustment=threshold_adjustment,
+        entities=entities,
+        relations=relations,
     )
 
     call_name = extract_call_name(fact_profile) or _user_display_name(user)
@@ -961,7 +985,7 @@ async def run_orchestrator_chat_stream(
     agent = get_schedule_agent()
 
     # Auth + stable context in one parallel gather, then facts after user_id is known.
-    user, fact_profile, self_model, preference_patterns, topic_state, threshold_adjustment, goal_alignment_flags, active_trends, session = await asyncio.gather(
+    user, fact_profile, self_model, preference_patterns, topic_state, threshold_adjustment, goal_alignment_flags, entities_and_relations, active_trends, session = await asyncio.gather(
         _timed(get_current_user(jwt), timeout=8.0),
         _cached_user_profile(jwt),
         _cached_self_model(),
@@ -969,10 +993,12 @@ async def run_orchestrator_chat_stream(
         _cached_current_and_previous_topic(),
         _cached_threshold_adjustment(),
         _cached_goal_alignment_flags(),
+        _cached_entities_and_relations(),
         _cached_active_trends(jwt),
         _prepare_session_messages(jwt=jwt, thread_id=thread_id, messages=messages),
         return_exceptions=False,
     )
+    entities, relations = entities_and_relations
     if not user:
         raise RuntimeError("Failed to authenticate user (timeout or error).")
     user_id = user.get("id")
@@ -1038,6 +1064,8 @@ async def run_orchestrator_chat_stream(
         recent_topic_labels=_topic_labels_for_hint(current_topic, previous_topic),
         thread_id=effective_thread_id,
         threshold_adjustment=threshold_adjustment,
+        entities=entities,
+        relations=relations,
     )
 
     call_name = extract_call_name(fact_profile) or _user_display_name(user)

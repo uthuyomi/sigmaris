@@ -29,6 +29,13 @@ from __future__ import annotations
 # handling?") is answered by the exact same classification pass that
 # already runs on every turn for B7, so there's no marginal LLM round trip
 # for this feature at all, on either the simple or complex path.
+#
+# Phase B9: knowledge_graph.py's entity/relation graph can optionally
+# surface a short "known relations" hint here too, the same way
+# recent_topic_labels already does (_format_topic_hint below) — plain
+# substring matching against the query, computed entirely outside this
+# module with no LLM call of its own, just appended as one more optional
+# block in the same prompt this function already sends.
 
 import asyncio
 import json
@@ -70,7 +77,7 @@ _DECOMPOSE_SYSTEM = (
 
 _DECOMPOSE_PROMPT = """ユーザーの質問:
 {query}
-{topic_hint}
+{topic_hint}{entity_hint}
 ---
 この質問について、以下の2点を判定してください。
 
@@ -104,6 +111,12 @@ def _format_topic_hint(recent_topic_labels: list[str] | None) -> str:
     return f"\n直近の話題の推移(参考、無理に使う必要はない): {joined}\n"
 
 
+def _format_entity_hint(entity_hint: str | None) -> str:
+    if not entity_hint:
+        return ""
+    return f"\n{entity_hint}\n"
+
+
 @dataclass(frozen=True)
 class QueryAnalysis:
     sub_queries: list[str] | None
@@ -117,6 +130,7 @@ async def decompose_query(
     query: str,
     *,
     recent_topic_labels: list[str] | None = None,
+    entity_hint: str | None = None,
 ) -> QueryAnalysis:
     """Ask the LLM (one combined call) whether `query` needs multi-hop
     decomposition and whether it's asking about current validity
@@ -128,6 +142,10 @@ async def decompose_query(
     call. time_sensitive is independent of sub_queries: a simple
     single-topic question can still be time-sensitive (e.g. "それって今も
     変わってない?").
+
+    entity_hint (Phase B9): an optional, pre-formatted "known relations"
+    string from knowledge_graph.build_entity_hint() — purely textual,
+    computed with no LLM call of its own (see this module's docstring).
     """
     cleaned = query.strip()
     if not cleaned:
@@ -142,6 +160,7 @@ async def decompose_query(
                 {"role": "user", "content": _DECOMPOSE_PROMPT.format(
                     query=cleaned,
                     topic_hint=_format_topic_hint(recent_topic_labels),
+                    entity_hint=_format_entity_hint(entity_hint),
                     max_subqueries=_MAX_SUBQUERIES,
                 )},
             ],
@@ -214,6 +233,7 @@ async def search_with_decomposition(
     threshold: float = 0.7,
     limit: int = 5,
     recent_topic_labels: list[str] | None = None,
+    entity_hint: str | None = None,
 ) -> tuple[list[dict[str, Any]], bool, bool]:
     """Search relevant memories, transparently decomposing `query` into
     sub-queries first when the LLM judges it necessary, and strengthening
@@ -225,8 +245,12 @@ async def search_with_decomposition(
     Phase B11's calibrated abstention reuses them directly (already
     computed here at zero marginal cost) to pick a stricter or more
     lenient confidence threshold — see memory_confidence.py.
+
+    entity_hint (Phase B9): see decompose_query()'s docstring.
     """
-    analysis = await decompose_query(query, recent_topic_labels=recent_topic_labels)
+    analysis = await decompose_query(
+        query, recent_topic_labels=recent_topic_labels, entity_hint=entity_hint
+    )
     if not analysis.sub_queries:
         single = await search_relevant_memories(
             query,

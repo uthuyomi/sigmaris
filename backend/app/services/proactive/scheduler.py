@@ -210,6 +210,22 @@ async def _goal_alignment_extract() -> None:
         logger.exception("Goal alignment extraction job raised unexpectedly")
 
 
+async def _knowledge_graph_extract() -> None:
+    from app.services.knowledge_graph import extract_entities_and_relations  # noqa: PLC0415
+    from app.services.supabase_rest import get_current_user  # noqa: PLC0415
+    try:
+        jwt = await get_sigmaris_jwt()
+        user = await get_current_user(jwt)
+        user_id = user.get("id")
+        if not isinstance(user_id, str):
+            logger.warning("Knowledge graph job skipped: authenticated user id is missing")
+            return
+        result = await extract_entities_and_relations(user_id)
+        logger.info("Knowledge graph extraction job done: %s", result)
+    except Exception:
+        logger.exception("Knowledge graph extraction job raised unexpectedly")
+
+
 def startup_scheduler() -> None:
     global _scheduler
 
@@ -237,6 +253,7 @@ def startup_scheduler() -> None:
     _scheduler.add_job(_preference_pattern_extract, CronTrigger(day_of_week="sun", hour=4, minute=45, timezone=tz), id="preference_pattern_extract", replace_existing=True)
     _scheduler.add_job(_adoption_count_recompute, CronTrigger(day_of_week="sun", hour=4, minute=50, timezone=tz), id="adoption_count_recompute", replace_existing=True)
     _scheduler.add_job(_episode_consolidate, CronTrigger(day_of_week="sun", hour=4, minute=55, timezone=tz), id="episode_consolidate", replace_existing=True)
+    _scheduler.add_job(_knowledge_graph_extract, CronTrigger(day_of_week="sun", hour=5, minute=15, timezone=tz), id="knowledge_graph_extract", replace_existing=True)
     _scheduler.add_job(_self_interest_queries,CronTrigger(day_of_week="sun", hour=5,  minute=30, timezone=tz), id="self_interest_queries",replace_existing=True)
 
     _scheduler.start()
