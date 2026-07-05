@@ -434,6 +434,32 @@ async def _build_memory_context(
     if profile_context and len(profile_context) > 200:
         profile_context = profile_context[:200] + "窶ｦ"
 
+    # Incident fix (docs/sigmaris/incident_facts_context_overwrite_fix.md):
+    # this function's return value used to *replace* the caller's own
+    # profile_context wholesale, silently discarding the top-5-importance
+    # facts_ctx and top-3 trends_ctx blocks the caller had just built and
+    # concatenated onto it moments earlier. fact_items/active_trends were
+    # already accepted as parameters here (unused) — building facts_ctx and
+    # trends_ctx directly inside this function, on the one profile_context
+    # this function actually returns, is what those parameters were for.
+    # facts_ctx (static top-5 by importance x confidence) and relevant_context
+    # below (query-specific RAG retrieval) are deliberately both kept: they
+    # answer different questions ("what does Sigmaris always consider
+    # important" vs. "what's relevant to this specific question") and are
+    # not redundant selections over the same data, even though the same
+    # individual fact could occasionally appear in both.
+    facts_ctx = build_facts_context(fact_items or [], top_n=5)
+    if facts_ctx and profile_context:
+        profile_context = profile_context + "\n\n" + facts_ctx
+    elif facts_ctx:
+        profile_context = facts_ctx
+
+    trends_ctx = _build_trends_context(active_trends)
+    if trends_ctx and profile_context:
+        profile_context = profile_context + "\n\n" + trends_ctx
+    elif trends_ctx:
+        profile_context = trends_ctx
+
     # Phase A5: this used to be gated on settings.local_llm_enabled, with a
     # non-vector top-N-facts fallback for OpenAI-embedding mode, because
     # generate_embedding() returned [] whenever LOCAL_LLM_ENABLED=false.
@@ -809,23 +835,13 @@ async def run_orchestrator_chat(
     )
     audit_row_id = str(audit_row["id"])
 
-    # Build lightweight context (profile 200 chars, facts top 5, trends top 3)
-    profile_context = build_profile_context(fact_profile)
-    if profile_context and len(profile_context) > 200:
-        profile_context = profile_context[:200] + "…"
-
-    facts_ctx = build_facts_context(fact_items or [], top_n=5)
-    if facts_ctx and profile_context:
-        profile_context = profile_context + "\n\n" + facts_ctx
-    elif facts_ctx:
-        profile_context = facts_ctx
-
-    trends_ctx = _build_trends_context(active_trends)
-    if trends_ctx and profile_context:
-        profile_context = profile_context + "\n\n" + trends_ctx
-    elif trends_ctx:
-        profile_context = trends_ctx
-
+    # Build lightweight context (profile 200 chars, facts top 5, trends top 3,
+    # then Phase B1+'s query-relevant RAG results on top). All of this is now
+    # built inside _build_memory_context() itself — see the incident fix
+    # note in that function's body (docs/sigmaris/
+    # incident_facts_context_overwrite_fix.md) for why facts_ctx/trends_ctx
+    # used to be built here, then silently discarded by this same
+    # assignment overwriting them.
     profile_context = await _build_memory_context(
         jwt=jwt,
         user_id=user_id,
@@ -1038,22 +1054,9 @@ async def run_orchestrator_chat_stream(
     )
     audit_row_id = str(audit_row["id"])
 
-    profile_context = build_profile_context(fact_profile)
-    if profile_context and len(profile_context) > 200:
-        profile_context = profile_context[:200] + "窶ｦ"
-
-    facts_ctx = build_facts_context(fact_items or [], top_n=5)
-    if facts_ctx and profile_context:
-        profile_context = profile_context + "\n\n" + facts_ctx
-    elif facts_ctx:
-        profile_context = facts_ctx
-
-    trends_ctx = _build_trends_context(active_trends)
-    if trends_ctx and profile_context:
-        profile_context = profile_context + "\n\n" + trends_ctx
-    elif trends_ctx:
-        profile_context = trends_ctx
-
+    # See run_orchestrator_chat's identical comment / docs/sigmaris/
+    # incident_facts_context_overwrite_fix.md — facts_ctx/trends_ctx are now
+    # built inside _build_memory_context() itself, not here.
     profile_context = await _build_memory_context(
         jwt=jwt,
         user_id=user_id,
