@@ -48,12 +48,12 @@ type ResponseTiming = {
 
 type ResponseTimingContextValue = {
   timings: Record<string, ResponseTiming>;
-  live: { messageId: string; durationMs: number } | null;
+  active: { messageId: string; startedAt: number } | null;
 };
 
 const ResponseTimingContext = createContext<ResponseTimingContextValue>({
   timings: {},
-  live: null,
+  active: null,
 });
 
 export const Thread: FC<ThreadProps> = ({ locale }) => {
@@ -64,7 +64,7 @@ export const Thread: FC<ThreadProps> = ({ locale }) => {
   const wasRunningRef = useRef(false);
   const [showScrollButton, setShowScrollButton] = useState(false);
   const [responseTimings, setResponseTimings] = useState<Record<string, ResponseTiming>>({});
-  const [liveElapsedMs, setLiveElapsedMs] = useState<number | null>(null);
+  const [runStartedAt, setRunStartedAt] = useState<number | null>(null);
   const messages = useAuiState((s) => s.thread.messages);
   const isRunning = useAuiState((s) => s.thread.isRunning);
   const [statusStep, setStatusStep] = useState(0);
@@ -103,7 +103,9 @@ export const Thread: FC<ThreadProps> = ({ locale }) => {
 
   useEffect(() => {
     if (isRunning && !wasRunningRef.current) {
-      responseStartRef.current = performance.now();
+      const startedAt = performance.now();
+      responseStartRef.current = startedAt;
+      window.setTimeout(() => setRunStartedAt(startedAt), 0);
     }
 
     if (!isRunning && wasRunningRef.current) {
@@ -118,22 +120,11 @@ export const Thread: FC<ThreadProps> = ({ locale }) => {
         }, 0);
       }
       responseStartRef.current = null;
+      window.setTimeout(() => setRunStartedAt(null), 0);
     }
 
     wasRunningRef.current = isRunning;
   }, [isRunning, latestAssistantMessageId]);
-
-  useEffect(() => {
-    if (!isRunning) return;
-
-    const updateElapsed = () => {
-      if (responseStartRef.current === null) return;
-      setLiveElapsedMs(performance.now() - responseStartRef.current);
-    };
-
-    const timer = window.setInterval(updateElapsed, 100);
-    return () => window.clearInterval(timer);
-  }, [isRunning]);
 
   const updateScrollState = useCallback(() => {
     const viewport = viewportRef.current;
@@ -254,12 +245,12 @@ export const Thread: FC<ThreadProps> = ({ locale }) => {
     <ResponseTimingContext.Provider
       value={{
         timings: responseTimings,
-        live:
+        active:
           isRunning &&
           lastMessageRole === "assistant" &&
           latestAssistantMessageId &&
-          liveElapsedMs !== null
-            ? { messageId: latestAssistantMessageId, durationMs: liveElapsedMs }
+          runStartedAt !== null
+            ? { messageId: latestAssistantMessageId, startedAt: runStartedAt }
             : null,
       }}
     >
@@ -366,13 +357,8 @@ const AssistantMessage: FC = () => {
       .join(""),
   );
   const completedTiming = responseTiming.timings[currentMessageId];
-  const liveTiming =
-    responseTiming.live?.messageId === currentMessageId ? responseTiming.live : null;
-  const timingLabel = liveTiming
-    ? `計測中 ${formatResponseSeconds(liveTiming.durationMs)}秒`
-    : completedTiming
-      ? `応答時間 ${formatResponseSeconds(completedTiming.durationMs)}秒`
-      : null;
+  const activeTiming =
+    responseTiming.active?.messageId === currentMessageId ? responseTiming.active : null;
   const confirmationAction =
     currentMessageId === latestAssistantMessageId
       ? parseLatestConfirmationAction(messageText)
@@ -413,10 +399,10 @@ const AssistantMessage: FC = () => {
         {isRunning && currentMessageId === latestAssistantMessageId ? (
           <span className="ml-0.5 inline-block h-5 w-2 translate-y-1 animate-pulse rounded-sm bg-[#ececec]" />
         ) : null}
-        {timingLabel ? (
-          <div className="mt-2 text-[11px] font-medium leading-4 text-[#8e8ea0]">
-            {timingLabel}
-          </div>
+        {activeTiming ? (
+          <ResponseTimingBadge startedAt={activeTiming.startedAt} />
+        ) : completedTiming ? (
+          <ResponseTimingBadge durationMs={completedTiming.durationMs} />
         ) : null}
         {confirmationAction ? (
           <ConfirmationActionCard
@@ -433,6 +419,39 @@ const AssistantMessage: FC = () => {
 
 const formatResponseSeconds = (durationMs: number) =>
   (Math.max(0, durationMs) / 1000).toFixed(1);
+
+const ResponseTimingBadge: FC<{
+  startedAt?: number;
+  durationMs?: number;
+}> = ({ startedAt, durationMs }) => {
+  if (startedAt !== undefined) {
+    return <LiveResponseTimingBadge startedAt={startedAt} />;
+  }
+
+  if (durationMs === undefined) return null;
+
+  return (
+    <div className="mt-2 text-[11px] font-medium leading-4 text-[#8e8ea0]">
+      応答時間 {formatResponseSeconds(durationMs)}秒
+    </div>
+  );
+};
+
+const LiveResponseTimingBadge: FC<{ startedAt: number }> = ({ startedAt }) => {
+  const [elapsedMs, setElapsedMs] = useState(0);
+
+  useEffect(() => {
+    const updateElapsed = () => setElapsedMs(performance.now() - startedAt);
+    const timer = window.setInterval(updateElapsed, 100);
+    return () => window.clearInterval(timer);
+  }, [startedAt]);
+
+  return (
+    <div className="mt-2 text-[11px] font-medium leading-4 text-[#8e8ea0]">
+      計測中 {formatResponseSeconds(elapsedMs)}秒
+    </div>
+  );
+};
 
 const ConfirmationActionCard: FC<{
   action: ChatConfirmationAction;
