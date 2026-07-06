@@ -226,6 +226,22 @@ async def _knowledge_graph_extract() -> None:
         logger.exception("Knowledge graph extraction job raised unexpectedly")
 
 
+async def _memory_snapshot_generate() -> None:
+    from app.services.memory_snapshot import generate_memory_snapshot  # noqa: PLC0415
+    from app.services.supabase_rest import get_current_user  # noqa: PLC0415
+    try:
+        jwt = await get_sigmaris_jwt()
+        user = await get_current_user(jwt)
+        user_id = user.get("id")
+        if not isinstance(user_id, str):
+            logger.warning("Memory snapshot job skipped: authenticated user id is missing")
+            return
+        result = await generate_memory_snapshot(user_id)
+        logger.info("Memory snapshot generation job done: %s", result)
+    except Exception:
+        logger.exception("Memory snapshot generation job raised unexpectedly")
+
+
 def startup_scheduler() -> None:
     global _scheduler
 
@@ -254,6 +270,7 @@ def startup_scheduler() -> None:
     _scheduler.add_job(_adoption_count_recompute, CronTrigger(day_of_week="sun", hour=4, minute=50, timezone=tz), id="adoption_count_recompute", replace_existing=True)
     _scheduler.add_job(_episode_consolidate, CronTrigger(day_of_week="sun", hour=4, minute=55, timezone=tz), id="episode_consolidate", replace_existing=True)
     _scheduler.add_job(_knowledge_graph_extract, CronTrigger(day_of_week="sun", hour=5, minute=15, timezone=tz), id="knowledge_graph_extract", replace_existing=True)
+    _scheduler.add_job(_memory_snapshot_generate, CronTrigger(day_of_week="sun", hour=5, minute=25, timezone=tz), id="memory_snapshot_generate", replace_existing=True)
     _scheduler.add_job(_self_interest_queries,CronTrigger(day_of_week="sun", hour=5,  minute=30, timezone=tz), id="self_interest_queries",replace_existing=True)
 
     _scheduler.start()

@@ -22,14 +22,13 @@ from app.services.orchestrator.response_guard import replace_forbidden_assistant
 from app.services.orchestrator.schedule_agent_client import call_schedule_agent, call_schedule_agent_stream
 from app.services.supabase_rest import get_current_user
 from app.services.abstention_feedback import get_threshold_adjustment, record_pending_hedge
-from app.services.goal_alignment import get_active_goal_alignment_flags, mark_pending_surfaced
-from app.services.knowledge_graph import build_entity_hint, get_entities_and_relations
+from app.services.goal_alignment import mark_pending_surfaced
+from app.services.knowledge_graph import build_entity_hint
 from app.services.memory_confidence import classify_confidence_tier, confidence_guidance_note
 from app.services.memory_compression import compress_memories_if_needed
+from app.services.memory_snapshot import get_memory_snapshot
 from app.services.multihop_search import search_with_decomposition
-from app.services.decision_log import get_active_preference_patterns
 from app.services.self_model import get_self_model
-from app.services.topic_tracker import get_current_and_previous_topic
 from app.services.user_fact_data import (
     build_facts_context,
     build_profile_context,
@@ -43,6 +42,7 @@ logger = logging.getLogger(__name__)
 
 # ─── 5-minute TTL cache for expensive pre-response DB reads ──────────────────
 _CACHE_TTL = 300.0  # seconds
+_recently_surfaced_goal_flag_ids: set[str] = set()
 
 _cache: dict[str, tuple[float, Any]] = {}  # key → (timestamp, value)
 
@@ -68,6 +68,12 @@ def _cache_get(key: str) -> tuple[bool, Any]:
 
 def _cache_set(key: str, value: Any) -> None:
     _cache[key] = (time.monotonic(), value)
+
+
+def _cache_pop_prefix(prefix: str) -> None:
+    for key in list(_cache):
+        if key.startswith(prefix):
+            _cache.pop(key, None)
 
 
 def _jwt_cache_key(jwt: str) -> str:
@@ -109,48 +115,25 @@ async def _cached_self_model() -> dict | None:
     return result
 
 
-async def _cached_preference_patterns() -> list[dict[str, Any]]:
-    hit, val = _cache_get("preference_patterns")
+async def _cached_memory_snapshot(user_id: str) -> dict[str, Any]:
+    hit, val = _cache_get(f"memory_snapshot:{user_id}")
     if hit:
         return val
     result = await _timed(
-        get_active_preference_patterns(limit=5), timeout=3.0, default=[], label="preference_patterns"
+        get_memory_snapshot(user_id),
+        timeout=3.0,
+        default={
+            "preference_patterns": [],
+            "topic_state": {"current": None, "previous": None},
+            "goal_alignment_flags": [],
+            "entities": [],
+            "relations": [],
+        },
+        label="memory_snapshot",
     )
-    _cache_set("preference_patterns", result)
-    return result or []
-
-
-async def _cached_goal_alignment_flags() -> list[dict[str, Any]]:
-    hit, val = _cache_get("goal_alignment_flags")
-    if hit:
-        return val
-    result = await _timed(
-        get_active_goal_alignment_flags(limit=1), timeout=3.0, default=[], label="goal_alignment_flags"
-    )
-    _cache_set("goal_alignment_flags", result)
-    return result or []
-
-
-async def _cached_entities_and_relations() -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
-    hit, val = _cache_get("entities_and_relations")
-    if hit:
-        return val
-    result = await _timed(
-        get_entities_and_relations(), timeout=3.0, default=([], []), label="entities_and_relations"
-    )
-    _cache_set("entities_and_relations", result)
-    return result or ([], [])
-
-
-async def _cached_current_and_previous_topic() -> tuple[dict | None, dict | None]:
-    hit, val = _cache_get("topic")
-    if hit:
-        return val
-    result = await _timed(
-        get_current_and_previous_topic(), timeout=3.0, default=(None, None), label="topic"
-    )
-    _cache_set("topic", result)
-    return result or (None, None)
+    snapshot = result or {}
+    _cache_set(f"memory_snapshot:{user_id}", snapshot)
+    return snapshot
 
 
 async def _cached_threshold_adjustment() -> float:
@@ -322,7 +305,10 @@ def _build_goal_alignment_context(flags: list[dict[str, Any]] | None) -> str | N
     if not statement:
         return None
 
-    mark_pending_surfaced(flag.get("id"))
+    flag_id = flag.get("id")
+    if isinstance(flag_id, str):
+        _recently_surfaced_goal_flag_ids.add(flag_id)
+    mark_pending_surfaced(flag_id)
 
     lines = [
         "[長期ゴールとの整合性について(参考情報)]",
@@ -366,8 +352,8 @@ def _build_topic_context(
 
 
 # Phase B7: reuses the same current/previous topic rows _build_topic_
-# context() above already fetched (via _cached_current_and_previous_topic)
-# rather than issuing a second, deeper topic_tracker.get_recent_topics()
+# context() above already receives from the BA3 memory snapshot rather than
+# issuing a second, deeper topic_tracker.get_recent_topics()
 # call — B6 only ever holds 2 meaningfully-labeled rows in this codepath
 # anyway at this point in the session, and this hint is a lightweight,
 # optional disambiguation aid for multihop_search.decompose_query(), not a
@@ -397,6 +383,33 @@ def _build_trends_context(trends: list) -> str | None:
         if label:
             lines.append(f"・{label}")
     return "\n".join(lines) if len(lines) > 1 else None
+
+
+def _snapshot_context_parts(
+    snapshot: dict[str, Any] | None,
+) -> tuple[
+    list[dict[str, Any]],
+    dict[str, Any] | None,
+    dict[str, Any] | None,
+    list[dict[str, Any]],
+    list[dict[str, Any]],
+    list[dict[str, Any]],
+]:
+    snapshot = snapshot or {}
+    topic_state = snapshot.get("topic_state") if isinstance(snapshot.get("topic_state"), dict) else {}
+    goal_alignment_flags = snapshot.get("goal_alignment_flags") if isinstance(snapshot.get("goal_alignment_flags"), list) else []
+    goal_alignment_flags = [
+        flag for flag in goal_alignment_flags
+        if not (isinstance(flag, dict) and flag.get("id") in _recently_surfaced_goal_flag_ids)
+    ]
+    return (
+        snapshot.get("preference_patterns") if isinstance(snapshot.get("preference_patterns"), list) else [],
+        topic_state.get("current") if isinstance(topic_state.get("current"), dict) else None,
+        topic_state.get("previous") if isinstance(topic_state.get("previous"), dict) else None,
+        goal_alignment_flags,
+        snapshot.get("entities") if isinstance(snapshot.get("entities"), list) else [],
+        snapshot.get("relations") if isinstance(snapshot.get("relations"), list) else [],
+    )
 
 
 def _user_display_name(user: dict[str, Any]) -> str | None:
@@ -773,13 +786,12 @@ async def _cognitive_layer_bg(
         logger.exception("cognitive_layer_bg: failed for invocation=%s", invocation_id)
     finally:
         # Invalidate regardless of gather outcome (partial failure of one
-        # of the six calls above must not leave a stale topic/threshold-
-        # adjustment/goal-alignment-flags value cached for the rest of
+        # of the six calls above must not leave stale snapshot/threshold-
+        # adjustment values cached for the rest of
         # _CACHE_TTL) — same finally-based invalidation approach
         # _extract_facts_bg above uses for the facts cache.
-        _cache.pop("topic", None)
+        _cache_pop_prefix("memory_snapshot:")
         _cache.pop("abstention_threshold_adjustment", None)
-        _cache.pop("goal_alignment_flags", None)
 
 
 # ─── Main entry point ─────────────────────────────────────────────────────────
@@ -800,29 +812,35 @@ async def run_orchestrator_chat(
     persona = load_persona()
     agent = get_schedule_agent()
 
-    # Auth + stable context in one parallel gather, then facts after user_id is known.
-    user, fact_profile, self_model, preference_patterns, topic_state, threshold_adjustment, goal_alignment_flags, entities_and_relations, active_trends, session = await asyncio.gather(
+    # Auth + stable context in one parallel gather, then user-scoped facts
+    # and the BA3 memory snapshot after user_id is known.
+    user, fact_profile, self_model, threshold_adjustment, active_trends, session = await asyncio.gather(
         _timed(get_current_user(jwt), timeout=8.0),
         _cached_user_profile(jwt),
         _cached_self_model(),
-        _cached_preference_patterns(),
-        _cached_current_and_previous_topic(),
         _cached_threshold_adjustment(),
-        _cached_goal_alignment_flags(),
-        _cached_entities_and_relations(),
         _cached_active_trends(jwt),
         _prepare_session_messages(jwt=jwt, thread_id=thread_id, messages=messages),
         return_exceptions=False,
     )
-    entities, relations = entities_and_relations
     if not user:
         raise RuntimeError("Failed to authenticate user (timeout or error).")
     user_id = user.get("id")
     if not isinstance(user_id, str):
         raise RuntimeError("Authenticated Supabase user did not include an id.")
-    fact_items = await _cached_fact_items(jwt, user_id)
+    fact_items, memory_snapshot = await asyncio.gather(
+        _cached_fact_items(jwt, user_id),
+        _cached_memory_snapshot(user_id),
+    )
     effective_thread_id, session_messages, persist_thread = session
-    current_topic, previous_topic = topic_state
+    (
+        preference_patterns,
+        current_topic,
+        previous_topic,
+        goal_alignment_flags,
+        entities,
+        relations,
+    ) = _snapshot_context_parts(memory_snapshot)
 
     reason = "User requested schedule assistance through the Sigmaris orchestrator."
     caller_agent_id = settings.schedule_agent_id
@@ -1030,29 +1048,35 @@ async def run_orchestrator_chat_stream(
     persona = load_persona()
     agent = get_schedule_agent()
 
-    # Auth + stable context in one parallel gather, then facts after user_id is known.
-    user, fact_profile, self_model, preference_patterns, topic_state, threshold_adjustment, goal_alignment_flags, entities_and_relations, active_trends, session = await asyncio.gather(
+    # Auth + stable context in one parallel gather, then user-scoped facts
+    # and the BA3 memory snapshot after user_id is known.
+    user, fact_profile, self_model, threshold_adjustment, active_trends, session = await asyncio.gather(
         _timed(get_current_user(jwt), timeout=8.0),
         _cached_user_profile(jwt),
         _cached_self_model(),
-        _cached_preference_patterns(),
-        _cached_current_and_previous_topic(),
         _cached_threshold_adjustment(),
-        _cached_goal_alignment_flags(),
-        _cached_entities_and_relations(),
         _cached_active_trends(jwt),
         _prepare_session_messages(jwt=jwt, thread_id=thread_id, messages=messages),
         return_exceptions=False,
     )
-    entities, relations = entities_and_relations
     if not user:
         raise RuntimeError("Failed to authenticate user (timeout or error).")
     user_id = user.get("id")
     if not isinstance(user_id, str):
         raise RuntimeError("Authenticated Supabase user did not include an id.")
-    fact_items = await _cached_fact_items(jwt, user_id)
+    fact_items, memory_snapshot = await asyncio.gather(
+        _cached_fact_items(jwt, user_id),
+        _cached_memory_snapshot(user_id),
+    )
     effective_thread_id, session_messages, persist_thread = session
-    current_topic, previous_topic = topic_state
+    (
+        preference_patterns,
+        current_topic,
+        previous_topic,
+        goal_alignment_flags,
+        entities,
+        relations,
+    ) = _snapshot_context_parts(memory_snapshot)
 
     reason = "User requested schedule assistance through the Sigmaris orchestrator."
     caller_agent_id = settings.schedule_agent_id
