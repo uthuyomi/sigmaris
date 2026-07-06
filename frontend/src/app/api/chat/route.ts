@@ -13,6 +13,7 @@ import { createClient } from "@/lib/supabase/server";
 type IncomingBody = {
   messages?: UIMessage[];
   threadId?: string;
+  messageId?: string;
 };
 
 const ORCHESTRATOR_MESSAGE_LIMIT = 24;
@@ -104,7 +105,7 @@ export async function POST(req: Request) {
     });
   }
 
-  return new Response(translateOrchestratorStream(backendResponse.body), {
+  return new Response(translateOrchestratorStream(backendResponse.body, body.messageId), {
     status: backendResponse.status,
     headers: {
       "content-type": "text/event-stream",

@@ -7,12 +7,11 @@ import { AssistantRuntimeProvider } from "@assistant-ui/react";
 import { useAISDKRuntime, AssistantChatTransport } from "@assistant-ui/react-ai-sdk";
 import { useChat } from "@ai-sdk/react";
 import {
-  lastAssistantMessageIsCompleteWithToolCalls,
   type CreateUIMessage,
   type UIMessage,
 } from "ai";
 import { useRouter } from "next/navigation";
-import { useEffect, useRef } from "react";
+import { useEffect, useMemo, useRef } from "react";
 import { Thread } from "@/components/thread";
 import type { AppLocale } from "@/lib/i18n";
 
@@ -71,16 +70,21 @@ type AssistantProps = {
 export const Assistant = ({ threadId, initialMessages, locale }: AssistantProps) => {
   const router = useRouter();
   const wasRunningRef = useRef(false);
+  const transport = useMemo(
+    () =>
+      new AssistantChatTransport({
+        api: "/api/chat",
+        body: {
+          threadId,
+        },
+      }),
+    [threadId],
+  );
   const chat = useChat({
     id: threadId,
     messages: initialMessages,
-    transport: new AssistantChatTransport({
-      api: "/api/chat",
-      body: {
-        threadId,
-      },
-    }),
-    sendAutomaticallyWhen: lastAssistantMessageIsCompleteWithToolCalls,
+    transport,
+    experimental_throttle: 50,
   });
 
   useEffect(() => {

@@ -25,8 +25,9 @@ const sseLine = (payload: unknown) =>
  */
 export const translateOrchestratorStream = (
   upstream: ReadableStream<Uint8Array>,
+  responseMessageId?: string,
 ): ReadableStream<Uint8Array> => {
-  const messageId = crypto.randomUUID();
+  const messageId = responseMessageId || crypto.randomUUID();
   const textPartId = crypto.randomUUID();
   let buffer = "";
   let textStarted = false;

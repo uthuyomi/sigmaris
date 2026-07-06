@@ -177,3 +177,26 @@ BA4初版では、事実 guard をユーザー表示前に実行するため、`
 
 - `python -m unittest discover backend/tests`: PASS (`Ran 16 tests`)
 - pending inquiryが存在しても、デフォルト設定では応答末尾に追加されないことを `test_pending_inquiry_is_not_surfaced_by_default` で確認
+
+## 11. 2026-07-06 追補: フロントエンドstream表示の揺れへの対応
+
+本番再起動後、ターンが増えるほどstreaming中のassistant表示が何度も表示・消失するように見える問題が報告された。調査対象はBA1〜BA4のバックエンド変更に加え、Next.js側のAI SDK / assistant-ui接続層まで広げた。
+
+原因候補と判断:
+
+- BA4で `run_orchestrator_chat_stream()` がschedule-agentのdeltaを即時中継するようになり、従来より細かい頻度でフロントエンドが再描画されるようになった
+- `frontend/src/app/assistant.tsx` で `sendAutomaticallyWhen: lastAssistantMessageIsCompleteWithToolCalls` が残っており、バックエンドで完結済みのtool eventを受け取った後に、AI SDKが「tool結果が揃ったので続きを送る」と判断して追加リクエストを発火し得る状態だった。Sigmarisのtool loopはバックエンド側で完結するため、この自動再送は不要
+- `/api/chat` のstream translatorが毎回ランダムな `messageId` を発行していた。AI SDKは `start.messageId` を受け取ると生成中assistant messageのIDを書き換えるため、完了後のDB履歴refreshと一時stream messageの対応が不安定になりやすい
+- `AssistantChatTransport` がrenderごとに生成されていたため、stream中の細かい再描画と組み合わさると状態追跡の見通しが悪かった
+
+対応:
+
+- `sendAutomaticallyWhen` を削除し、tool完了後の不要な自動再送を停止
+- `AssistantChatTransport` を `useMemo` でthread単位に固定
+- `useChat({ experimental_throttle: 50 })` を設定し、細かすぎるdelta再描画を抑制
+- AI SDKがPOST bodyに含める `messageId` を `/api/chat` routeで受け取り、`translateOrchestratorStream()` の `start.messageId` にそのまま使うよう変更
+
+検証:
+
+- `npx eslint src/app/assistant.tsx src/app/api/chat/route.ts src/lib/orchestrator/stream-translator.ts`: PASS
+- `npm run lint`: PASS
