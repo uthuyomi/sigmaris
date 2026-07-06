@@ -12,6 +12,7 @@ from app.services.orchestrator.agent_registry import AgentDefinition
 
 # Persistent connection pool — created on first call, closed on app shutdown.
 _http_client: httpx.AsyncClient | None = None
+_MAX_SYSTEM_OVERRIDE_CHARS = 4000
 
 
 async def startup_schedule_agent_http_client() -> None:
@@ -51,6 +52,14 @@ _BASE_SYSTEM_OVERRIDE = (
 )
 
 
+def _trim_context(text: str, limit: int) -> str:
+    if limit <= 0:
+        return ""
+    if len(text) <= limit:
+        return text
+    return text[: max(0, limit - 20)].rstrip() + "\n[context truncated]"
+
+
 def _build_system_override(
     user_profile_context: str | None,
     self_model_context: str | None = None,
@@ -72,8 +81,14 @@ def _build_system_override(
         parts.append(topic_context)
     if goal_alignment_context:
         parts.append(goal_alignment_context)
-    parts.append(_BASE_SYSTEM_OVERRIDE)
-    return "\n\n".join(parts)
+    dynamic_context = "\n\n".join(parts)
+    if not dynamic_context:
+        return _BASE_SYSTEM_OVERRIDE
+    result = f"{dynamic_context}\n\n{_BASE_SYSTEM_OVERRIDE}"
+    if len(result) <= _MAX_SYSTEM_OVERRIDE_CHARS:
+        return result
+    dynamic_budget = _MAX_SYSTEM_OVERRIDE_CHARS - len(_BASE_SYSTEM_OVERRIDE) - 2
+    return f"{_trim_context(dynamic_context, dynamic_budget)}\n\n{_BASE_SYSTEM_OVERRIDE}"
 
 
 @dataclass(frozen=True)

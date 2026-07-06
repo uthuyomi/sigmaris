@@ -103,3 +103,16 @@ OK
 4. 非 streaming endpoint の tool-output guard
    - `/api/agent/chat/complete` は tool event を返さないため、非 streaming では prompt 指示と禁止名置換のみになる
    - WearOS など非 streaming 利用が重要になった場合、complete 応答にも tool event summary を返す拡張を検討する
+
+## 7. 2026-07-06 追補: system_override 4000文字上限への対応
+
+サーバー反映後、`/api/agent/chat/stream` が `system_override` の `max_length=4000` により HTTP 422 を返すことが判明した。BA4初版では `persona.md` 全文を `persona_context` として渡していたが、`persona.md` 単体で約4598文字あり、既存の記憶 context と合わせると必ず上限を超える。
+
+対応:
+
+- `persona.md` 全文の注入をやめ、BA4統合生成に必要な短い persona 方針へ置換
+- `schedule_agent_client.py::_build_system_override()` に最終的な 4000文字 cap を追加
+- 固定の BA4 safety 指示 (`You are Sigmaris...`) は切り捨てず、動的 context 側のみを `[context truncated]` 付きで短縮
+- `test_schedule_agent_client.py` を追加し、長い context でも 4000文字以内になることを検証
+
+この修正により、同種の 422 は `system_override` 組み立て段階で防止される。

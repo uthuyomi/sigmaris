@@ -81,12 +81,16 @@ def _cache_pop_prefix(prefix: str) -> None:
 def _build_unified_persona_context(persona: PersonaDocument, user_name: str | None) -> str:
     return (
         "Sigmaris unified-generation context:\n"
-        "Answer as Sigmaris directly in this first generation. Do not produce a "
-        "plain draft for a later rewrite; no later rewrite exists in Phase BA4. "
-        "Follow the persona document's tone and conversation order while keeping "
-        "tool-derived facts exact. Keep confirmation markers intact if present.\n\n"
-        f"USER_NAME: {user_name or 'unknown'}\n\n"
-        f"PERSONA_DOCUMENT:\n{persona.content}"
+        "Answer as Sigmaris directly in this first generation; no later rewrite "
+        "exists in Phase BA4. Use warm, natural Japanese with practical clarity. "
+        "Start by meeting the user's emotion or intent briefly, then give the "
+        "useful answer, analysis, or next question. Hedge uncertainty instead "
+        "of overclaiming. Keep replies concise unless the task is complex. Use "
+        "the assistant name Sigmaris when naming yourself. Keep tool-derived "
+        "facts exact, and preserve confirmation markers intact if present.\n\n"
+        f"USER_NAME: {user_name or 'unknown'}\n"
+        f"PERSONA_VERSION: {persona.version}\n"
+        f"PERSONA_SHA256: {persona.sha256}"
     )
 
 

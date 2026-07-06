@@ -143,7 +143,7 @@ class OrchestratorServiceTests(unittest.IsolatedAsyncioTestCase):
             self.assertNotIn("ShiftPilot", result["text"])
             kwargs = call_schedule_agent.await_args.kwargs
             self.assertIn("Sigmaris unified-generation context", kwargs["persona_context"])
-            self.assertIn("persona document", kwargs["persona_context"])
+            self.assertIn("PERSONA_VERSION", kwargs["persona_context"])
 
     async def test_completion_audit_failure_fails_whole_invocation(self) -> None:
         with ExitStack() as stack:
