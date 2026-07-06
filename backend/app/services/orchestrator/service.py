@@ -13,12 +13,14 @@ from zoneinfo import ZoneInfo
 
 from app.config import settings
 from app.services.app_chat_data import create_chat_thread, get_chat_thread, get_recent_messages_across_threads
-from app.services.chat_messages import CONFIRMATION_MARKER_RE
 from app.services.orchestrator.agent_registry import get_schedule_agent
 from app.services.orchestrator.audit import finish_invocation, start_invocation
 from app.services.orchestrator.persona_loader import load_persona
-from app.services.orchestrator.persona_rewriter import rewrite_with_persona, rewrite_with_persona_stream
-from app.services.orchestrator.response_guard import replace_forbidden_assistant_names
+from app.services.orchestrator.persona_loader import PersonaDocument
+from app.services.orchestrator.response_guard import (
+    compare_response_to_tool_outputs,
+    replace_forbidden_assistant_names,
+)
 from app.services.orchestrator.schedule_agent_client import call_schedule_agent, call_schedule_agent_stream
 from app.services.supabase_rest import get_current_user
 from app.services.abstention_feedback import get_threshold_adjustment, record_pending_hedge
@@ -74,6 +76,33 @@ def _cache_pop_prefix(prefix: str) -> None:
     for key in list(_cache):
         if key.startswith(prefix):
             _cache.pop(key, None)
+
+
+def _build_unified_persona_context(persona: PersonaDocument, user_name: str | None) -> str:
+    return (
+        "Sigmaris unified-generation context:\n"
+        "Answer as Sigmaris directly in this first generation. Do not produce a "
+        "plain draft for a later rewrite; no later rewrite exists in Phase BA4. "
+        "Follow the persona document's tone and conversation order while keeping "
+        "tool-derived facts exact. Keep confirmation markers intact if present.\n\n"
+        f"USER_NAME: {user_name or 'unknown'}\n\n"
+        f"PERSONA_DOCUMENT:\n{persona.content}"
+    )
+
+
+def _finalize_unified_response(
+    *,
+    text: str,
+    tool_events: list[dict[str, Any]] | None = None,
+) -> tuple[str, tuple[str, ...]]:
+    response_text = replace_forbidden_assistant_names(text)
+    guard = compare_response_to_tool_outputs(
+        tool_events=tool_events or [],
+        response_text=response_text,
+    )
+    if not guard.passed:
+        logger.warning("unified response tool-fact guard failed: %s", guard.violations)
+    return response_text, guard.violations
 
 
 def _jwt_cache_key(jwt: str) -> str:
@@ -897,6 +926,7 @@ async def run_orchestrator_chat(
     preference_patterns_context = _build_preference_patterns_context(preference_patterns)
     topic_context = _build_topic_context(current_topic, previous_topic)
     goal_alignment_context = _build_goal_alignment_context(goal_alignment_flags)
+    persona_context = _build_unified_persona_context(persona, call_name)
 
     try:
         schedule_result = await call_schedule_agent(
@@ -913,24 +943,11 @@ async def run_orchestrator_chat(
             preference_patterns_context=preference_patterns_context,
             topic_context=topic_context,
             goal_alignment_context=goal_alignment_context,
+            persona_context=persona_context,
             persist_thread=persist_thread,
         )
-        if CONFIRMATION_MARKER_RE.search(schedule_result.text):
-            # See the streaming variant for the full rationale: persona
-            # rewriting has no guarantee of preserving invisible marker
-            # markup, so pending-confirmation messages skip it entirely.
-            response_text = replace_forbidden_assistant_names(schedule_result.text)
-            used_fallback = False
-            guard_violations: tuple[str, ...] = ()
-        else:
-            rewrite = await rewrite_with_persona(
-                source=schedule_result.text,
-                persona=persona,
-                user_name=call_name,
-            )
-            response_text = replace_forbidden_assistant_names(rewrite.text)
-            used_fallback = rewrite.used_fallback
-            guard_violations = rewrite.guard_violations
+        response_text, guard_violations = _finalize_unified_response(text=schedule_result.text)
+        used_fallback = False
     except Exception as error:
         duration_ms = int((time.monotonic() - started_at) * 1000)
         try:
@@ -1130,7 +1147,9 @@ async def run_orchestrator_chat_stream(
     preference_patterns_context = _build_preference_patterns_context(preference_patterns)
     topic_context = _build_topic_context(current_topic, previous_topic)
     goal_alignment_context = _build_goal_alignment_context(goal_alignment_flags)
+    persona_context = _build_unified_persona_context(persona, call_name)
     schedule_text = ""
+    tool_events: list[dict[str, Any]] = []
     returned_thread_id = effective_thread_id
     schedule_message_id: str | None = None
     used_fallback = False
@@ -1152,9 +1171,11 @@ async def run_orchestrator_chat_stream(
             preference_patterns_context=preference_patterns_context,
             topic_context=topic_context,
             goal_alignment_context=goal_alignment_context,
+            persona_context=persona_context,
             persist_thread=persist_thread,
         ):
             if event.tool_event:
+                tool_events.append(event.tool_event)
                 yield OrchestratorStreamEvent(tool_event=event.tool_event, invocation_id=invocation_id)
             if event.delta:
                 schedule_text += event.delta
@@ -1165,33 +1186,12 @@ async def run_orchestrator_chat_stream(
         if not schedule_text.strip():
             raise RuntimeError("Schedule agent stream returned an empty response.")
 
-        if CONFIRMATION_MARKER_RE.search(schedule_text):
-            # A pending-confirmation marker (<!-- shiftpilot-confirmation {...} -->)
-            # is invisible UI metadata, not prose. Persona rewriting is an LLM
-            # tone-pass with no instruction to preserve non-visible markup, and
-            # response_guard's mechanical checks only catch its loss by
-            # coincidence (e.g. if the marker's JSON happens to contain a
-            # number). Skip the rewrite entirely for these messages so the
-            # confirmation button flow can't be silently corrupted.
-            response_text = replace_forbidden_assistant_names(schedule_text)
-            yield OrchestratorStreamEvent(delta=response_text, invocation_id=invocation_id)
-            used_fallback = False
-            guard_violations = ()
-        else:
-            async for rewrite_event in rewrite_with_persona_stream(
-                source=schedule_text,
-                persona=persona,
-                user_name=call_name,
-            ):
-                if rewrite_event.delta:
-                    delta = replace_forbidden_assistant_names(rewrite_event.delta)
-                    response_text += delta
-                    yield OrchestratorStreamEvent(delta=delta, invocation_id=invocation_id)
-                if rewrite_event.done:
-                    used_fallback = rewrite_event.used_fallback
-                    guard_violations = rewrite_event.guard_violations
-                    if rewrite_event.text is not None and used_fallback:
-                        response_text = replace_forbidden_assistant_names(rewrite_event.text)
+        response_text, guard_violations = _finalize_unified_response(
+            text=schedule_text,
+            tool_events=tool_events,
+        )
+        yield OrchestratorStreamEvent(delta=response_text, invocation_id=invocation_id)
+        used_fallback = False
 
     except Exception as error:
         duration_ms = int((time.monotonic() - started_at) * 1000)

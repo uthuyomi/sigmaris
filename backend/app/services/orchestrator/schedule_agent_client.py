@@ -39,10 +39,15 @@ async def _get_http_client() -> httpx.AsyncClient:
 
 
 _BASE_SYSTEM_OVERRIDE = (
-    "Return the schedule analysis and execution result accurately and plainly. "
-    "Do not role-play Sigmaris and do not add a separate personality layer. "
-    "Preserve dates, times, counts, URLs, named entities, warnings, and success "
-    "or failure states explicitly so another service can render the final tone."
+    "You are Sigmaris. Generate the final user-facing answer directly; there "
+    "is no later persona rewrite step. Use the persona document and the user's "
+    "tone preference from this system context from the start. Preserve dates, "
+    "times, counts, URLs, named entities, warnings, and success or failure "
+    "states exactly from tool outputs and retrieved context. Never claim a "
+    "calendar/app write succeeded unless the relevant tool output says ok=true "
+    "and registrationStatus='registered'. If you emit a "
+    "<!-- shiftpilot-confirmation ... --> marker, copy it exactly as generated "
+    "and do not wrap or alter the JSON. Return only the final user-facing text."
 )
 
 
@@ -52,8 +57,11 @@ def _build_system_override(
     preference_patterns_context: str | None = None,
     topic_context: str | None = None,
     goal_alignment_context: str | None = None,
+    persona_context: str | None = None,
 ) -> str:
     parts = []
+    if persona_context:
+        parts.append(persona_context)
     if user_profile_context:
         parts.append(user_profile_context)
     if self_model_context:
@@ -119,6 +127,7 @@ def _build_payload(
     preference_patterns_context: str | None = None,
     topic_context: str | None = None,
     goal_alignment_context: str | None = None,
+    persona_context: str | None = None,
     persist_thread: bool = False,
 ) -> dict[str, Any]:
     return {
@@ -133,7 +142,7 @@ def _build_payload(
         "persist_thread": persist_thread,
         "system_override": _build_system_override(
             user_profile_context, self_model_context, preference_patterns_context,
-            topic_context, goal_alignment_context,
+            topic_context, goal_alignment_context, persona_context,
         ),
         "context": {
             "reason": reason,
@@ -158,6 +167,7 @@ async def call_schedule_agent(
     preference_patterns_context: str | None = None,
     topic_context: str | None = None,
     goal_alignment_context: str | None = None,
+    persona_context: str | None = None,
     persist_thread: bool = False,
 ) -> ScheduleAgentResult:
     headers = _build_headers(
@@ -176,6 +186,7 @@ async def call_schedule_agent(
         preference_patterns_context=preference_patterns_context,
         topic_context=topic_context,
         goal_alignment_context=goal_alignment_context,
+        persona_context=persona_context,
         persist_thread=persist_thread,
     )
 
@@ -221,6 +232,7 @@ async def call_schedule_agent_stream(
     preference_patterns_context: str | None = None,
     topic_context: str | None = None,
     goal_alignment_context: str | None = None,
+    persona_context: str | None = None,
     persist_thread: bool = False,
 ) -> AsyncGenerator[ScheduleAgentStreamEvent, None]:
     headers = _build_headers(
@@ -240,6 +252,7 @@ async def call_schedule_agent_stream(
         preference_patterns_context=preference_patterns_context,
         topic_context=topic_context,
         goal_alignment_context=goal_alignment_context,
+        persona_context=persona_context,
         persist_thread=persist_thread,
     )
     stream_endpoint = agent.chat_endpoint.replace("/complete", "/stream")

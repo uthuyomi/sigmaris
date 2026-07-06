@@ -111,6 +111,81 @@ def compare_mechanical_facts(source: str, rewritten: str) -> MechanicalGuardResu
     return MechanicalGuardResult(passed=not violations, violations=violations)
 
 
+def _stringify_tool_payload(value: Any) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, str):
+        return value
+    try:
+        return json.dumps(value, ensure_ascii=False, sort_keys=True)
+    except (TypeError, ValueError):
+        return str(value)
+
+
+def _tool_output_text(tool_events: list[dict[str, Any]]) -> str:
+    chunks: list[str] = []
+    for event in tool_events:
+        event_type = event.get("type")
+        if event_type not in {"tool-output-available", "tool-output-error"}:
+            continue
+        chunks.append(_stringify_tool_payload(event.get("output")))
+    return "\n".join(chunk for chunk in chunks if chunk)
+
+
+def _tool_response_fact_set(text: str) -> set[str]:
+    without_urls = URL_PATTERN.sub("", text)
+    facts: set[str] = set()
+    for pattern in (
+        ISO_DATETIME_PATTERN,
+        JAPANESE_DATE_PATTERN,
+        SLASH_DATE_PATTERN,
+        TIME_PATTERN,
+        COUNT_PATTERN,
+    ):
+        facts.update(_extract_counter(pattern, without_urls).keys())
+    for value in _extract_counter(ISO_DATETIME_PATTERN, without_urls):
+        date_part = re.split(r"[T\s]", value, maxsplit=1)[0]
+        if date_part:
+            facts.add(date_part)
+        time_match = re.search(r"[T\s](\d{1,2}:\d{2})", value)
+        if time_match:
+            time_part = time_match.group(1)
+            facts.add(time_part)
+            if date_part:
+                facts.add(_normalize(f"{date_part} {time_part}"))
+    return facts
+
+
+def compare_response_to_tool_outputs(
+    *,
+    tool_events: list[dict[str, Any]],
+    response_text: str,
+) -> MechanicalGuardResult:
+    """Fast post-generation guard for facts grounded in tool outputs.
+
+    BA4 removes the full persona rewrite, so the old source-vs-rewrite guard no
+    longer has two prose texts to compare. This guard instead checks that high-
+    signal date/time/count values mentioned in the final response were present
+    in the raw tool output events observed during the turn.
+    """
+    source_text = _tool_output_text(tool_events)
+    if not source_text.strip():
+        return MechanicalGuardResult(passed=True, violations=())
+
+    source_facts = _tool_response_fact_set(source_text)
+    response_facts = _tool_response_fact_set(response_text)
+    if not response_facts:
+        return MechanicalGuardResult(passed=True, violations=())
+
+    unknown = sorted(response_facts - source_facts)
+    if not unknown:
+        return MechanicalGuardResult(passed=True, violations=())
+    return MechanicalGuardResult(
+        passed=False,
+        violations=tuple(f"tool-output fact not found: {fact}" for fact in unknown),
+    )
+
+
 async def compare_semantic_entities(
     *,
     client: AsyncOpenAI,
