@@ -28,21 +28,56 @@ import {
   SquareIcon,
   XIcon,
 } from "lucide-react";
-import { type FC, useCallback, useEffect, useRef, useState } from "react";
+import {
+  createContext,
+  type FC,
+  useCallback,
+  useContext,
+  useEffect,
+  useRef,
+  useState,
+} from "react";
 
 type ThreadProps = {
   locale: AppLocale;
 };
 
+type ResponseTiming = {
+  durationMs: number;
+};
+
+type ResponseTimingContextValue = {
+  timings: Record<string, ResponseTiming>;
+  live: { messageId: string; durationMs: number } | null;
+};
+
+const ResponseTimingContext = createContext<ResponseTimingContextValue>({
+  timings: {},
+  live: null,
+});
+
 export const Thread: FC<ThreadProps> = ({ locale }) => {
   const viewportRef = useRef<HTMLDivElement | null>(null);
   const touchStartRef = useRef<{ x: number; y: number } | null>(null);
   const showScrollButtonRef = useRef(false);
+  const responseStartRef = useRef<number | null>(null);
+  const wasRunningRef = useRef(false);
   const [showScrollButton, setShowScrollButton] = useState(false);
+  const [responseTimings, setResponseTimings] = useState<Record<string, ResponseTiming>>({});
+  const [liveElapsedMs, setLiveElapsedMs] = useState<number | null>(null);
   const messages = useAuiState((s) => s.thread.messages);
   const isRunning = useAuiState((s) => s.thread.isRunning);
   const [statusStep, setStatusStep] = useState(0);
+  const lastMessageRole = messages[messages.length - 1]?.role;
 
+  const latestAssistantMessageId = (() => {
+    for (let index = messages.length - 1; index >= 0; index -= 1) {
+      const message = messages[index];
+      if (message.role !== "assistant") continue;
+      return message.id ?? "";
+    }
+    return "";
+  })();
   const latestAssistantText = (() => {
     for (let index = messages.length - 1; index >= 0; index -= 1) {
       const message = messages[index];
@@ -65,6 +100,40 @@ export const Thread: FC<ThreadProps> = ({ locale }) => {
 
   const showPendingStatus =
     isRunning && latestAssistantText.trim().length === 0;
+
+  useEffect(() => {
+    if (isRunning && !wasRunningRef.current) {
+      responseStartRef.current = performance.now();
+    }
+
+    if (!isRunning && wasRunningRef.current) {
+      const startedAt = responseStartRef.current;
+      if (startedAt !== null && latestAssistantMessageId) {
+        const durationMs = performance.now() - startedAt;
+        window.setTimeout(() => {
+          setResponseTimings((current) => ({
+            ...current,
+            [latestAssistantMessageId]: { durationMs },
+          }));
+        }, 0);
+      }
+      responseStartRef.current = null;
+    }
+
+    wasRunningRef.current = isRunning;
+  }, [isRunning, latestAssistantMessageId]);
+
+  useEffect(() => {
+    if (!isRunning) return;
+
+    const updateElapsed = () => {
+      if (responseStartRef.current === null) return;
+      setLiveElapsedMs(performance.now() - responseStartRef.current);
+    };
+
+    const timer = window.setInterval(updateElapsed, 100);
+    return () => window.clearInterval(timer);
+  }, [isRunning]);
 
   const updateScrollState = useCallback(() => {
     const viewport = viewportRef.current;
@@ -182,6 +251,18 @@ export const Thread: FC<ThreadProps> = ({ locale }) => {
   }, [showPendingStatus]);
 
   return (
+    <ResponseTimingContext.Provider
+      value={{
+        timings: responseTimings,
+        live:
+          isRunning &&
+          lastMessageRole === "assistant" &&
+          latestAssistantMessageId &&
+          liveElapsedMs !== null
+            ? { messageId: latestAssistantMessageId, durationMs: liveElapsedMs }
+            : null,
+      }}
+    >
     <ThreadPrimitive.Root className="chat-thread-surface flex h-full min-h-0 min-w-0 max-w-full touch-pan-y flex-col overflow-hidden overscroll-x-none bg-[#212121] text-[#ececec]">
       <div className="relative min-h-0 min-w-0 flex-1 overflow-hidden">
         <ThreadPrimitive.Viewport
@@ -227,6 +308,7 @@ export const Thread: FC<ThreadProps> = ({ locale }) => {
         </div>
       </div>
     </ThreadPrimitive.Root>
+    </ResponseTimingContext.Provider>
   );
 };
 
@@ -265,6 +347,7 @@ const ThreadMessage: FC = () => {
 const AssistantMessage: FC = () => {
   const thread = useThreadRuntime();
   const [isSendingConfirmation, setIsSendingConfirmation] = useState(false);
+  const responseTiming = useContext(ResponseTimingContext);
   const currentMessageId = useAuiState((s) => s.message.id);
   const isRunning = useAuiState((s) => s.thread.isRunning);
   const latestAssistantMessageId = useAuiState((s) => {
@@ -282,6 +365,14 @@ const AssistantMessage: FC = () => {
       .map((part) => part.text)
       .join(""),
   );
+  const completedTiming = responseTiming.timings[currentMessageId];
+  const liveTiming =
+    responseTiming.live?.messageId === currentMessageId ? responseTiming.live : null;
+  const timingLabel = liveTiming
+    ? `計測中 ${formatResponseSeconds(liveTiming.durationMs)}秒`
+    : completedTiming
+      ? `応答時間 ${formatResponseSeconds(completedTiming.durationMs)}秒`
+      : null;
   const confirmationAction =
     currentMessageId === latestAssistantMessageId
       ? parseLatestConfirmationAction(messageText)
@@ -322,6 +413,11 @@ const AssistantMessage: FC = () => {
         {isRunning && currentMessageId === latestAssistantMessageId ? (
           <span className="ml-0.5 inline-block h-5 w-2 translate-y-1 animate-pulse rounded-sm bg-[#ececec]" />
         ) : null}
+        {timingLabel ? (
+          <div className="mt-2 text-[11px] font-medium leading-4 text-[#8e8ea0]">
+            {timingLabel}
+          </div>
+        ) : null}
         {confirmationAction ? (
           <ConfirmationActionCard
             action={confirmationAction}
@@ -334,6 +430,9 @@ const AssistantMessage: FC = () => {
     </div>
   );
 };
+
+const formatResponseSeconds = (durationMs: number) =>
+  (Math.max(0, durationMs) / 1000).toFixed(1);
 
 const ConfirmationActionCard: FC<{
   action: ChatConfirmationAction;

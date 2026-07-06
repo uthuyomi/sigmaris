@@ -215,3 +215,19 @@ BA4初版では、事実 guard をユーザー表示前に実行するため、`
 検証:
 
 - `npx eslint src/components/markdown-text.tsx src/app/assistant.tsx src/app/api/chat/route.ts src/lib/orchestrator/stream-translator.ts`: PASS
+
+## 13. 2026-07-06 追補: チャットUI上の体感応答時間表示
+
+BA1〜BA4の速度改善後、ユーザー体感での応答時間を会話しながら確認できるよう、フロントエンドのチャット本文付近に応答時間を表示する機能を追加した。
+
+計測範囲:
+
+- 開始: フロントエンド上で送信後、threadが `isRunning=true` になった時点
+- 終了: stream完了後、threadが `isRunning=false` に戻った時点
+- 表示: streaming中は `計測中 x.x秒`、完了後は `応答時間 x.x秒`
+
+この値はブラウザ上の体感時間であり、backend auditの `duration_ms` とは測定開始点が異なる。サーバー内部の詳細分析には既存の `agent_invocation_audit_logs.duration_ms` / `response_summary` を使い、ユーザー体験の確認にはこのUI表示を使う。
+
+検証:
+
+- `npm run lint`: PASS
