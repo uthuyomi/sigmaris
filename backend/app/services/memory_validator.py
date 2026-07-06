@@ -7,6 +7,7 @@ from typing import Any
 
 from app.services.local_llm import TaskType, get_llm_router
 from app.services.supabase_rest import rest_delete, rest_insert, rest_select, rest_update
+from app.services.user_fact_data import FACT_ITEM_SELECT
 
 logger = logging.getLogger(__name__)
 
@@ -82,7 +83,7 @@ async def get_confirmation_candidates(jwt: str) -> list[dict[str, Any]]:
     """
     try:
         facts = await rest_select(jwt, "user_fact_items", {
-            "select": "*",
+            "select": FACT_ITEM_SELECT,
             "is_deleted": "eq.false",
         })
         if not isinstance(facts, list):
@@ -204,7 +205,7 @@ async def validate_all_facts(jwt: str) -> dict[str, Any]:
 
     try:
         facts = await rest_select(jwt, "user_fact_items", {
-            "select": "*",
+            "select": FACT_ITEM_SELECT,
             "is_deleted": "eq.false",
             "order": "category.asc,updated_at.asc",
         })

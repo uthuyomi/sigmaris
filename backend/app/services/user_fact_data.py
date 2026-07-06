@@ -33,6 +33,23 @@ _PROFILE_JSONB_FIELDS = [
     "lifestyle_notes", "devices", "preferences", "goals", "values", "communication_settings",
 ]
 
+# Phase BA2: every current reader of user_fact_items (get_fact_items,
+# get_fact_items_for_user below, plus memory_validator.py's
+# get_confirmation_candidates/validate_all_facts) reads only these columns —
+# none touch `embedding` (vector(768), never read back into Python; all
+# vector similarity happens server-side via the search_fact_memory RPC in
+# memory_search.py) or the generated `search_text` column. This mirrors the
+# exclusion Phase B5's _DASHBOARD_SELECT below already established, just
+# generalized to every general-purpose reader instead of only the
+# dashboard. Excluding `embedding` was measured to remove the ~0.6s parse
+# overhead docs/sigmaris/incident_response_latency_investigation.md 6.5
+# section noted for the ~380-row full active-facts fetch.
+FACT_ITEM_SELECT = (
+    "id,user_id,category,key,value,confidence,source,notes,expires_at,"
+    "created_at,updated_at,is_stale,is_deleted,deleted_at,importance_score,"
+    "privacy_level,thread_id,invocation_id,adoption_count,source_experience_ids"
+)
+
 
 async def get_user_profile(jwt: str) -> dict[str, Any] | None:
     """Returns the single user_fact_profile row, or None if it does not exist yet."""
@@ -50,7 +67,7 @@ async def get_fact_items(
     active_only=True adds is_deleted=eq.false,is_stale=eq.false filters.
     Requires migration 202606270019_trend_memory to be applied.
     """
-    params: dict[str, str] = {"select": "*", "order": "category.asc,key.asc"}
+    params: dict[str, str] = {"select": FACT_ITEM_SELECT, "order": "category.asc,key.asc"}
     if category:
         params["category"] = f"eq.{category}"
     if active_only:
@@ -78,7 +95,7 @@ async def get_fact_items_for_user(
         raise RuntimeError("SUPABASE_SERVICE_ROLE_KEY is not configured.")
 
     params: dict[str, str] = {
-        "select": "*",
+        "select": FACT_ITEM_SELECT,
         "user_id": f"eq.{user_id}",
         "order": "category.asc,key.asc",
     }

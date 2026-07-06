@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import logging
 import time
 import uuid
@@ -67,6 +68,23 @@ def _cache_get(key: str) -> tuple[bool, Any]:
 
 def _cache_set(key: str, value: Any) -> None:
     _cache[key] = (time.monotonic(), value)
+
+
+def _jwt_cache_key(jwt: str) -> str:
+    """Phase BA2: full-jwt hash for per-user cache keys.
+
+    _cached_user_profile/_cached_active_trends below used to key on
+    `jwt[:20]` — but a standard HS256-signed JWT's header
+    (`{"alg":"HS256","typ":"JWT"}`, base64url-encoded) is 36 characters on
+    its own, identical for every user, so the first 20 characters of
+    virtually any two JWTs from this project collide regardless of whose
+    token they are. In this system's current single-tenant deployment that
+    was harmless (there was never a second user to collide with), but it
+    was still the wrong key derivation to leave in place, and this task's
+    new get_profile_context() cache (app_profile_data.py) would have
+    reproduced the same mistake if it had copied this helper instead of
+    hashing the full token. See docs/sigmaris/phase_ba2_report.md."""
+    return hashlib.sha256(jwt.encode("utf-8")).hexdigest()
 
 
 async def _timed(coro, *, timeout: float = 5.0, default: Any = None, label: str | None = None) -> Any:
@@ -147,7 +165,7 @@ async def _cached_threshold_adjustment() -> float:
 
 
 async def _cached_user_profile(jwt: str) -> dict | None:
-    key = f"profile:{jwt[:20]}"
+    key = f"profile:{_jwt_cache_key(jwt)}"
     hit, val = _cache_get(key)
     if hit:
         return val
@@ -176,7 +194,7 @@ async def _cached_fact_items(jwt: str, user_id: str) -> list:
 
 
 async def _cached_active_trends(jwt: str) -> list:
-    key = f"trends:{jwt[:20]}"
+    key = f"trends:{_jwt_cache_key(jwt)}"
     hit, val = _cache_get(key)
     if hit:
         return val
