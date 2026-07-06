@@ -927,17 +927,16 @@ async def run_orchestrator_chat(
         duration_ms=duration_ms,
     )
 
-    # Append active inquiry question if available (max one per turn)
-    try:
-        from app.services.active_inquiry import get_inquiry_question  # noqa: PLC0415
-        full_messages_so_far = list(messages) + [{"role": "assistant", "content": response_text}]
-        inquiry = await asyncio.wait_for(
-            get_inquiry_question(jwt, full_messages_so_far, thread_id=effective_thread_id), timeout=2.0
-        )
-        if inquiry:
-            response_text = response_text + "\n\n" + inquiry
-    except (asyncio.TimeoutError, Exception):
-        pass  # Never block the response for inquiry failures
+    # Phase BA1: surface any inquiry question generated in the background
+    # during a *previous* turn (Phase B3's get_inquiry_question used to be
+    # awaited synchronously right here, with a 2s timeout — see
+    # docs/sigmaris/phase_ba1_report.md for why that was moved off the
+    # response path). This is an in-process dict pop, not I/O, so it adds
+    # no latency of its own.
+    from app.services.active_inquiry import take_pending_inquiry_question  # noqa: PLC0415
+    pending_inquiry = take_pending_inquiry_question(effective_thread_id)
+    if pending_inquiry:
+        response_text = response_text + "\n\n" + pending_inquiry
 
     # Fire-and-forget: extract memorable facts from this conversation turn.
     # (Facts cache invalidation now happens inside _extract_facts_bg's own
@@ -954,6 +953,19 @@ async def run_orchestrator_chat(
             invocation_id=invocation_id,
         ),
         name=f"memory_extract:{invocation_id}",
+    )
+
+    # Fire-and-forget (Phase BA1): generate this turn's candidate inquiry
+    # question, if any, for a *future* turn to surface — see
+    # active_inquiry.generate_and_stash_inquiry_question()'s docstring.
+    from app.services.active_inquiry import generate_and_stash_inquiry_question  # noqa: PLC0415
+    asyncio.create_task(
+        generate_and_stash_inquiry_question(
+            jwt=jwt,
+            recent_messages=full_messages,
+            thread_id=effective_thread_id,
+        ),
+        name=f"inquiry_question:{invocation_id}",
     )
 
     # Fire-and-forget: cognitive layer (decision detection + internal state update).
@@ -1172,18 +1184,17 @@ async def run_orchestrator_chat_stream(
         duration_ms=duration_ms,
     )
 
-    try:
-        from app.services.active_inquiry import get_inquiry_question  # noqa: PLC0415
-        full_messages_so_far = list(messages) + [{"role": "assistant", "content": response_text}]
-        inquiry = await asyncio.wait_for(
-            get_inquiry_question(jwt, full_messages_so_far, thread_id=effective_thread_id), timeout=2.0
-        )
-        if inquiry:
-            inquiry_delta = "\n\n" + inquiry
-            response_text += inquiry_delta
-            yield OrchestratorStreamEvent(delta=inquiry_delta, invocation_id=invocation_id)
-    except (asyncio.TimeoutError, Exception):
-        pass
+    # Phase BA1: same pending-question surfacing as run_orchestrator_chat
+    # above, adapted to yield the appended text as a stream delta rather
+    # than just concatenating it — see active_inquiry.py's
+    # take_pending_inquiry_question()/generate_and_stash_inquiry_question()
+    # docstrings and docs/sigmaris/phase_ba1_report.md.
+    from app.services.active_inquiry import take_pending_inquiry_question  # noqa: PLC0415
+    pending_inquiry = take_pending_inquiry_question(effective_thread_id)
+    if pending_inquiry:
+        inquiry_delta = "\n\n" + pending_inquiry
+        response_text += inquiry_delta
+        yield OrchestratorStreamEvent(delta=inquiry_delta, invocation_id=invocation_id)
 
     full_messages = list(messages) + [{"role": "assistant", "content": response_text}]
     asyncio.create_task(
@@ -1195,6 +1206,19 @@ async def run_orchestrator_chat_stream(
             invocation_id=invocation_id,
         ),
         name=f"memory_extract:{invocation_id}",
+    )
+
+    # Fire-and-forget (Phase BA1): generate this turn's candidate inquiry
+    # question, if any, for a *future* turn to surface — see
+    # active_inquiry.generate_and_stash_inquiry_question()'s docstring.
+    from app.services.active_inquiry import generate_and_stash_inquiry_question  # noqa: PLC0415
+    asyncio.create_task(
+        generate_and_stash_inquiry_question(
+            jwt=jwt,
+            recent_messages=full_messages,
+            thread_id=effective_thread_id,
+        ),
+        name=f"inquiry_question:{invocation_id}",
     )
     latest_user = _latest_user_message(messages)
     turn_messages = ([latest_user] if latest_user else []) + [

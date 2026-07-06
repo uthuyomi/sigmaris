@@ -27,6 +27,28 @@ _COOLDOWN_SECONDS = 2 * 24 * 60 * 60  # 48 hours
 # resets on restart — acceptable for the same reason as the cooldown above.
 _pending_confirmations: dict[str, dict[str, Any]] = {}
 
+# Phase BA1: one ready-to-use inquiry question per thread, generated in the
+# background (generate_and_stash_inquiry_question) and picked up by the
+# *next* turn's response (take_pending_inquiry_question) — see both
+# functions' docstrings below, and docs/sigmaris/phase_ba1_report.md for why
+# get_inquiry_question() moved off the response path entirely. In-process
+# only, same as _pending_confirmations/_asked_cache above.
+_pending_inquiry_text: dict[str, dict[str, Any]] = {}
+
+# How long a stashed question stays eligible to be surfaced before it's
+# considered stale and silently discarded instead of asked. The question's
+# wording is fitted to recent_messages *at generation time* (both the
+# relevance ranking and the generated phrasing itself reference it) — the
+# longer it sits unconsumed, the more likely the conversation has moved on
+# or the session ended, and surfacing it would read as a non sequitur
+# rather than the natural callback it was designed to be. 30 minutes is
+# well inside _asked_cache's 48h field-level cooldown above (a different
+# concern: not re-asking about the same field, regardless of phrasing) and
+# far shorter than goal_alignment.py's 14-day nag-avoidance cooldown (a
+# periodic reminder, not a context-fitted callback) — chosen as roughly
+# "still the same sitting" rather than tied to either of those.
+_INQUIRY_PENDING_TTL_SECONDS = 30 * 60
+
 _SYSTEM = """あなたはシグマリス（家庭支援AI）です。
 ユーザーに対して、まだ知らない情報を自然に質問します。
 一つの質問のみ生成してください。"""
@@ -157,6 +179,75 @@ async def get_inquiry_question(
     if chosen.get("source") == "user_fact_items_confirm":
         return await _generate_confirmation_question(chosen, recent_text, thread_id=thread_id)
     return await _generate_missing_field_question(chosen, recent_text)
+
+
+async def generate_and_stash_inquiry_question(
+    *,
+    jwt: str,
+    recent_messages: list[dict[str, str]],
+    thread_id: str | None,
+) -> None:
+    """Fire-and-forget (Phase BA1): run the exact same candidate-selection
+    and generation get_inquiry_question() always did, but stash the result
+    for a *future* turn to surface (via take_pending_inquiry_question())
+    instead of returning it into an in-flight response.
+
+    get_inquiry_question() used to be awaited directly on the response path
+    with a synchronous 2-second timeout — the one remaining hot-path B-group
+    call identified in docs/sigmaris/incident_response_latency_investigation.md.
+    Real measurement there showed it completing in ~2.003s, i.e. almost
+    exactly the timeout boundary, and the call site's
+    `except (asyncio.TimeoutError, Exception): pass` swallowed both the
+    timeout and any other failure with no log line at all — the question was
+    very likely never actually being asked in production. Root cause: the
+    LLM call inside _generate_missing_field_question/
+    _generate_confirmation_question uses TaskType.COMPLEX_REASONING, which
+    local_llm.py routes to the "advanced" OpenAI tier (not the fast "nano"
+    tier every other background classification call in this codebase uses),
+    so it routinely runs past 2s on its own. Moving this off the response
+    path removes that timeout entirely — no other fire-and-forget task in
+    this codebase (memory_extractor, decision_log, experience_layer, ...)
+    imposes one either — so a slow call can no longer affect latency, and
+    failures are now always logged via the try/except below plus
+    get_inquiry_question()'s own internal ones.
+
+    No-op (and no LLM call at all) if there's no thread_id: a question that
+    can never be delivered to any future turn isn't worth generating.
+    """
+    if not thread_id:
+        logger.debug("active_inquiry: no thread_id, skipping background question generation")
+        return
+    try:
+        question = await get_inquiry_question(jwt, recent_messages, thread_id=thread_id)
+    except Exception:
+        logger.exception("active_inquiry: generate_and_stash_inquiry_question failed for thread=%s", thread_id)
+        return
+    if not question:
+        return
+    _pending_inquiry_text[thread_id] = {"question": question, "generated_at": time.time()}
+    logger.info("active_inquiry: stashed pending inquiry question for thread=%s", thread_id)
+
+
+def take_pending_inquiry_question(thread_id: str | None) -> str | None:
+    """Pop and return this thread's stashed inquiry question (Phase BA1) if
+    one is ready and still fresh enough to feel natural — see
+    _INQUIRY_PENDING_TTL_SECONDS above for the staleness rationale. Always
+    consumes the entry if present (one-shot, whether returned or discarded
+    as stale), matching _pending_confirmations'/_pending_hedges' one-shot
+    semantics elsewhere in this file and abstention_feedback.py."""
+    if not thread_id:
+        return None
+    pending = _pending_inquiry_text.pop(thread_id, None)
+    if not pending:
+        return None
+    age = time.time() - pending["generated_at"]
+    if age > _INQUIRY_PENDING_TTL_SECONDS:
+        logger.info(
+            "active_inquiry: discarded stale pending inquiry question for thread=%s (age=%.0fs)",
+            thread_id, age,
+        )
+        return None
+    return pending["question"]
 
 
 async def _generate_missing_field_question(
