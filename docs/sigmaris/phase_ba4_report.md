@@ -131,3 +131,20 @@ BA4初版では、事実 guard をユーザー表示前に実行するため、`
 - 確認ボタンマーカーは引き続き LLM rewrite を通らず、schedule-agent 生成物をそのまま中継する
 
 この修正で、BA4の一段生成化を維持しながら、streaming UX と接続安定性を優先した。
+
+## 9. 2026-07-06 追補: /api/orchestrator/chat/stream 422への対応
+
+サーバーログで `/api/orchestrator/chat/stream` 自体が HTTP 422 を返していることを確認した。これは内部 schedule-agent ではなく、外側 orchestrator endpoint の Pydantic request validation で落ちている状態である。
+
+原因候補として、Next.js の `/api/chat` route が AI SDK の `UIMessage[]` 全履歴をそのまま backend に送っており、`OrchestratorChatRequest.messages` の `max_length=50` を超えうることが分かった。backend の `_prepare_session_messages()` はDBから直近会話ウィンドウを取得し、リクエスト側からは最新 user turn があれば足りる設計なので、全履歴送信は不要だった。
+
+対応:
+
+- `frontend/src/app/api/chat/route.ts` で backend に送る履歴を直近24件に制限
+- 各 message content を backend schema 上限の 20,000 文字以内に制限
+- backend 側の recent-window / 最新 user turn 統合設計は維持
+
+検証:
+
+- `python -m unittest discover backend/tests`: PASS
+- `npx eslint src/app/api/chat/route.ts`: PASS

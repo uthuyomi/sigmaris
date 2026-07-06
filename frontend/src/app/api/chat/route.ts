@@ -15,12 +15,20 @@ type IncomingBody = {
   threadId?: string;
 };
 
+const ORCHESTRATOR_MESSAGE_LIMIT = 24;
+const ORCHESTRATOR_MESSAGE_TEXT_LIMIT = 20_000;
+
 const extractText = (message: UIMessage): string =>
   message.parts
     .filter((part): part is { type: "text"; text: string } => part.type === "text")
     .map((part) => part.text)
     .join("\n")
     .trim();
+
+const trimMessageText = (text: string): string => {
+  if (text.length <= ORCHESTRATOR_MESSAGE_TEXT_LIMIT) return text;
+  return text.slice(-ORCHESTRATOR_MESSAGE_TEXT_LIMIT);
+};
 
 export async function POST(req: Request) {
   const rawBody = await req.text();
@@ -61,7 +69,9 @@ export async function POST(req: Request) {
   const orchestratorMessages = (body.messages ?? [])
     .filter((message) => message.role === "user" || message.role === "assistant")
     .map((message) => ({ role: message.role, content: extractText(message) }))
-    .filter((message) => message.content.length > 0);
+    .filter((message) => message.content.length > 0)
+    .slice(-ORCHESTRATOR_MESSAGE_LIMIT)
+    .map((message) => ({ ...message, content: trimMessageText(message.content) }));
 
   if (orchestratorMessages.length === 0) {
     return new Response(JSON.stringify({ error: "messages is required." }), {
