@@ -28,56 +28,21 @@ import {
   SquareIcon,
   XIcon,
 } from "lucide-react";
-import {
-  createContext,
-  type FC,
-  useCallback,
-  useContext,
-  useEffect,
-  useRef,
-  useState,
-} from "react";
+import { type FC, useCallback, useEffect, useRef, useState } from "react";
 
 type ThreadProps = {
   locale: AppLocale;
 };
 
-type ResponseTiming = {
-  durationMs: number;
-};
-
-type ResponseTimingContextValue = {
-  timings: Record<string, ResponseTiming>;
-  active: { messageId: string; startedAt: number } | null;
-};
-
-const ResponseTimingContext = createContext<ResponseTimingContextValue>({
-  timings: {},
-  active: null,
-});
-
 export const Thread: FC<ThreadProps> = ({ locale }) => {
   const viewportRef = useRef<HTMLDivElement | null>(null);
   const touchStartRef = useRef<{ x: number; y: number } | null>(null);
   const showScrollButtonRef = useRef(false);
-  const responseStartRef = useRef<number | null>(null);
-  const wasRunningRef = useRef(false);
   const [showScrollButton, setShowScrollButton] = useState(false);
-  const [responseTimings, setResponseTimings] = useState<Record<string, ResponseTiming>>({});
-  const [runStartedAt, setRunStartedAt] = useState<number | null>(null);
   const messages = useAuiState((s) => s.thread.messages);
   const isRunning = useAuiState((s) => s.thread.isRunning);
   const [statusStep, setStatusStep] = useState(0);
-  const lastMessageRole = messages[messages.length - 1]?.role;
 
-  const latestAssistantMessageId = (() => {
-    for (let index = messages.length - 1; index >= 0; index -= 1) {
-      const message = messages[index];
-      if (message.role !== "assistant") continue;
-      return message.id ?? "";
-    }
-    return "";
-  })();
   const latestAssistantText = (() => {
     for (let index = messages.length - 1; index >= 0; index -= 1) {
       const message = messages[index];
@@ -100,31 +65,6 @@ export const Thread: FC<ThreadProps> = ({ locale }) => {
 
   const showPendingStatus =
     isRunning && latestAssistantText.trim().length === 0;
-
-  useEffect(() => {
-    if (isRunning && !wasRunningRef.current) {
-      const startedAt = performance.now();
-      responseStartRef.current = startedAt;
-      window.setTimeout(() => setRunStartedAt(startedAt), 0);
-    }
-
-    if (!isRunning && wasRunningRef.current) {
-      const startedAt = responseStartRef.current;
-      if (startedAt !== null && latestAssistantMessageId) {
-        const durationMs = performance.now() - startedAt;
-        window.setTimeout(() => {
-          setResponseTimings((current) => ({
-            ...current,
-            [latestAssistantMessageId]: { durationMs },
-          }));
-        }, 0);
-      }
-      responseStartRef.current = null;
-      window.setTimeout(() => setRunStartedAt(null), 0);
-    }
-
-    wasRunningRef.current = isRunning;
-  }, [isRunning, latestAssistantMessageId]);
 
   const updateScrollState = useCallback(() => {
     const viewport = viewportRef.current;
@@ -242,18 +182,6 @@ export const Thread: FC<ThreadProps> = ({ locale }) => {
   }, [showPendingStatus]);
 
   return (
-    <ResponseTimingContext.Provider
-      value={{
-        timings: responseTimings,
-        active:
-          isRunning &&
-          lastMessageRole === "assistant" &&
-          latestAssistantMessageId &&
-          runStartedAt !== null
-            ? { messageId: latestAssistantMessageId, startedAt: runStartedAt }
-            : null,
-      }}
-    >
     <ThreadPrimitive.Root className="chat-thread-surface flex h-full min-h-0 min-w-0 max-w-full touch-pan-y flex-col overflow-hidden overscroll-x-none bg-[#212121] text-[#ececec]">
       <div className="relative min-h-0 min-w-0 flex-1 overflow-hidden">
         <ThreadPrimitive.Viewport
@@ -299,7 +227,6 @@ export const Thread: FC<ThreadProps> = ({ locale }) => {
         </div>
       </div>
     </ThreadPrimitive.Root>
-    </ResponseTimingContext.Provider>
   );
 };
 
@@ -338,7 +265,6 @@ const ThreadMessage: FC = () => {
 const AssistantMessage: FC = () => {
   const thread = useThreadRuntime();
   const [isSendingConfirmation, setIsSendingConfirmation] = useState(false);
-  const responseTiming = useContext(ResponseTimingContext);
   const currentMessageId = useAuiState((s) => s.message.id);
   const isRunning = useAuiState((s) => s.thread.isRunning);
   const latestAssistantMessageId = useAuiState((s) => {
@@ -356,9 +282,6 @@ const AssistantMessage: FC = () => {
       .map((part) => part.text)
       .join(""),
   );
-  const completedTiming = responseTiming.timings[currentMessageId];
-  const activeTiming =
-    responseTiming.active?.messageId === currentMessageId ? responseTiming.active : null;
   const confirmationAction =
     currentMessageId === latestAssistantMessageId
       ? parseLatestConfirmationAction(messageText)
@@ -399,11 +322,6 @@ const AssistantMessage: FC = () => {
         {isRunning && currentMessageId === latestAssistantMessageId ? (
           <span className="ml-0.5 inline-block h-5 w-2 translate-y-1 animate-pulse rounded-sm bg-[#ececec]" />
         ) : null}
-        {activeTiming ? (
-          <ResponseTimingBadge startedAt={activeTiming.startedAt} />
-        ) : completedTiming ? (
-          <ResponseTimingBadge durationMs={completedTiming.durationMs} />
-        ) : null}
         {confirmationAction ? (
           <ConfirmationActionCard
             action={confirmationAction}
@@ -413,42 +331,6 @@ const AssistantMessage: FC = () => {
           />
         ) : null}
       </div>
-    </div>
-  );
-};
-
-const formatResponseSeconds = (durationMs: number) =>
-  (Math.max(0, durationMs) / 1000).toFixed(1);
-
-const ResponseTimingBadge: FC<{
-  startedAt?: number;
-  durationMs?: number;
-}> = ({ startedAt, durationMs }) => {
-  if (startedAt !== undefined) {
-    return <LiveResponseTimingBadge startedAt={startedAt} />;
-  }
-
-  if (durationMs === undefined) return null;
-
-  return (
-    <div className="mt-2 text-[11px] font-medium leading-4 text-[#8e8ea0]">
-      応答時間 {formatResponseSeconds(durationMs)}秒
-    </div>
-  );
-};
-
-const LiveResponseTimingBadge: FC<{ startedAt: number }> = ({ startedAt }) => {
-  const [elapsedMs, setElapsedMs] = useState(0);
-
-  useEffect(() => {
-    const updateElapsed = () => setElapsedMs(performance.now() - startedAt);
-    const timer = window.setInterval(updateElapsed, 100);
-    return () => window.clearInterval(timer);
-  }, [startedAt]);
-
-  return (
-    <div className="mt-2 text-[11px] font-medium leading-4 text-[#8e8ea0]">
-      計測中 {formatResponseSeconds(elapsedMs)}秒
     </div>
   );
 };
