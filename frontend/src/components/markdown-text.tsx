@@ -24,6 +24,7 @@ type MarkdownTextProps = {
 const MarkdownTextImpl: FC<MarkdownTextProps> = ({ preprocess }) => {
   return (
     <MarkdownTextPrimitive
+      smooth={false}
       remarkPlugins={[remarkGfm]}
       className="aui-md max-w-full min-w-0 overflow-hidden break-words [overflow-wrap:anywhere]"
       components={defaultComponents}

@@ -200,3 +200,18 @@ BA4初版では、事実 guard をユーザー表示前に実行するため、`
 
 - `npx eslint src/app/assistant.tsx src/app/api/chat/route.ts src/lib/orchestrator/stream-translator.ts`: PASS
 - `npm run lint`: PASS
+
+## 12. 2026-07-06 追補: Markdown smooth streaming補間を停止
+
+前項の対応後も、streaming中のassistant本文が「最初から表示され、消えて、また最初から表示され始める」ように見える問題が残った。追加調査で `@assistant-ui/react-markdown` の `MarkdownTextPrimitive` がデフォルトで `smooth=true` になっていることを確認した。
+
+`smooth=true` の場合、assistant-ui内部の `useSmooth()` はstreaming中messageを空文字から補間表示する。BA4でschedule-agentのdeltaを即時中継するようになり、更新頻度が大きく上がったため、この補間が頻繁にリセットされ、ユーザーからは「高速で何度も出直している」ように見える状態になっていた可能性が高い。
+
+対応:
+
+- `frontend/src/components/markdown-text.tsx` の `MarkdownTextPrimitive` に `smooth={false}` を明示
+- AI SDK / backend streamのdeltaをそのまま表示し、assistant-ui側の追加typewriter補間を使わない
+
+検証:
+
+- `npx eslint src/components/markdown-text.tsx src/app/assistant.tsx src/app/api/chat/route.ts src/lib/orchestrator/stream-translator.ts`: PASS
