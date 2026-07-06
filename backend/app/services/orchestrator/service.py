@@ -1183,6 +1183,9 @@ async def run_orchestrator_chat_stream(
                 yield OrchestratorStreamEvent(tool_event=event.tool_event, invocation_id=invocation_id)
             if event.delta:
                 schedule_text += event.delta
+                delta = replace_forbidden_assistant_names(event.delta)
+                response_text += delta
+                yield OrchestratorStreamEvent(delta=delta, invocation_id=invocation_id)
             if event.done:
                 returned_thread_id = event.thread_id or returned_thread_id
                 schedule_message_id = event.message_id
@@ -1190,11 +1193,14 @@ async def run_orchestrator_chat_stream(
         if not schedule_text.strip():
             raise RuntimeError("Schedule agent stream returned an empty response.")
 
-        response_text, guard_violations = _finalize_unified_response(
-            text=schedule_text,
+        response_text = replace_forbidden_assistant_names(schedule_text)
+        guard = compare_response_to_tool_outputs(
             tool_events=tool_events,
+            response_text=response_text,
         )
-        yield OrchestratorStreamEvent(delta=response_text, invocation_id=invocation_id)
+        guard_violations = guard.violations
+        if not guard.passed:
+            logger.warning("unified streamed response tool-fact guard failed: %s", guard.violations)
         used_fallback = False
 
     except Exception as error:

@@ -116,3 +116,18 @@ OK
 - `test_schedule_agent_client.py` を追加し、長い context でも 4000文字以内になることを検証
 
 この修正により、同種の 422 は `system_override` 組み立て段階で防止される。
+
+## 8. 2026-07-06 追補: streaming無音時間への対応
+
+BA4初版では、事実 guard をユーザー表示前に実行するため、`run_orchestrator_chat_stream()` が schedule-agent の `delta` を内部で最後まで蓄積し、完了後に一括送信していた。
+
+サーバー反映後、短い応答では成功する一方、後続ターンでフロントエンドに assistant 枠だけが出て本文が出ない現象が確認された。原因として、生成中に orchestrator から text delta が出ない無音時間が発生し、フロント/プロキシ/クライアント側の stream 処理が実質的に待ち切れない可能性が高いと判断した。
+
+対応:
+
+- streaming 経路では schedule-agent の `delta` を受け取った時点で即座に `OrchestratorStreamEvent(delta=...)` として中継する形に戻した
+- `replace_forbidden_assistant_names()` は各 delta に適用し、最終保存用の全文にも改めて適用する
+- tool-output fact guard は、表示前 gate ではなく、stream 完了後の軽量検知・ログ記録として実行する
+- 確認ボタンマーカーは引き続き LLM rewrite を通らず、schedule-agent 生成物をそのまま中継する
+
+この修正で、BA4の一段生成化を維持しながら、streaming UX と接続安定性を優先した。
