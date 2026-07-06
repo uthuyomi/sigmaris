@@ -35,6 +35,7 @@ class Settings(BaseSettings):
     sigmaris_user_jwt: str | None = None
     sigmaris_refresh_token: str | None = None
     sigmaris_google_access_token: str | None = None
+    sigmaris_surface_inquiry_questions: bool = False
     pushover_user_key: str | None = None
     pushover_app_token: str | None = None
     proactive_enabled: bool = True

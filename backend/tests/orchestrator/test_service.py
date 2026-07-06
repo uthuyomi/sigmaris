@@ -85,7 +85,7 @@ class OrchestratorServiceTests(unittest.IsolatedAsyncioTestCase):
             patch("app.services.orchestrator.service._build_memory_context", new=AsyncMock(return_value="memory"))
         )
         stack.enter_context(patch("app.services.orchestrator.service.asyncio.create_task", _close_background_coro))
-        stack.enter_context(
+        mocks["take_pending_inquiry_question"] = stack.enter_context(
             patch(
                 "app.services.active_inquiry.take_pending_inquiry_question",
                 return_value=None,
@@ -144,6 +144,32 @@ class OrchestratorServiceTests(unittest.IsolatedAsyncioTestCase):
             kwargs = call_schedule_agent.await_args.kwargs
             self.assertIn("Sigmaris unified-generation context", kwargs["persona_context"])
             self.assertIn("PERSONA_VERSION", kwargs["persona_context"])
+
+    async def test_pending_inquiry_is_not_surfaced_by_default(self) -> None:
+        with ExitStack() as stack:
+            mocks = self._patch_common(stack)
+            take_pending = mocks["take_pending_inquiry_question"]
+            take_pending.return_value = "ちなみに、GPUはGTX 1660のままで合っていますか？"
+            call_schedule_agent = stack.enter_context(
+                patch("app.services.orchestrator.service.call_schedule_agent", new=AsyncMock())
+            )
+            call_schedule_agent.return_value = ScheduleAgentResult(
+                text="2日ぶりだね、海星さん。",
+                thread_id="thread-id",
+                message_id="message-id",
+            )
+
+            result = await run_orchestrator_chat(
+                jwt="jwt",
+                google_access_token=None,
+                google_refresh_token=None,
+                messages=[{"role": "user", "content": "いやぁ2日ぶり"}],
+                thread_id=None,
+                request_context=None,
+            )
+
+            self.assertEqual(result["text"], "2日ぶりだね、海星さん。")
+            take_pending.assert_not_called()
 
     async def test_completion_audit_failure_fails_whole_invocation(self) -> None:
         with ExitStack() as stack:

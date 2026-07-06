@@ -78,6 +78,35 @@ def _cache_pop_prefix(prefix: str) -> None:
             _cache.pop(key, None)
 
 
+def _maybe_take_pending_inquiry(thread_id: str | None) -> str | None:
+    if not settings.sigmaris_surface_inquiry_questions:
+        return None
+    from app.services.active_inquiry import take_pending_inquiry_question  # noqa: PLC0415
+
+    return take_pending_inquiry_question(thread_id)
+
+
+def _maybe_stash_future_inquiry(
+    *,
+    jwt: str,
+    recent_messages: list[dict[str, str]],
+    thread_id: str | None,
+    invocation_id: str,
+) -> None:
+    if not settings.sigmaris_surface_inquiry_questions:
+        return
+    from app.services.active_inquiry import generate_and_stash_inquiry_question  # noqa: PLC0415
+
+    asyncio.create_task(
+        generate_and_stash_inquiry_question(
+            jwt=jwt,
+            recent_messages=recent_messages,
+            thread_id=thread_id,
+        ),
+        name=f"inquiry_question:{invocation_id}",
+    )
+
+
 def _build_unified_persona_context(persona: PersonaDocument, user_name: str | None) -> str:
     return (
         "Sigmaris unified-generation context:\n"
@@ -990,8 +1019,7 @@ async def run_orchestrator_chat(
     # docs/sigmaris/phase_ba1_report.md for why that was moved off the
     # response path). This is an in-process dict pop, not I/O, so it adds
     # no latency of its own.
-    from app.services.active_inquiry import take_pending_inquiry_question  # noqa: PLC0415
-    pending_inquiry = take_pending_inquiry_question(effective_thread_id)
+    pending_inquiry = _maybe_take_pending_inquiry(effective_thread_id)
     if pending_inquiry:
         response_text = response_text + "\n\n" + pending_inquiry
 
@@ -1015,14 +1043,11 @@ async def run_orchestrator_chat(
     # Fire-and-forget (Phase BA1): generate this turn's candidate inquiry
     # question, if any, for a *future* turn to surface — see
     # active_inquiry.generate_and_stash_inquiry_question()'s docstring.
-    from app.services.active_inquiry import generate_and_stash_inquiry_question  # noqa: PLC0415
-    asyncio.create_task(
-        generate_and_stash_inquiry_question(
-            jwt=jwt,
-            recent_messages=full_messages,
-            thread_id=effective_thread_id,
-        ),
-        name=f"inquiry_question:{invocation_id}",
+    _maybe_stash_future_inquiry(
+        jwt=jwt,
+        recent_messages=full_messages,
+        thread_id=effective_thread_id,
+        invocation_id=invocation_id,
     )
 
     # Fire-and-forget: cognitive layer (decision detection + internal state update).
@@ -1241,8 +1266,7 @@ async def run_orchestrator_chat_stream(
     # than just concatenating it — see active_inquiry.py's
     # take_pending_inquiry_question()/generate_and_stash_inquiry_question()
     # docstrings and docs/sigmaris/phase_ba1_report.md.
-    from app.services.active_inquiry import take_pending_inquiry_question  # noqa: PLC0415
-    pending_inquiry = take_pending_inquiry_question(effective_thread_id)
+    pending_inquiry = _maybe_take_pending_inquiry(effective_thread_id)
     if pending_inquiry:
         inquiry_delta = "\n\n" + pending_inquiry
         response_text += inquiry_delta
@@ -1263,14 +1287,11 @@ async def run_orchestrator_chat_stream(
     # Fire-and-forget (Phase BA1): generate this turn's candidate inquiry
     # question, if any, for a *future* turn to surface — see
     # active_inquiry.generate_and_stash_inquiry_question()'s docstring.
-    from app.services.active_inquiry import generate_and_stash_inquiry_question  # noqa: PLC0415
-    asyncio.create_task(
-        generate_and_stash_inquiry_question(
-            jwt=jwt,
-            recent_messages=full_messages,
-            thread_id=effective_thread_id,
-        ),
-        name=f"inquiry_question:{invocation_id}",
+    _maybe_stash_future_inquiry(
+        jwt=jwt,
+        recent_messages=full_messages,
+        thread_id=effective_thread_id,
+        invocation_id=invocation_id,
     )
     latest_user = _latest_user_message(messages)
     turn_messages = ([latest_user] if latest_user else []) + [

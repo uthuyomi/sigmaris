@@ -148,3 +148,32 @@ BA4初版では、事実 guard をユーザー表示前に実行するため、`
 
 - `python -m unittest discover backend/tests`: PASS
 - `npx eslint src/app/api/chat/route.ts`: PASS
+
+## 10. 2026-07-06 追補: B3確認質問の自動表示をデフォルト停止
+
+本番反映後の会話で、文脈と無関係に「自宅のUbuntu Server / GTX 1660 6GB構成で合っているか」という確認質問が複数回表示された。調査したところ、Memory SnapshotやBA4の統合生成が直接同じ記憶を誤取得しているのではなく、BA1でHot Pathから退避したB3の `active_inquiry` が、前ターンで生成した確認質問を次ターン末尾へ自動注入していたことが原因だった。
+
+発生条件:
+
+- `active_inquiry.generate_and_stash_inquiry_question()` が `confirm:devices:has_self_hosted_server_and_gpu` の確認質問をバックグラウンド生成する
+- 次ターンで `take_pending_inquiry_question()` がその質問を応答末尾へ追加する
+- デプロイ・再起動でプロセスローカルの `_asked_cache` が消え、同じ確認質問のクールダウンが失われる
+- BA4後はpersona rewriteで自然に混ぜ直されず、schedule-agent生成後にそのまま追加されるため唐突さが目立つ
+
+対応:
+
+- `settings.sigmaris_surface_inquiry_questions` を追加し、デフォルトを `False` にした
+- デフォルト状態では、pending inquiryの取得・次ターン用の確認質問生成タスクをどちらも実行しない
+- 通常の記憶検索、Memory Snapshot、事実抽出、認知レイヤー、BA4統合生成は維持する
+- 将来、文脈適合性判定や永続的な質問クールダウンを追加できた段階で、`SIGMARIS_SURFACE_INQUIRY_QUESTIONS=true` により再有効化できる
+
+判断根拠:
+
+- 問題は「記憶層が情報を持っていること」ではなく、「未確認記憶の確認質問を会話の空気に関係なく自動表示すること」だった
+- 本番安定化の優先度が高く、BA4の速度改善と一段生成の効果を維持したまま、最小範囲で唐突な質問注入だけを止めるのが低リスク
+- B3の抽出ロジック本体は削除せず、明示設定で戻せる形に留めた
+
+検証:
+
+- `python -m unittest discover backend/tests`: PASS (`Ran 16 tests`)
+- pending inquiryが存在しても、デフォルト設定では応答末尾に追加されないことを `test_pending_inquiry_is_not_surfaced_by_default` で確認
