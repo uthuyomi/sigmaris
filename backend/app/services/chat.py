@@ -373,10 +373,24 @@ async def _execute_chat_tool(
         return {"ok": False, "reason": str(error)}
 
 
+# Lazy singleton so we don't reconstruct an AsyncOpenAI client on every
+# call — classify_chat_intent(), run_chat_completion(), and
+# stream_chat_completion_ui() all run on the hot path of every chat turn,
+# same reasoning memory_search.py's _openai_embed_client already uses (see
+# that module's identical comment). A fresh client per call meant a fresh
+# TCP/TLS connection to api.openai.com every turn instead of reusing a
+# keep-alive connection — see docs/sigmaris/
+# incident_response_latency_investigation.md 8.5(c)-2.
+_openai_client: AsyncOpenAI | None = None
+
+
 def _require_openai_client() -> AsyncOpenAI:
+    global _openai_client
     if not settings.openai_api_key:
         raise RuntimeError("OPENAI_API_KEY is not set for backend.")
-    return AsyncOpenAI(api_key=settings.openai_api_key)
+    if _openai_client is None:
+        _openai_client = AsyncOpenAI(api_key=settings.openai_api_key)
+    return _openai_client
 
 
 async def _persist_chat_messages_safely(
