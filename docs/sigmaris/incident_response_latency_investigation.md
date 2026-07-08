@@ -502,6 +502,248 @@ True, ...)`へ進む(`orchestrator/service.py`1196-1209行目)。したがって
 
 ---
 
+## 7. BA4後の追加調査(実測ログに基づく、2026-07-08)
+
+**本章はコードの変更を一切行っていない。調査・報告のみ。** 本番の記憶データ
+への書き込み・削除も一切行っていない(既存のコード・ドキュメント・運用者が
+貼り付けたログの確認のみ)。
+
+BA4(`docs/sigmaris/phase_ba4_report.md`、実務応答生成+人格変換の統合)完了
+後、運用者が取得した実測ログでは1リクエストあたり約20.3秒(旧36.4秒から改
+善)だった。一方で、(1)統合後の生成そのものが依然として重い区間(約8.3秒)
+と、(2)前回調査で発見した「11秒の空白」と同種の性質を持つ新しい約5.3秒の空
+白が残っていることが分かった。以下、運用者から提供された次のログ断片
+(`02:31:26.669`受信〜`02:31:46.998`invocation完了、実測合計**約20.3秒**)
+と、現行コード(`backend/app/services/chat.py`・`chat_routing.py`・
+`orchestrator/service.py`・`orchestrator/schedule_agent_client.py`・
+`orchestrator/response_guard.py`・`app/routes/agent.py`)を突き合わせて調査
+した。
+
+```
+02:31:26.669  リクエスト受信(POST /api/orchestrator/chat/stream)
+02:31:28.499  fact_items読込完了(493件)
+02:31:31.567  検索RPC・embedding完了、chat stream start
+02:31:31.833  chat stream context ready
+02:31:40.135  1回目のPOST https://api.openai.com/v1/responses 完了
+02:31:40.138  intent=general_chat と判定(routed)
+02:31:40.957  2回目のPOST https://api.openai.com/v1/responses 完了
+02:31:46.287  ★約5.3秒の空白★(次のログ: chat_threads取得)
+02:31:46.466  chat_threads更新(PATCH, version=45)
+02:31:46.587  chat_messages削除→再作成
+02:31:46.998  invocation完了
+```
+
+### 7.1 「約8.3秒の生成」の正体: 実は統合生成ではなく`classify_chat_intent()`
+
+**結論: `02:31:31.833`(context ready)から`02:31:40.135`(1回目のPOST完了)
+までの約8.3秒は、BA4で統合された実務+人格の生成そのものではなく、その前段
+にある意図分類(`chat_routing.py::classify_chat_intent()`)の、ヒューリステ
+ィック不一致によるLLM呼び出し1回分である。** BA4が統合した生成呼び出し自体
+は、この後の「2回目のPOST」以降(7.2節)である。
+
+根拠は次の通り、コードの実行順序とタイムスタンプの整合性から特定した:
+
+1. `chat.py::stream_chat_completion_ui()`のコード上の実行順序は、「chat
+   stream context ready」ログ(746〜751行目)→`client =
+   _require_openai_client()`(753行目、API呼び出しなし)→`route = await
+   classify_chat_intent(...)`(754行目)→「chat stream routed」ログ(760
+   行目)である。この2つのログの**間**に挟まっているのは`classify_chat_
+   intent()`の呼び出し1回のみで、他のOpenAI呼び出しは一切ない。
+2. `classify_chat_intent()`(`chat_routing.py`179〜261行目)は、まず
+   `heuristic_intent()`で軽量なルールベース判定を試み、一致すればLLM呼び出
+   しなしで即座に返す(この場合`source="heuristic"`)。**今回のログでは
+   `source`の記載はないが、「1回目のPOST」が実際に観測されている以上、今回
+   はヒューリスティックが一致せず、LLM呼び出し(243〜246行目、
+   `client.responses.create(model=model, input=[...])`、**`stream`指定なし
+   =非ストリーミング**)にフォールバックしたことが確定する。
+3. 前回調査(6.1節)で確立した通り、`stream=True`を指定しないOpenAI呼び出
+   しのhttpxログは、レスポンス本文を実際に読み切った**完了時点**で出力され
+   る。`classify_chat_intent()`の呼び出しはまさにこの非ストリーミング呼び
+   出しであるため、「1回目のPOST完了」(`40.135`)は、この呼び出しの**実際
+   の所要時間そのもの**を表している。
+4. 「1回目のPOST完了」から「intent=general_chat routed」ログまではわずか
+   **3ミリ秒**(`40.135`→`40.138`)であり、これは`classify_chat_intent()`
+   がOpenAI呼び出しの結果を受け取った直後に`json.loads()`で解釈し即座に
+   returnし、呼び出し元がその3ミリ秒後にログを出す、という処理内容と整合
+   する。もし「1回目のPOST」がBA4統合生成そのもの(`for _ in range(8):`
+   ループ内の`client.responses.create(..., stream=True)`)だとすると、その
+   呼び出しは`classify_chat_intent()`より**後**のコード位置にあるため、
+   「routed」ログより先に完了することは構造上あり得ない。この一点だけでも
+   「1回目のPOST」=`classify_chat_intent()`であることが確定する。
+
+**`classify_chat_intent()`は`settings.openai_model`(`gpt-5.4-mini`、通常会
+話・ルーティング用)を使用しており、BA4統合生成と同じモデル階層である
+(過大なモデルを使っているわけではない)。** それでも約8.3秒かかっている
+のは、直近8メッセージ分の文脈(`messages[-8:]`)+分類ルール一覧を含む非
+ストリーミング呼び出しの、モデル自体の処理時間と考えられる。**この処理
+は、BA4はもちろんBA1〜BA3のいずれによっても一切変更されておらず、Phase A
+以前から存在する既存実装である。** 前回調査(3.2節)は「classify_chat_
+intentは0〜1.0秒」と見積もり、6.2節の実測では「約3.03秒」だったが、今回は
+約8.3秒であり、**この呼び出しの所要時間は実行のたびに大きくばらつく(かつ
+全体的に増加傾向にある)** ことが分かる。加えて、この呼び出しは**非スト
+リーミングであるため、ユーザーには実行中一切何も見えない**(`chat.py`の
+`emit_status_delta`は`app/routes/agent.py`156行目付近の呼び出しで
+`emit_status_delta=False`に固定されており、確認中メッセージも出ない)。
+**BA4後の20.3秒のうち、最初に確定した約8.3秒がまるごとこの完全に無関係な
+既存処理に費やされている**、というのが本節の結論である。
+
+### 7.2 「約5.3秒の空白」の原因特定: BA4統合生成そのものの実処理時間(ただし今回はユーザーに見えている)
+
+**結論: `02:31:40.957`(2回目のPOST完了)から`02:31:46.287`(次のログ)まで
+の約5.3秒は、ツール呼び出しでもfact guardの実行時間でもなく、BA4で統合さ
+れた実務+人格の生成(`chat.py`の`for _ in range(8):`ループ内、1回目の
+`client.responses.create(..., stream=True)`)が実際にトークンを生成・スト
+リーミングしている、正味の生成時間である。**
+
+根拠:
+
+1. `route`確定(`intent=general_chat`)後、`chat.py`は`router_instruction`・
+   `system_prompt`の構築(文字列処理のみ、API呼び出しなし)を経て、879行目
+   の`for _ in range(8):`ループに入り、881行目で「chat stream model
+   request thread_id=... input_items=41 tools=[...]」をログ出力した直後
+   (887行目)に`stream = await client.responses.create(model=settings.
+   openai_model, instructions=system_prompt, input=response_input,
+   tools=enabled_tools, previous_response_id=previous_response_id,
+   stream=True)`を呼ぶ。**今度は`stream=True`が指定されている**ため、前回
+   調査で確立した通り、httpxのログは接続確立(レスポンスヘッダー受信)時
+   点で出力され、本文(SSEチャンク)を読み切った時点では別ログが出ない。
+   よって「2回目のPOST完了」(`40.957`)は**この統合生成呼び出しの接続確立
+   時点**であり、実際のトークン生成はここから始まる。
+2. ログには`02:31:46.287`まで(tool phase/execute等のログを含め)一切出力
+   がない。`chat.py`の`async for event in stream:`ループ(900〜920行目)
+   は、`response.output_text.delta`イベントを受け取るたびに`final_text`へ
+   蓄積し、SSEとして即座に`yield`する(913行目)のみで、**個々のdeltaを
+   ログに出力するコードは存在しない**。ツール呼び出しが発生した場合のみ
+   「chat stream tool phase/execute」ログ(922〜927・956〜960行目)が出る
+   が、今回のログにはこれらが一切登場しない。したがって、この5.3秒間に
+   ツール(`read_home_context`等)は呼ばれておらず、`intent=general_chat`
+   (雑談的な質問でツール不要)という判定結果とも整合する。
+3. ループを抜けた直後(1221〜1228行目、`orchestrator/service.py`)で呼ば
+   れる`compare_response_to_tool_outputs()`(BA4で新設、事実確認guard)
+   は、`response_guard.py`159〜186行目を確認したところ**同期関数(`async
+   def`ですらない)で、正規表現/集合演算のみを行いLLM呼び出しを一切含まな
+   い**。`tool_events`が空(今回はツール未使用)の場合は`source_text`が空
+   文字列となり172〜173行目で即座にreturnする。このguardの実行時間はマイ
+   クロ秒オーダーであり、5.3秒の空白には実質的に寄与していない。
+4. `02:31:46.287`の直後に現れる「`chat_threads`取得」以降のログは、
+   `_persist_chat_messages_safely()`→`replace_chat_messages()`(メッセージ
+   永続化)の開始そのものであり、これは`async for event in stream:`ループ
+   が`response.completed`イベントを受けて終了した後にしか到達しない処理で
+   ある。したがって`46.287`時点で統合生成は既に完了していたことが確定する。
+
+**旧「11秒の空白」との関係: 根本原因は同じ(ストリーミング呼び出しは接続確
+立時にのみログが出る)だが、ユーザー体感としての性質は異なる。**
+
+- 旧アーキテクチャ(BA4以前)では、`orchestrator/service.py`の`run_
+  orchestrator_chat_stream()`は`chat.py`から届く`event.delta`を
+  `schedule_text += event.delta`として**蓄積するだけでユーザーへyieldしな
+  かった**(6.1節)。その後、完全に別のLLM生成である`rewrite_with_persona_
+  stream()`が実務応答の全文確定後に初めて開始され、その最初のdeltaでよう
+  やくユーザーに文字が見え始めていた。つまり旧「11秒の空白」は、**ログに
+  も出ず、ユーザーにも一切見えない**、二重の意味での空白だった。
+- BA4後の現行コードを確認したところ、`run_orchestrator_chat_stream()`
+  (1188〜1213行目)は`call_schedule_agent_stream()`から届く`event.delta`
+  を**受け取った直後に`OrchestratorStreamEvent(delta=...)`として即座に
+  yield**している(1209〜1213行目、BA4報告書8章で言及された「delta即時中
+  継」への回帰がそのまま現行コードに残っていることを確認)。さらにその手
+  前、HTTP境界をまたぐ2箇所——`orchestrator/schedule_agent_client.py::
+  call_schedule_agent_stream()`(289〜305行目、`aiter_lines()`で1行読むご
+  とに即yield)と`app/routes/agent.py::agent_chat_stream()`の`_generate()`
+  (191〜210行目、`upstream`から1チャンク受け取るごとに即yield)——も、いず
+  れも受信した内容をバッファリングせず即座に中継する実装になっていること
+  をコードで確認した。**したがって、今回の5.3秒間、ログには何も残らない
+  ものの、ユーザーの画面上では(OpenAI側が実際にトークンを生成し次第)文
+  字が随時ストリーミングされていたはずである。**
+- ただし、この最後の一点(「ユーザー側で実際に体感として途切れなく文字が
+  流れていたか」)は、**サーバーの構造化ログのみからは確認できない**。ロ
+  グにはdelta単位のタイムスタンプが残らないため、OpenAI側が実際に最初の
+  トークンを返すまでの時間(time-to-first-token)がこの5.3秒のうちどの程
+  度を占め、そこから先どれだけ滑らかに(あるいは断続的に)後続トークンが
+  届いたかは、今回のログからは判別できない。この点は断定を避け、「コード
+  上はバッファリングされていないことが確認できた」という事実と、「実際の
+  体感を保証するものではない」という限界を分けて報告する。
+
+### 7.3 `fact_items`取得件数の増加が処理時間に与える影響
+
+**今回の実測トレースにおいては、493件への増加が明確なボトルネックになって
+いる証拠は見られなかった。** リクエスト受信(`26.669`)からfact_items読込
+完了(`28.499`)までは約1.83秒であり、前回調査(383件)の`_cached_fact_
+items`区間(gather後・直列、約0.83秒)と単純比較はできないものの(並列
+gather区間の内訳が異なるため)、極端な悪化は見られない。これは`docs/
+sigmaris/phase_ba2_report.md`で実施されたembedding列除外(`FACT_ITEM_
+SELECT`、768次元ベクトルを転送・パース対象から除外)の効果によるものと考
+えられる。
+
+一方で、**設計として件数に比例して重くなる構造は変わっていない**ことを
+コードで確認した:
+
+- `orchestrator/service.py::_cached_fact_items()`(222〜238行目)は、
+  `get_fact_items(jwt, active_only=True)`で**LIMIT指定なしに該当ユーザーの
+  全アクティブfact行を毎回取得**する(300秒TTLキャッシュはあるが、キャッ
+  シュミス時は常に全件取得)。
+- `user_fact_data.py::build_facts_context()`は、取得した全件に対して
+  `importance_score × confidence`でのソート(O(n log n))を行い、上位5件
+  のみを使用する。ソート自体は軽量だが、**「上位5件のために毎回全件を取得
+  してPython側でソートする」という設計自体が、記憶件数に比例してネット
+  ワーク転送量・JSONパース時間を増加させ続ける**。
+- Phase B-archロードマップのBA3(Memory Snapshot方式)は、B14・B16・B6・
+  B9由来の集約情報(判断傾向・目標整合性・話題・関係性)を週次バッチで
+  1つのSnapshotにまとめ、会話中はそれを読むだけにする設計を既に導入済み
+  (`_cached_memory_snapshot()`、180〜198行目)である。**しかし`_cached_
+  fact_items()`(生のfact行そのもの、facts_ctx用・決定/エピソード検出用)
+  は、このBA3のSnapshot化の対象に含まれておらず、今回の調査でも変更され
+  ていないことを確認した。**
+
+**今後の懸念として記録**: 現状(493件)では顕著な問題は見られないが、記憶
+件数がさらに大きく増加した場合(例えば数千件規模)、`_cached_fact_items()`
+の全件取得・全件ソートは応答経路上の直列区間の一部であるため、いずれ無視
+できない遅延要因になりうる。BA3のSnapshot方式の対象を、集約情報だけでなく
+「facts_ctx用の上位N件」のような**事前計算済みの軽量版**にも広げることが、
+将来の対応候補になる(実装はしない、方針のみ7.5節に記載)。
+
+### 7.4 `chat_messages`全削除→全INSERT方式について
+
+`02:31:46.466`(chat_threads更新PATCH、version=45)から`02:31:46.998`
+(invocation完了)までは約0.532秒であり、このうち`02:31:46.587`
+(chat_messages削除→再作成のログ)から完了までは約0.411秒だった。この
+0.411秒には、`app_chat_data.py::replace_chat_messages()`内の
+`rest_delete`(全削除)・`rest_insert`(全件再作成)に加えて、
+`orchestrator/audit.py::finish_invocation()`の監査ログ更新も含まれている
+(3つの処理の内訳はログの粒度からは分離できない)。
+
+この全削除→全再作成方式自体(1ターンごとに、スレッド内の全メッセージを一
+度DELETEしてから全件INSERTし直す)は、Phase A4以前から指摘されている既存
+設計であり、BA4後の実測でも変わらず発生していることを確認した。今回の実測
+では約0.4秒程度(監査ログ更新込み)であり、他の区間(8.3秒・5.3秒)と比較
+すると相対的に小さい。ただし、これも(7.3節のfact_itemsと同様)**スレッド
+内のメッセージ数に比例して重くなる設計**である点は変わっておらず、長期間
+同一スレッドで会話を続けた場合の将来的な懸念として記録するに留める(実装
+はしない)。
+
+### 7.5 次に着手すべき改善の方針案(実装はしない、優先度順)
+
+実測により、BA4完了後の約20.3秒のうち、**最大の要因は`classify_chat_
+intent()`(約8.3秒、既存実装・BA1〜4未着手)であり、次いでBA4統合生成その
+ものの正味処理時間(約5.3秒、ただしユーザーには見えている)** であること
+が判明した。これを踏まえ、次の優先順位を提案する。
+
+| 優先度 | 内容 | 根拠 |
+|---|---|---|
+| **1**(新規、最大の効果) | `classify_chat_intent()`の見直し | 実測で全体の約4割(8.3秒/20.3秒)を占め、かつユーザーには完全に不可視の非ストリーミング呼び出しである。前回調査(6.5節、旧優先度2)が既に指摘していたが、BA1〜4のいずれでも対応されていない。方針候補: (a) ヒューリスティック(`heuristic_intent()`)のカバレッジを広げ、LLM呼び出し自体を減らす、(b) LLM呼び出しが必要な場合でも、BA4統合生成と同じ`client.responses.create`呼び出しに`intent`判定を統合し(例えば統合生成の冒頭で軽く自己申告させる、またはtools選定をLLM任せにする等)、非ストリーミングの別呼び出しそのものを廃止する、(c) 記憶コンテキスト構築(`_build_memory_context`)と並列実行し、直列区間から外す。(c)は前回調査から実装難度が低いと見込まれていたが、依然未着手。 |
+| **2** | BA4統合生成(`client.responses.create`)の入力量削減・レスポンス即応性向上 | Phase A1の`sigmaris_recent_message_window`(40件、`config.py`)+最新発話1件=`input_items=41`が毎回モデルに送られており、かつ`chat.py`は`previous_response_id`を毎回`None`にリセットしているため(Phase A1の設計、6.1節参照)、OpenAI側のプロンプトキャッシュ・レスポンスチェーンの恩恵を一切受けられず、41件分の文脈を**毎ターン最初から**処理させている。ウィンドウ件数の妥当性再検討、または`previous_response_id`チェーンを活かせる設計への変更(Phase A1の「スレッド横断」という目的とは両立しない可能性があり、要再設計)を検討する価値がある。 |
+| **3** | `_cached_fact_items()`のSnapshot化(BA3の対象拡大) | 現状は顕著な問題ではないが(7.3節)、記憶件数に比例して重くなる設計上の負債であり、BA3の週次Snapshotの対象に「facts_ctx用の事前計算済み上位N件」を追加することで、会話中の全件取得・全件ソートを解消できる可能性がある。 |
+| **4** | フロントエンドへの中間フィードバックの検討 | `classify_chat_intent()`実行中(最大8秒超)、ユーザーには何も表示されない(`emit_status_delta=False`)。優先度1の抜本対応が難しい場合の緩和策として、非ストリーミング呼び出し中であっても軽量な「考え中」表示を出す(バックエンドの`emit_status_delta`を状況に応じて`True`にする、等)ことで、体感速度を改善できる可能性がある。ただし本調査はバックエンド側コードの確認に留めており、フロントエンド側で独自のローディング表示が既にあるかどうかは未確認(範囲外)。 |
+
+**優先度1が突出して効果が大きいと考えられる**理由: 8.3秒はBA1〜BA4のいず
+れの対象にもなっていない、Phase A以前からの既存実装であり、かつBA4の本来
+の狙い(二段階LLM生成の統合)が達成された結果、**相対的に最も目立つ残存要
+因になった**。BA4着手前の36秒トレースでは、この呼び出しは他の巨大な要因
+(11秒の空白+10秒のpersona rewrite)に埋もれて目立たなかったが、BA4完了
+後の20.3秒トレースでは全体の4割を占める、最も明確に単離できるボトルネック
+になっている。
+
+---
+
 ## Related Documents
 
 - `docs/sigmaris/phase_a1_report.md`(スレッド横断ログウィンドウの設計意図)
@@ -515,3 +757,9 @@ True, ...)`へ進む(`orchestrator/service.py`1196-1209行目)。したがって
   facts_ctx/trends_ctx上書き問題の修正報告)
 - `docs/sigmaris/phase_b3_report.md`(`get_inquiry_question`のタイムアウト
   設計)
+- `docs/sigmaris/phase_b_arch_roadmap.md`(BA1〜BA5のサブフェーズ構成、7章
+  の調査対象)
+- `docs/sigmaris/phase_ba1_report.md`・`docs/sigmaris/phase_ba2_report.md`
+  (BA1・BA2の実施報告)
+- `docs/sigmaris/phase_ba4_report.md`(応答生成の統合、7章が実測で検証した
+  対象そのもの)
