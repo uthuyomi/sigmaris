@@ -25,6 +25,16 @@ class TaskType(str, enum.Enum):
     MEMORY_RERANK = "memory_rerank"
     ABSTENTION_REACTION_DETECTION = "abstention_reaction_detection"
     EVAL_GENERATION = "eval_generation"
+    # chat_routing.py::classify_chat_intent() — a dedicated type rather than
+    # reusing TaskType.ROUTING (see docs/sigmaris/
+    # incident_response_latency_investigation.md 11.1 for the rationale):
+    # this call is a hot-path, per-turn classification that was the subject
+    # of its own multi-section latency investigation, so it gets the same
+    # "one TaskType per distinct classification concern" treatment already
+    # given to DECISION_DETECTION/EPISODE_DETECTION/TOPIC_DETECTION/etc.,
+    # rather than folding into ROUTING's existing grab-bag of unrelated
+    # one-off callers (active_inquiry.py, memory_validator.py, x_*.py).
+    CHAT_INTENT_CLASSIFICATION = "chat_intent_classification"
 
 
 _LOCAL_TASK_TYPES = {
@@ -39,6 +49,7 @@ _LOCAL_TASK_TYPES = {
     TaskType.MEMORY_RERANK,
     TaskType.ABSTENTION_REACTION_DETECTION,
     TaskType.EVAL_GENERATION,
+    TaskType.CHAT_INTENT_CLASSIFICATION,
 }
 
 
@@ -133,6 +144,7 @@ def _openai_model_for_task(task: TaskType) -> str:
         TaskType.QUERY_DECOMPOSITION,
         TaskType.MEMORY_RERANK,
         TaskType.ABSTENTION_REACTION_DETECTION,
+        TaskType.CHAT_INTENT_CLASSIFICATION,
     }:
         return settings.openai_nano_model
     return settings.openai_model

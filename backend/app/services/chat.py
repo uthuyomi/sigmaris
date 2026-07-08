@@ -491,8 +491,6 @@ async def run_chat_completion(
 
     client = _require_openai_client()
     route = await classify_chat_intent(
-        client=client,
-        model=settings.openai_model,
         messages=messages,
         attachment_facts=attachment_facts,
     )
@@ -766,8 +764,6 @@ async def stream_chat_completion_ui(
 
     client = _require_openai_client()
     route = await classify_chat_intent(
-        client=client,
-        model=settings.openai_model,
         messages=messages,
         attachment_facts=attachment_facts,
     )
