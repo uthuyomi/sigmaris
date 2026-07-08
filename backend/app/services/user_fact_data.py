@@ -77,6 +77,42 @@ async def get_fact_items(
     return result if isinstance(result, list) else []
 
 
+async def get_fact_items_with_embeddings(
+    jwt: str,
+    *,
+    active_only: bool = True,
+) -> list[dict[str, Any]]:
+    """Returns user_fact_items rows *including* the embedding column —
+    a deliberate, narrowly-scoped exception to FACT_ITEM_SELECT's exclusion
+    of `embedding` (Phase BA2, see that constant's comment). BA2 excluded
+    embedding because no general-purpose caller ever read it back into
+    Python (all vector search happens server-side via the search_fact_
+    memory RPC); Phase C-full-2's SB-3 (memory_duplicate_rate) is the first
+    caller that genuinely needs the raw vectors client-side, to compute
+    all-pairs cosine similarity across a user's whole fact set at once —
+    something the existing RPCs aren't shaped for (they rank one query
+    embedding against the corpus, not corpus-against-itself). This is an
+    occasional, offline eval-script read, not a per-chat-turn hot path, so
+    the transfer/parse cost BA2 was optimizing away is an acceptable
+    trade-off here.
+
+    Each row's "embedding" value comes back from PostgREST as either a
+    JSON array or (depending on pgvector/PostgREST version) a bracket
+    string like "[0.1,0.2,...]" — both are valid JSON, so callers should
+    parse it with json.loads() if it's a str. See eval_metrics.py's
+    compute_memory_duplicate_rate() for where that parsing happens.
+    """
+    params: dict[str, str] = {
+        "select": f"{FACT_ITEM_SELECT},embedding",
+        "order": "category.asc,key.asc",
+    }
+    if active_only:
+        params["is_deleted"] = "eq.false"
+        params["is_stale"] = "eq.false"
+    result = await rest_select(jwt, "user_fact_items", params)
+    return result if isinstance(result, list) else []
+
+
 async def get_fact_items_for_user(
     user_id: str,
     *,

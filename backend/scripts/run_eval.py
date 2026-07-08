@@ -108,11 +108,22 @@ async def _main(args: argparse.Namespace) -> None:
     print(f"response_error_rate : {_fmt(result['response_error_rate'])}"
           f"{_fmt_delta(result['response_error_rate'], previous.get('response_error_rate') if previous else None)}"
           f"  (直近{args.error_window_days}日, n={result['response_sample_size']})")
+    print(f"memory_duplicate_rate: {_fmt(result['memory_duplicate_rate'])}"
+          f"{_fmt_delta(result['memory_duplicate_rate'], previous.get('memory_duplicate_rate') if previous else None)}"
+          f"  (重複{result['duplicate_fact_count']}件/{result['duplicate_cluster_count']}クラスタ, "
+          f"embedding有{result['duplicate_facts_with_embedding']}/{result['duplicate_total_facts']}件)")
     print("=" * 60)
 
     if result["skipped_entry_ids"]:
         print(f"\n注意: 正解factが現在見つからず採点できなかった設問 {len(result['skipped_entry_ids'])} 件: "
               f"{result['skipped_entry_ids']}")
+
+    if result["duplicate_clusters"]:
+        print(f"\n重複候補クラスタ ({len(result['duplicate_clusters'])}件、類似度降順):")
+        for cluster in result["duplicate_clusters"][:10]:
+            print(f"  類似度{cluster['max_similarity']:.3f}: {cluster['fact_ids']}")
+        if len(result["duplicate_clusters"]) > 10:
+            print(f"  ...他 {len(result['duplicate_clusters']) - 10} クラスタ(詳細はsigmaris_eval_runs.detailsを参照)")
 
     if args.dry_run:
         print("\n--dry-run のため sigmaris_eval_runs には記録していません。")
@@ -127,8 +138,17 @@ async def _main(args: argparse.Namespace) -> None:
         rag_ndcg_score=result["rag_ndcg_score"],
         response_error_rate=result["response_error_rate"],
         response_sample_size=result["response_sample_size"],
+        memory_duplicate_rate=result["memory_duplicate_rate"],
+        duplicate_fact_count=result["duplicate_fact_count"],
+        duplicate_cluster_count=result["duplicate_cluster_count"],
         notes=args.notes,
-        details={"per_query": result["per_query"], "skipped_entry_ids": result["skipped_entry_ids"]},
+        details={
+            "per_query": result["per_query"],
+            "skipped_entry_ids": result["skipped_entry_ids"],
+            "duplicate_clusters": result["duplicate_clusters"],
+            "duplicate_total_facts": result["duplicate_total_facts"],
+            "duplicate_facts_with_embedding": result["duplicate_facts_with_embedding"],
+        },
     )
     if run_id:
         print(f"\n✓ sigmaris_eval_runs に記録しました (id={run_id})")

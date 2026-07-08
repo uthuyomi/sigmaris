@@ -1,9 +1,11 @@
-# 役割: Phase C-mini「最小評価基盤」のオーケストレーション。
+# 役割: Phase C-mini「最小評価基盤」+ Phase C-full SB-3のオーケストレーション。
 #
 # backend/eval/testset.json を読み込み、実際に本番と同じ検索経路
 # (memory_search.search_relevant_memories — Phase A5でLOCAL_LLM_ENABLEDに
 # よらず機能するよう修正済み)にかけてmemory_f1_score/rag_ndcg_scoreを、
 # agent_invocation_audit_logsの集計でresponse_error_rateを算出する。
+# Phase C-full-2でmemory_duplicate_rate(SB-3)も同じ実行の中で算出する
+# (docs/sigmaris/phase_c_full_report.md参照)。
 #
 # 【重要】これらは内部テストセットに基づく社内指標であり、対外的な客観
 # ベンチマーク(LongMemEval/LoCoMo等)ではない。Phase B群の各機能の効果を
@@ -11,6 +13,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from datetime import UTC, datetime, timedelta
 from typing import Any
@@ -18,11 +21,12 @@ from typing import Any
 from app.services.eval_metrics import (
     RetrievalResult,
     aggregate_retrieval_scores,
+    compute_memory_duplicate_rate,
     compute_response_error_rate,
 )
 from app.services.memory_search import search_relevant_memories
 from app.services.supabase_rest import rest_select
-from app.services.user_fact_data import get_fact_items
+from app.services.user_fact_data import get_fact_items, get_fact_items_with_embeddings
 
 logger = logging.getLogger(__name__)
 
@@ -51,11 +55,19 @@ async def run_eval(
     search_limit: int = 5,
     error_window_days: int = 7,
 ) -> dict[str, Any]:
-    """Run the 3 Phase C-mini metrics against a loaded testset dict
-    (backend/eval/testset.json's parsed contents)."""
+    """Run the 3 Phase C-mini metrics + SB-3 (memory_duplicate_rate) against
+    a loaded testset dict (backend/eval/testset.json's parsed contents)."""
     entries = testset.get("entries", [])
 
-    fact_items = await get_fact_items(jwt, active_only=True)
+    # fact_items (no embedding, BA2-trimmed) is used for the retrieval
+    # scoring key_to_id map below; fact_items_with_embeddings (a separate
+    # fetch — see that function's docstring for why it can't reuse the same
+    # BA2-trimmed select) is only for SB-3's duplicate clustering. Run
+    # concurrently since they're independent reads.
+    fact_items, fact_items_with_embeddings = await asyncio.gather(
+        get_fact_items(jwt, active_only=True),
+        get_fact_items_with_embeddings(jwt, active_only=True),
+    )
     key_to_id = {
         f"{item.get('category')}/{item.get('key')}": item["id"]
         for item in fact_items
@@ -90,6 +102,8 @@ async def run_eval(
     statuses = await _fetch_recent_audit_statuses(jwt, user_id, days=error_window_days)
     error_rate, sample_size = compute_response_error_rate(statuses)
 
+    duplicate_result = compute_memory_duplicate_rate(fact_items_with_embeddings)
+
     return {
         "run_at": datetime.now(UTC).isoformat(),
         "testset_version": testset.get("generated_at"),
@@ -103,5 +117,13 @@ async def run_eval(
         "response_error_rate": error_rate,
         "response_sample_size": sample_size,
         "response_error_window_days": error_window_days,
+        "memory_duplicate_rate": duplicate_result.memory_duplicate_rate,
+        "duplicate_total_facts": duplicate_result.total_facts,
+        "duplicate_facts_with_embedding": duplicate_result.facts_with_embedding,
+        "duplicate_fact_count": duplicate_result.duplicate_fact_count,
+        "duplicate_cluster_count": duplicate_result.duplicate_cluster_count,
+        "duplicate_clusters": [
+            {"fact_ids": c.fact_ids, "max_similarity": c.max_similarity} for c in duplicate_result.clusters
+        ],
         "per_query": aggregate.per_query,
     }
