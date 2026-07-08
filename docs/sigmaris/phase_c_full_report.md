@@ -487,9 +487,257 @@ overall_accuracy    : 1.000
 
 ---
 
+## 8. Phase C-full-2: SB-3(記憶重複率)・SB-7(改善サイクル伸び率基盤)
+
+対象ブランチ: `phase-c-full-2-sb3-sb7`(mainからfork)。
+
+Phase C-mini(SB-1・SB-2・SB-4)・Phase C-full-1(公開ベンチマーク)に続き、
+`sigmaris_roadmap.md`のSB-1〜7のうち残るSB-3(memory_duplicate_rate)を
+実装し、SB-7(improvement_cycle_gain)は記録基盤のみを用意した。SB-5・
+SB-6は測定対象の機能自体が存在しないため意図的に未実装のままとした。
+
+### 8.1 SB-3の実装詳細
+
+**重複の定義**: `user_fact_items`は`(user_id, category, key)`にUNIQUE
+制約があるため、同一category/keyの行が2つ存在することはあり得ない。
+ここで言う「重複」は、**異なるcategory/keyの行が実質的に同じ主張をして
+いる**状態(例: 抽出時の判断揺れで、ある回は`preferences/favorite_
+color`、別の回は`lifestyle/color_preference`として同じ「好きな色」が
+別々の行に記録されるケース)を指す。この定義自体、B1のスキーマ
+(UNIQUE制約)を読んで初めて明確になった、実装前提の確認事項である。
+
+**B1との連携方法**: `search_fact_memory` RPC(B1のベクトル検索)は
+「1つのクエリベクトル vs コーパス」の形にしか対応していないため直接は
+呼べないが、そのRPCが使っている類似度の定義(`1 - cosine_distance`
+= 標準的なコサイン類似度、`202607150037_time_aware_search.sql`で確認
+済み)を、全ペア(コーパス vs コーパス自身)に適用する形でそのまま再利用
+した。新しい類似度アルゴリズムは導入していない。具体的には:
+
+1. `user_fact_data.get_fact_items_with_embeddings()`(新設)で、B1が
+   既に生成・保存済みの`embedding`列(768次元pgvector)を含めて全アク
+   ティブfactを1回のSELECTで取得する。**Phase BA2が`FACT_ITEM_SELECT`
+   から`embedding`列を意図的に除外した**ことは把握した上で、この読み取
+   りだけは例外的にembeddingを取得する必要があると判断した(判断根拠:
+   BA2の除外は「どのgeneral-purpose callerもembeddingを読み返していな
+   かった」ことが前提であり、SB-3はその前提が初めて崩れる、正当な例外
+   ケースである。ホットパスではなく評価スクリプトからの、頻度の低い呼び
+   出しであるため、BA2が避けようとした転送・パースコストの影響は許容範
+   囲と判断した)。
+2. `eval_metrics.compute_memory_duplicate_rate()`(新設、純粋関数)が、
+   取得したembeddingどうしの全ペアのコサイン類似度をPython側で計算する
+   (numpy等の新規依存は追加せず、標準ライブラリの`math`のみで実装)。
+   類似度が閾値以上のペアをUnion-Findで連結成分(クラスタ)にまとめる。
+
+**算出式の判断根拠**: 「全記憶に対する重複ペアの割合」ではなく、
+**「完全に重複排除した場合に削除される件数の割合」**を採用した:
+```
+memory_duplicate_rate = Σ(クラスタサイズ - 1、サイズ2以上のクラスタのみ) / 総アクティブfact数
+```
+3件が相互に重複しているクラスタをペア単位(3ペア)で数えると、重複の
+実態(「1件残せば済む」= 2件が無駄)より過大に見えてしまう。「このクラ
+スタから1件だけ残せば済む」という無駄を数える方が、roadmap記載の目標
+(「3%以下」)という**bounded[0,1)の比率**としての意図に近いと判断した。
+分母はembeddingの有無を問わず全アクティブfactとした(embedding未生成分
+は判定対象から除外されるため、実際より低い値が出る=安全側のバイアスで
+あることを明記する。`update_fact_embeddings()`(B1既存)で事前にバック
+フィルすることを推奨)。
+
+**類似度の閾値**: `DEFAULT_DUPLICATE_SIMILARITY_THRESHOLD = 0.92`
+(`eval_metrics.py`)。B1の検索デフォルト閾値0.7は「このクエリと無関係で
+はない」という緩い関連性の基準であり、「これは同じ事実の言い換えだ」と
+いう、はるかに厳しい基準には流用できないと判断し、大きく引き上げた。
+0.92という具体的な値自体は、実LLM/embedding環境での実測による検証はで
+きていない(0章の制約と同じ)ヒューリスティックであり、見逃し(実際は重
+複なのに検出できない)より誤検出(実際は別の事実なのに重複と判定してし
+まう)を避ける、安全側に倒した選択である。実測後に調整の余地があること
+を7章の申し送りに記載する。
+
+**`run_eval.py`への統合**: `eval_runner.run_eval()`が
+`get_fact_items_with_embeddings()`と`compute_memory_duplicate_rate()`を
+呼び、結果を既存の返り値dictに追加(既存の`memory_f1_score`等の計算とは
+独立、`asyncio.gather`で並行取得)。`run_eval.py`の標準出力に
+`memory_duplicate_rate`を他の指標と並べて表示し、重複候補クラスタの一覧
+(類似度降順、上位10件)も表示する。`eval_runs_store.record_eval_run()`
+にも`memory_duplicate_rate`/`duplicate_fact_count`/
+`duplicate_cluster_count`を追加した(マイグレーション
+`202607210043_sigmaris_eval_runs_sb3.sql`、既存の`sigmaris_eval_runs`
+テーブルへのALTER TABLE、未適用)。
+
+**新規テーブルにしなかった理由**: Phase C-full-1の`sigmaris_bench_runs`
+とは異なり、SB-3は`sigmaris_eval_runs`にそのまま列追加した。判断根拠:
+SB-3は同じ`run_eval.py`の同じ実行の中で、同じアクティブfactスナップ
+ショットに対して計算され、同じCLI出力行に他の3指標と並んで表示される
+「もう1つの内部指標」であり、「社内指標 vs 対外的な客観ベンチマーク」
+というC-full-1で新テーブルを切った理由(構造的に一目で区別できるように
+する)に該当しない。
+
+### 8.2 SB-7の記録基盤の設計詳細
+
+指示書の要件通り、**呼び出し元(Phase Dの改良提案エンジン)は実装して
+いない**。用意したのは以下の2点のみ。
+
+1. **`improvement_cycle_metrics.compute_improvement_cycle_gain()`**
+   (純粋関数、I/Oなし): 指標名をキーとする2つのスナップショット
+   (before/after)を受け取り、単一の伸び率に集約する。SB-1・SB-2
+   (高いほど良い)とSB-4・SB-3(低いほど良い)の**極性の違いを吸収**
+   し、常に「正の値=改善」に正規化してから、対象となった指標の**単純
+   平均**を`overall_gain_pct`とする。判断根拠: SB-1〜SB-6は単位・スケー
+   ルがバラバラなため、パーセント変化という無次元量に揃えるのが最も単純
+   で説明しやすい。重み付け(例: memory_f1_scoreを重視する等)は、実際
+   に改善サイクルが動き出しグッドハート化の傾向等の知見が蓄積してから検
+   討すべきであり、現時点で恣意的な重みを入れないことを優先した(判断根
+   拠)。SB-5(`curiosity_relevance_score`)・SB-6
+   (`self_diagnosis_accuracy`)の指標名は、対象機能が未実装であっても
+   **極性(高いほど良い)だけは先に登録**しておいた — 将来これらが実装
+   された際、この関数を変更せずにそのまま使えるようにするため。
+2. **`improvement_cycle_store.py`**(`record_improvement_cycle()`/
+   `get_recent_improvement_cycles()`、`sigmaris_eval_runs`/
+   `sigmaris_bench_runs`と同じservice_role専用RLS・ベストエフォート書き
+   込みパターン): `cycle_label`(変更の短い識別名)・
+   `change_description`(変更内容の説明文)・`before_metrics`/
+   `after_metrics`(指標スナップショット、jsonb)・`overall_gain_pct`・
+   `metric_gains`(指標別内訳、jsonb)・`skipped_metrics`・`notes`を記録
+   する。新規テーブル`sigmaris_improvement_cycles`
+   (`202607210044_sigmaris_improvement_cycles.sql`、未適用)。
+
+**jsonbカラムを選んだ理由**(`sigmaris_eval_runs`の固定列方式とは異な
+る): SB-3のように将来的に指標の**種類自体が増える**(SB-5・SB-6が実装
+された時点等)ことが分かっているテーブルであり、指標が増えるたびに
+ALTER TABLEするより、jsonbでスナップショットごと保存する方が、Phase D
+側の実装を待たずに将来のどんな指標セットにも対応できる。この設計判断は
+マイグレーションファイル自体のコメントにも明記した。トレードオフとして
+型付き列でのSQLクエリはできなくなるが、現時点でこのテーブルを
+プログラム的にクエリするコードは存在しない(呼び出し元自体が未実装のた
+め)ため、実害はないと判断した。
+
+### 8.3 SB-5・SB-6の未実装理由の明記箇所
+
+`docs/sigmaris/sigmaris_roadmap.md`の「C1. シグマリス独自指標」節
+(SB-1〜7の一覧)に、各指標の実装状況(実装済み/意図的に未実装/基盤の
+み用意済み)を直接注記する形で追記した。SB-5・SB-6については、対象機能
+(Curiosity Engine、自己改良システムの自己診断機構)が存在しないため測
+定しようがないこと、対象機能の実装時に別タスクとして着手すべきことを明
+記し、リスト末尾に「指標一覧から欠けていることについて」という独立した
+注記も加えた(将来「指標が抜けている」と問題視された際に、この経緯へた
+どり着けるようにするため)。
+
+### 8.4 テスト結果
+
+`backend/tests/`には未コミット(既存方針を踏襲、スクラッチテストのみ)。
+実モデルAPI・実Supabase接続へのアクセスは行っていない。
+
+- **`compute_memory_duplicate_rate()`(11件)**: 意図的に重複させた埋め
+  込みベクトル(コサイン類似度がほぼ1.0になるよう構成)で重複が正しく検
+  出されること、重複のない(直交ベクトルの)テストデータで0に近い値
+  (実際には厳密に0.0)を返すこと、3件が相互重複するクラスタが「2件の
+  超過」として数えられること(ペア数の3ではない)、既定閾値(0.92)未満
+  では検出されないこと・カスタム閾値が反映されること、embeddingが欠落
+  した項目が母数には残るが判定対象からは除外されること、文字列エンコー
+  ドされたembedding(PostgRESTからの想定される戻り値形式)が正しく
+  パースされること、不正な文字列は「embeddingなし」として安全に扱われ
+  ること、空入力・単一件でクラッシュしないことを確認した。
+- **`compute_improvement_cycle_gain()`(10件)**: 高いほど良い指標・低い
+  ほど良い指標それぞれで、改善時に正のpct_change、悪化時に負の
+  pct_changeとなること(極性の吸収が正しいことの直接確認)、複数指標の
+  単純平均が正しく計算されること、未登録の指標名・片側欠損・値がNone・
+  beforeが0(ゼロ除算)がいずれもクラッシュせずskipped_metricsに記録さ
+  れること、空スナップショットで0.0を返すこと、SB-5/SB-6の指標名が
+  (未実装のままでも)極性登録済みで正しく計算できることを確認した。
+- **`get_fact_items_with_embeddings()`(3件)**: `select`パラメータに
+  `embedding`が含まれ`FACT_ITEM_SELECT`をベースにしていること、
+  `active_only`の有無でフィルタが正しく切り替わること。
+- **`improvement_cycle_store.py`(4件)**: レコードの書き込み・取得が正
+  しいペイロード/パラメータで行われること、`SUPABASE_SERVICE_ROLE_KEY`
+  未設定時に例外を投げず`None`を返すこと(要件2の「テストデータで正しく
+  書き込み・読み込みできることを確認する」に対応)。
+- **`eval_runner.run_eval()`とのSB-3統合(2件)**: 既存のC-mini指標
+  (`memory_f1_score`等)が引き続き返り値に含まれること(要件4、回帰確
+  認)、SB-3の各フィールドが正しい値で返り値に追加されていること。
+- **`eval_runs_store.record_eval_run()`のSB-3拡張(2件)**: 新規引数が
+  ペイロードに正しく含まれること、省略時は`None`で後方互換であること。
+- **`run_eval.py`のCLI出力確認(1件)**: 実際のスクリプトの`_main()`を
+  `--dry-run`で実行し、標準出力に`memory_duplicate_rate`・重複クラスタ
+  一覧が実際に表示されることを確認した。
+
+```
+16 passed (既存の回帰テスト、backend/tests/、変更なし)
+33 passed (本タスクの新規テスト)
+= 49 passed
+```
+
+Phase BA2の`FACT_ITEM_SELECT`関連の既存スクラッチテスト(6件)も再実行
+し、`user_fact_data.py`への変更(新規関数の追加のみ)が既存の`get_fact_
+items`等に影響していないことを確認した。
+
+### サンプル出力(モックデータでの実行結果)
+
+```
+評価実行中... testset=...\testset.json (1件)
+
+============================================================
+Phase C-mini 内部評価指標 (客観ベンチマークではない社内指標)
+============================================================
+testset_size       : 1 (評価対象 1件, skip 0件)
+memory_precision    : 1.000
+memory_recall       : 1.000
+memory_f1_score     : 1.000
+rag_ndcg_score      : 1.000
+response_error_rate : 0.100  (直近7日, n=10)
+memory_duplicate_rate: 0.333  (重複1件/1クラスタ, embedding有3/3件)
+============================================================
+
+重複候補クラスタ (1件、類似度降順):
+  類似度1.000: ['fact-color-a', 'fact-color-b']
+
+--dry-run のため sigmaris_eval_runs には記録していません。
+```
+
+（`fact-laptop`・`fact-color-a`・`fact-color-b`という3件のモック事実の
+うち、後者2件を意図的に近似ベクトルにして重複として検出させたもの。
+実際のスコアではない。)
+
+### 8.5 気づいた懸念点・Phase D〜H着手時に参照すべき事項
+
+1. **0.92という類似度閾値は未検証のヒューリスティック**(8.1節): 実際
+   の285〜500件規模のembeddingで、この閾値がどの程度の重複を検出する
+   か(過検出/過少検出のどちらに傾くか)は、運用者側の環境で
+   `run_eval.py`を実行して初めて分かる。実測後、閾値の調整が必要になる
+   可能性が高い。
+2. **全ペア比較はO(N²)**: `compute_memory_duplicate_rate()`は現在の
+   fact件数(数百件規模)では実用上問題ないと考えられるが、件数が数千
+   件規模に増えた場合、Python側での全ペアコサイン類似度計算(現在は
+   numpyなしの純粋Python実装)がボトルネックになりうる。B1のpgvector
+   インデックス(ivfflat/hnsw等)を使った近似最近傍探索に切り替える、
+   またはnumpyを導入してベクトル化する、といった最適化の余地がある
+   (現時点では過剰実装と判断し、実装していない)。
+3. **SB-7の重み付けは単純平均のまま**(8.2節): Phase Dが実際に動き出
+   し、特定の指標が改善サイクルの評価においてグッドハート化しやすい
+   (例: `memory_duplicate_rate`を下げるために正当な情報まで統合・削除
+   してしまう等)ことが分かった場合、単純平均ではその指標の異常な変動が
+   `overall_gain_pct`を歪める可能性がある。roadmapの二層評価
+   (内部指標+外部ベンチマーク)という設計が、まさにこのリスクへの対策
+   として既に用意されていることを、Phase D設計時に再確認すること。
+4. **SB-3とSB-7の接続はまだ「配線」されていない**: `improvement_cycle_
+   metrics.py`はSB-3を含む指標名を認識できるが、実際に`run_eval.py`の
+   結果を`compute_improvement_cycle_gain()`に渡すコードはまだ存在しな
+   い(Phase Dの改良提案エンジンが両者を橋渡しする想定)。Phase D設計時
+   に、この2つのモジュールをどう接続するか(変更適用前後で`run_eval.py`
+   相当を2回実行し、その結果をそのまま渡す、等)を具体的に設計する必要
+   がある。
+5. **2つの新規マイグレーションは未適用**: 指示書の注意事項通り、作成の
+   みで適用は運用者側に委ねる
+   (`202607210043_sigmaris_eval_runs_sb3.sql`・
+   `202607210044_sigmaris_improvement_cycles.sql`)。前者が未適用の間
+   は、`record_eval_run()`のSB-3フィールドを含むPOSTは失敗し、
+   `run_eval.py`は「記録に失敗しました」という既存の分岐にフォールバッ
+   クする(スコア自体の算出・表示には影響しない)。
+
+---
+
 ## Related Documents
 
-- `docs/sigmaris/sigmaris_roadmap.md`(Phase C全体構成、C1/C2/C3節)
+- `docs/sigmaris/sigmaris_roadmap.md`(Phase C全体構成、C1/C2/C3節。
+  Phase C-full-2でSB-1〜7それぞれの実装状況を追記済み)
 - `docs/sigmaris/phase_c_mini_report.md`(Phase C-mini、内部指標との対比)
 - `docs/sigmaris/phase_b_summary.md`(Phase B完了サマリー)
 - Maharana et al., 2024, "Evaluating Very Long-Term Conversational Memory

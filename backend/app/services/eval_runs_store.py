@@ -43,13 +43,26 @@ async def record_eval_run(
     rag_ndcg_score: float,
     response_error_rate: float | None,
     response_sample_size: int | None,
+    memory_duplicate_rate: float | None = None,
+    duplicate_fact_count: int | None = None,
+    duplicate_cluster_count: int | None = None,
     notes: str | None = None,
     details: dict[str, Any] | None = None,
 ) -> str | None:
     """Insert one eval run row. Returns the new row id, or None if
     persistence failed (e.g. migration not applied yet, or
     SUPABASE_SERVICE_ROLE_KEY not configured) — never raises, matching the
-    "best-effort logging" pattern used by decision_log.log_decision()."""
+    "best-effort logging" pattern used by decision_log.log_decision().
+
+    memory_duplicate_rate/duplicate_fact_count/duplicate_cluster_count
+    (Phase C-full-2, SB-3) default to None so existing callers keep working
+    unchanged. If migration 202607210043_sigmaris_eval_runs_sb3.sql hasn't
+    been applied yet, PostgREST rejects the POST outright (unknown
+    columns) and this whole function falls back to its normal
+    already-established None-return path below — the same degrade-safely
+    behavior every other not-yet-applied-migration scenario in this
+    codebase already has, not a new failure mode this change introduces.
+    """
     try:
         payload: dict[str, Any] = {
             "testset_version": testset_version,
@@ -60,6 +73,9 @@ async def record_eval_run(
             "rag_ndcg_score": rag_ndcg_score,
             "response_error_rate": response_error_rate,
             "response_sample_size": response_sample_size,
+            "memory_duplicate_rate": memory_duplicate_rate,
+            "duplicate_fact_count": duplicate_fact_count,
+            "duplicate_cluster_count": duplicate_cluster_count,
             "notes": notes,
             "details": details or {},
         }
