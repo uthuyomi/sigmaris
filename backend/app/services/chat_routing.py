@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 from typing import Any, Literal
 
-from openai import AsyncOpenAI
+from app.services.local_llm import TaskType, get_llm_router
 
 ChatIntent = Literal[
     "general_chat",
@@ -178,8 +178,6 @@ def heuristic_intent(
 
 async def classify_chat_intent(
     *,
-    client: AsyncOpenAI,
-    model: str,
     messages: list[dict[str, Any]],
     attachment_facts: str,
 ) -> dict[str, str]:
@@ -240,31 +238,43 @@ async def classify_chat_intent(
     )
 
     try:
-        response = await client.responses.create(
-            model=model,
-            input=[{"role": "user", "content": [{"type": "input_text", "text": prompt}]}],
-            # No cap here used to mean an unbounded call — for a
-            # reasoning-capable model (gpt-5.4-mini) that can silently eat
-            # several extra seconds per turn with nothing to show for it
-            # (see docs/sigmaris/incident_response_latency_investigation.md
-            # 8.3/9 for the measured ~3-8s spread this call showed with no
-            # cap at all). 800 mirrors goal_alignment.py's
-            # _ANALYZE_PROMPT budget (Phase B16) — the largest max_tokens
-            # already established in this codebase for a single JSON-object
-            # classification/extraction call, and one requested for a
-            # *more* complex multi-field payload than this function's flat
-            # {"intent": "...", "reason": "..."}. Chosen deliberately
-            # generous rather than tight: this is a reasoning model, and
-            # max_output_tokens on the Responses API bounds *all* generated
-            # tokens (any internal reasoning trace plus the final visible
-            # JSON), not just the visible text — a too-tight cap risks the
-            # call running out of budget before ever emitting the JSON,
-            # which would silently degrade every LLM-routed classification
-            # to general_chat via the existing `intent not in VALID_INTENTS`
-            # fallback below (requirement: accuracy must not regress).
-            max_output_tokens=800,
+        # Phase: nano-tier migration (see docs/sigmaris/
+        # incident_response_latency_investigation.md 11) — routed through
+        # the same LLMRouter every other lightweight classifier in this
+        # codebase uses (B7's decompose_query, B14-B16, etc.) instead of a
+        # raw AsyncOpenAI Responses API call. This gets three things for
+        # free, with no code here needing to implement any of them:
+        # (1) TaskType.CHAT_INTENT_CLASSIFICATION is nano-tier
+        # (openai_nano_model) rather than the "mini" tier this call used to
+        # share with BA4's own unified generation; (2) if LOCAL_LLM_ENABLED
+        # and Ollama actually has a chat model installed, this can run
+        # locally instead of over the network at all; (3) if not,
+        # LLMRouter._get_backend() caches that verdict once per process
+        # lifetime (local_llm.py's is_available() checks the model list,
+        # not just bare reachability) and falls straight to OpenAI on every
+        # subsequent call — no per-call 404-and-retry.
+        #
+        # 800 (unchanged from the prior task) is passed straight through as
+        # max_tokens: LocalLLMClient maps it to Ollama's num_predict,
+        # _OpenAIAdapter maps it to max_completion_tokens on the Chat
+        # Completions API. The Responses-API-specific "reasoning tokens
+        # might eat the whole budget" risk that motivated picking a
+        # generous 800 in the first place is a much smaller concern here —
+        # every other nano-tier TaskType in this codebase (B7's
+        # QUERY_DECOMPOSITION included) already runs successfully on the
+        # Chat Completions API with budgets as low as 100-300 — but 800 is
+        # kept as-is per this task's requirement 4 rather than re-tuned.
+        router = get_llm_router()
+        raw = await router.chat(
+            TaskType.CHAT_INTENT_CLASSIFICATION,
+            [{"role": "user", "content": prompt}],
+            temperature=0.1,
+            max_tokens=800,
+            json_mode=True,
         )
-        payload = json.loads(response.output_text or "{}")
+        payload = json.loads(raw) if isinstance(raw, str) else raw
+        if not isinstance(payload, dict):
+            payload = {}
         intent = payload.get("intent")
         if intent not in VALID_INTENTS:
             intent = "general_chat"
