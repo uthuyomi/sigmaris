@@ -35,6 +35,19 @@ class TaskType(str, enum.Enum):
     # rather than folding into ROUTING's existing grab-bag of unrelated
     # one-off callers (active_inquiry.py, memory_validator.py, x_*.py).
     CHAT_INTENT_CLASSIFICATION = "chat_intent_classification"
+    # Phase C-full: LLM-as-a-Judge for LongMemEval/LoCoMo public-benchmark
+    # answer grading (see docs/sigmaris/phase_c_full_report.md section 3).
+    # Deliberately NOT the same TaskType as EVAL_GENERATION (Phase C-mini's
+    # internal-testset question generation, and this phase's own benchmark
+    # answer synthesis — see bench_pipeline.py): the judge's correctness
+    # verdict *is* the reported score, so a bad judgment silently invalidates
+    # the whole benchmark run in a way a bad generated question or answer
+    # does not (those just produce one wrong data point, still visible in
+    # the per-question detail). That asymmetry — "this call's own quality is
+    # the deliverable" — is the same reasoning goal_alignment.py's nuanced
+    # decision-vs-goal comparison used to justify TaskType.SELF_REFLECT
+    # (the advanced tier) over a cheaper classifier tier.
+    EVAL_JUDGE = "eval_judge"
 
 
 _LOCAL_TASK_TYPES = {
@@ -128,6 +141,14 @@ def _openai_model_for_task(task: TaskType) -> str:
     """Map TaskType to the appropriate OpenAI model tier."""
     if task in {TaskType.SELF_REFLECT, TaskType.COMPLEX_REASONING}:
         return settings.sigmaris_reflect_model or settings.openai_advanced_model
+    if task is TaskType.EVAL_JUDGE:
+        # Same "sigmaris_reflect_model or openai_advanced_model" pattern as
+        # SELF_REFLECT/COMPLEX_REASONING above, with its own override knob
+        # (eval_judge_model) rather than sharing sigmaris_reflect_model, so
+        # the operator can retune judge cost/quality independently of
+        # self-reflection — relevant once a full-scale run (500+ LongMemEval
+        # + ~2000 LoCoMo questions) makes the judge's per-call cost add up.
+        return settings.eval_judge_model or settings.openai_advanced_model
     if task is TaskType.EVAL_GENERATION:
         # Pinned to gpt-5.4-mini per an explicit operator decision (Phase
         # C-mini testset generation) — deliberately kept separate from

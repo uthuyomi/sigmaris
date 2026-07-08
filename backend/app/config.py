@@ -45,6 +45,14 @@ class Settings(BaseSettings):
     ollama_embed_model: str = "nomic-embed-text"
     openai_embedding_model: str = "text-embedding-3-small"
     eval_generation_model: str = "gpt-5.4-mini"   # Phase C-mini testset question generation (OpenAI fallback)
+    eval_judge_model: str | None = None           # Phase C-full LLM-as-a-Judge (None -> openai_advanced_model)
+    # Phase C-full: dedicated Supabase account for LongMemEval/LoCoMo ingestion,
+    # deliberately separate from sigmaris_user_jwt/sigmaris_refresh_token (the
+    # real user's own credentials) so public-benchmark conversation data can
+    # never land in the same user_fact_items rows as 海星さん's real memories.
+    # See backend/app/services/bench_auth.py.
+    sigmaris_eval_bench_refresh_token: str | None = None
+    sigmaris_eval_bench_user_jwt: str | None = None
     x_api_key: str | None = None
     x_api_secret: str | None = None
     x_access_token: str | None = None

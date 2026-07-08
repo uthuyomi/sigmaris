@@ -52,6 +52,14 @@ yarn-error.log*
 # .env — must never be committed.
 /backend/.state/
 
+# Phase C-full: raw LongMemEval/LoCoMo dataset downloads (see
+# backend/scripts/run_longmemeval.py / run_locomo.py for the download
+# commands). Not committed — these are large (LongMemEval oracle ~15MB,
+# LoCoMo ~2.8MB) third-party files, not source artifacts, and LoCoMo's
+# CC BY-NC 4.0 license makes redistributing a checked-in copy an
+# unnecessary complication to avoid entirely rather than reason through.
+/backend/eval/bench_data/
+
 # vercel
 .vercel
 
