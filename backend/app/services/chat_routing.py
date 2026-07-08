@@ -243,6 +243,26 @@ async def classify_chat_intent(
         response = await client.responses.create(
             model=model,
             input=[{"role": "user", "content": [{"type": "input_text", "text": prompt}]}],
+            # No cap here used to mean an unbounded call — for a
+            # reasoning-capable model (gpt-5.4-mini) that can silently eat
+            # several extra seconds per turn with nothing to show for it
+            # (see docs/sigmaris/incident_response_latency_investigation.md
+            # 8.3/9 for the measured ~3-8s spread this call showed with no
+            # cap at all). 800 mirrors goal_alignment.py's
+            # _ANALYZE_PROMPT budget (Phase B16) — the largest max_tokens
+            # already established in this codebase for a single JSON-object
+            # classification/extraction call, and one requested for a
+            # *more* complex multi-field payload than this function's flat
+            # {"intent": "...", "reason": "..."}. Chosen deliberately
+            # generous rather than tight: this is a reasoning model, and
+            # max_output_tokens on the Responses API bounds *all* generated
+            # tokens (any internal reasoning trace plus the final visible
+            # JSON), not just the visible text — a too-tight cap risks the
+            # call running out of budget before ever emitting the JSON,
+            # which would silently degrade every LLM-routed classification
+            # to general_chat via the existing `intent not in VALID_INTENTS`
+            # fallback below (requirement: accuracy must not regress).
+            max_output_tokens=800,
         )
         payload = json.loads(response.output_text or "{}")
         intent = payload.get("intent")
