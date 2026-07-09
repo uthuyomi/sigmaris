@@ -767,6 +767,7 @@ async def _extract_facts_bg(
             jwt=jwt,
             thread_id=thread_id,
             invocation_id=invocation_id,
+            user_id=user_id,
         )
     except Exception:
         # extract_from_conversation() is documented to never raise (it

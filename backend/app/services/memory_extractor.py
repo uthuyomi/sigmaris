@@ -5,6 +5,8 @@ import logging
 from typing import Any
 
 from app.services.local_llm import TaskType, get_llm_router
+from app.services.memory_search import search_relevant_memories
+from app.services.supabase_rest import get_current_user
 from app.services.user_fact_data import get_fact_items, upsert_fact_item
 
 logger = logging.getLogger(__name__)
@@ -14,6 +16,19 @@ _VALID_CATEGORIES = frozenset({
     "profile", "health", "lifestyle", "environment",
     "devices", "preferences", "relationships", "finance", "goals",
 })
+
+# How many existing facts (Phase B1 hybrid search, ranked by relevance to the
+# latest user turn) to show the extraction LLM as "already-recorded" context.
+# See docs/sigmaris/bug_inventory.md 2.2 for why this exists: previously the
+# extraction prompt showed the LLM *no* existing facts at all, so it invented
+# category/key naming fresh every turn — the same real-world fact could land
+# under preferences/favorite_color one turn and lifestyle/color_preference
+# the next, silently fragmenting into separate rows that the DB's exact-match
+# (category, key) UNIQUE constraint can never catch. 8 is a deliberately
+# generous recall-over-precision choice: showing a few irrelevant existing
+# facts costs nothing (the LLM is told to ignore ones that don't match), but
+# missing a genuine duplicate candidate defeats the purpose of this fix.
+_EXISTING_FACTS_SEARCH_LIMIT = 8
 
 _SYSTEM = """あなたは会話から事実を抽出するAIです。
 ユーザーの会話から記憶すべき事実を抽出します。
@@ -36,6 +51,14 @@ categoryは以下の9つのみ使用可能。それ以外は使わないこと:
 - 0.9: 明言（「私は〜が好き」「〜を持っている」等）
 - 0.6: 会話から強く示唆される
 - 0.4: 推測・間接的示唆
+
+## 既に記録されている関連事実（参考。今回の会話に関連度が高い順）
+{existing_facts_context}
+
+**重要:** 上記の既存事実と実質的に同じ内容（表現が違うだけの言い換えを含
+む）を新たに抽出する場合は、絶対に新しいcategory/keyを作らず、既存と全く
+同じcategory・keyをそのまま使ってください。新しいcategory/keyを作ってよい
+のは、既存のどれとも異なる、本当に新しい情報の場合だけです。
 
 ## 会話
 {conversation}
@@ -61,6 +84,7 @@ async def extract_from_conversation(
     *,
     thread_id: str | None = None,
     invocation_id: str | None = None,
+    user_id: str | None = None,
 ) -> list[dict[str, Any]]:
     """Extract facts from a conversation and upsert them into user_fact_items.
 
@@ -70,6 +94,12 @@ async def extract_from_conversation(
     thread_id/invocation_id (Phase B4 provenance) record which conversation
     turn a newly-created fact originated from; optional so existing callers
     that don't have this context keep working unchanged.
+
+    user_id is likewise optional: callers that already have it in scope
+    (e.g. orchestrator/service.py's _extract_facts_bg) should pass it to
+    skip a redundant get_current_user() round-trip; callers that don't
+    (e.g. bench_pipeline.py's isolated benchmark ingestion) can omit it and
+    it will be derived from jwt internally.
     """
     if not messages:
         return []
@@ -78,6 +108,10 @@ async def extract_from_conversation(
     if not conversation.strip():
         return []
 
+    existing_facts_context = await _build_existing_facts_context(
+        messages, jwt, user_id=user_id
+    )
+
     router = get_llm_router()
     logger.info("memory_extractor: task=MEMORY_EXTRACTION items=%d", len(messages))
     try:
@@ -85,7 +119,10 @@ async def extract_from_conversation(
             TaskType.MEMORY_EXTRACTION,
             [
                 {"role": "system", "content": _SYSTEM},
-                {"role": "user", "content": _PROMPT.format(conversation=conversation)},
+                {"role": "user", "content": _PROMPT.format(
+                    conversation=conversation,
+                    existing_facts_context=existing_facts_context,
+                )},
             ],
             temperature=0.1,
             max_tokens=1024,
@@ -160,6 +197,58 @@ async def extract_from_conversation(
         len(facts), skipped_invalid, len(upserted),
     )
     return upserted
+
+
+def _latest_user_text(messages: list[dict[str, str]]) -> str | None:
+    """Most recent user-role message content, used as the search query for
+    _build_existing_facts_context() — the newest turn is what's actually
+    likely to contain a new (or duplicate) fact; searching on the whole
+    multi-turn conversation would dilute the query across unrelated topics."""
+    for msg in reversed(messages):
+        if msg.get("role") == "user":
+            content = (msg.get("content") or "").strip()
+            if content:
+                return content
+    return None
+
+
+async def _build_existing_facts_context(
+    messages: list[dict[str, str]], jwt: str, *, user_id: str | None
+) -> str:
+    """Search existing user_fact_items (Phase B1 hybrid search) for facts
+    relevant to the latest user turn, formatted for injection into _PROMPT.
+
+    Best-effort: any failure here (search error, missing user_id) falls back
+    to "no existing facts" context rather than blocking extraction — this
+    mirrors extract_from_conversation()'s own never-raise contract, and a
+    missed dedup opportunity is a much smaller cost than losing a turn's
+    fact extraction entirely.
+    """
+    query = _latest_user_text(messages)
+    if not query:
+        return "（なし）"
+
+    try:
+        resolved_user_id = user_id
+        if not resolved_user_id:
+            user = await get_current_user(jwt)
+            resolved_user_id = user.get("id")
+        if not isinstance(resolved_user_id, str):
+            return "（なし）"
+
+        results = await search_relevant_memories(
+            query, resolved_user_id, limit=_EXISTING_FACTS_SEARCH_LIMIT, jwt=jwt
+        )
+    except Exception:
+        logger.debug("memory_extractor: existing-facts search failed, proceeding without it", exc_info=True)
+        return "（なし）"
+
+    lines = [
+        f"- {row.get('category')}/{row.get('key')}: {row.get('value')}"
+        for row in results
+        if isinstance(row.get("category"), str) and isinstance(row.get("key"), str) and row.get("value")
+    ]
+    return "\n".join(lines) if lines else "（なし）"
 
 
 def _format_conversation(messages: list[dict[str, str]]) -> str:
