@@ -288,14 +288,18 @@ store.py`)を踏襲している。
 
 ### 5.1 事前準備(初回のみ)
 
-1. データセットを取得する(1章のコマンド):
+1. データセットを取得する(1章のコマンド)。**2026-07-09時点、このサー
+   バー上の`backend/eval/bench_data/`には既に配置済み**(9章参照。新しい
+   環境にセットアップし直す場合や、別バリアント[`_s`/`_m`等]を追加取得
+   する場合は、以下のコマンドを再実行すればよい):
    ```bash
    cd backend
    mkdir -p eval/bench_data
    wget https://huggingface.co/datasets/xiaowu0162/longmemeval-cleaned/resolve/main/longmemeval_oracle.json -P eval/bench_data/
    wget https://raw.githubusercontent.com/snap-research/locomo/main/data/locomo10.json -P eval/bench_data/
    ```
-   (`eval/bench_data/`は`.gitignore`済み — ライセンス上の理由でリポジトリには含めない設計)
+   (`eval/bench_data/`は`.gitignore`済み — リポジトリには含めない設計。
+   9章で理由を詳述)
 
 2. ベンチマーク専用のSupabase Authアカウントを作成する(2.2節参照)。
    Supabaseダッシュボード → Authentication → Users → 新規ユーザー作成。
@@ -731,6 +735,172 @@ memory_duplicate_rate: 0.333  (重複1件/1クラスタ, embedding有3/3件)
    は、`record_eval_run()`のSB-3フィールドを含むPOSTは失敗し、
    `run_eval.py`は「記録に失敗しました」という既存の分岐にフォールバッ
    クする(スコア自体の算出・表示には影響しない)。
+
+---
+
+## 9. データセットの実配置(2026-07-09)
+
+Phase C-full-1完了後、実際に`run_longmemeval.py`/`run_locomo.py`を実行
+しようとしたところ、`--input`に指定すべきデータセットファイルがこの
+サーバー上のどこにも存在していないことが判明した(Phase C-full-1では
+入手元・コマンド自体は1章に文書化していたが、実際のダウンロード・配置
+はテスト用に一時的な作業ディレクトリ(スクラッチパス)で行っており、
+リポジトリ内の本来の配置場所には置いていなかった)。本追記では、実際に
+1章記載のコマンドでダウンロードし、`backend/eval/bench_data/`に配置した
+上で動作確認を行った。
+
+### 9.1 配置場所・入手手順
+
+`backend/eval/bench_data/`(5.1節記載の想定位置と同一)に、1章記載の
+コマンドをそのまま実行して配置した:
+
+```bash
+cd backend/eval/bench_data
+curl -sL -o longmemeval_oracle.json "https://huggingface.co/datasets/xiaowu0162/longmemeval-cleaned/resolve/main/longmemeval_oracle.json"
+curl -sL -o locomo10.json "https://raw.githubusercontent.com/snap-research/locomo/main/data/locomo10.json"
+```
+
+**実際に配置されたファイル**:
+
+| ファイル | サイズ | 内容(実測) |
+|---|---|---|
+| `backend/eval/bench_data/longmemeval_oracle.json` | 15,388,478 bytes(約15.4MB) | 500インスタンス(1章の記載と一致) |
+| `backend/eval/bench_data/locomo10.json` | 2,805,274 bytes(約2.8MB) | 10会話、合計1,986問(1章の記載と一致) |
+
+ダウンロード後、`json.load()`で両ファイルが正しくパースできること、
+件数が1章で報告した実測値と一致することを確認した(ファイル破損・
+部分ダウンロードでないことの直接的な裏付け)。
+
+### 9.2 gitで管理すべきか(判断・理由)
+
+**判断: gitでは管理しない(`.gitignore`済みのまま、サーバー上にのみ配置
+する)。** Phase C-full-1時点で既に`.gitignore`に`/backend/eval/bench_
+data/`を追加済みだった(理由はそのコミットのコメントに記載済み)が、
+実際にファイルが存在する状態になった今、その判断を再確認し、理由を改め
+て整理する:
+
+1. **LoCoMoはCC BY-NC 4.0であり、GitHubリポジトリへのコミットは「Share
+   (共有)」に該当しうる**(1章参照)。運用者は個人利用・非商用と回答し
+   ているため利用自体は問題ないが、リポジトリが将来公開される、共同作業
+   者が増える等の状況変化があった場合に備え、**第三者データセットの
+   生ファイルをリポジトリ本体に含めないのが最も安全**という判断は変わ
+   らない。
+2. **LongMemEval(MITライセンス)は法的な懸念はないが、それでも非推奨**:
+   15.4MBという単一ファイルサイズは、コード変更の追跡を目的とするgit
+   履歴に対して不釣り合いに大きく、かつ**このファイル自体が今後変更さ
+   れることはない**(ダウンロードするたびに毎回同じ内容の第三者配布物)
+   ため、バージョン管理のメリット(差分追跡)が一切ない。
+3. **再現性は損なわれない**: 1章に記載した1行のダウンロードコマンドで
+   誰でも同じファイルを再取得できる(ビルドが必要な生成物ではなく、単純
+   な静的ファイルのダウンロード)。gitで管理しないことによる不利益は
+   「初回セットアップ時にこのコマンドを実行する一手間」のみであり、
+   5.1節の手順に既に明記されている。
+4. 以上より、コードの変更履歴を追跡するgit と、頻繁には変わらない大きな
+   第三者データを保持するファイルシステム(このサーバーの
+   `backend/eval/bench_data/`)を分離する、標準的なMLデータセット管理の
+   慣習に従うのが最も妥当と判断した。
+
+### 9.3 `--dry-run`での動作確認結果
+
+**認証情報なしでの実コマンド実行(ファイル読み込みの直接確認)**:
+このセッションにはベンチマーク専用アカウントの認証情報
+(`SIGMARIS_EVAL_BENCH_REFRESH_TOKEN`等)が設定されていない(0章と同じ
+制約、新規に取得を試みていない)ため、実際のCLIコマンドをそのまま実行
+すると、**ファイルの読み込み・件数表示までは成功し、その直後の認証
+ステップで意図通り停止する**ことを確認した:
+
+```
+$ python scripts/run_longmemeval.py --input eval/bench_data/longmemeval_oracle.json --limit 3 --dry-run
+LongMemEvalファイルを読み込みました: eval\bench_data\longmemeval_oracle.json (500 インスタンス)
+--limit 3 により、先頭 3 件のみ実行します。
+（この後、SIGMARIS_EVAL_BENCH_REFRESH_TOKEN未設定によりBenchAuthErrorで停止 — 想定通り)
+
+$ python scripts/run_locomo.py --input eval/bench_data/locomo10.json --limit 1 --max-questions-per-instance 3 --dry-run
+LoCoMoファイルを読み込みました: eval\bench_data\locomo10.json (10 会話)
+--limit 1 により、先頭 1 会話のみ実行します。
+--max-questions-per-instance 3 により、各会話の質問数を制限します。
+実行対象: 1 会話、合計 3 問
+（同様にBenchAuthErrorで停止 — 想定通り)
+```
+
+500インスタンス・10会話という件数が、9.1節の実測値と一致した状態で
+正しく読み込まれ、`--limit`/`--max-questions-per-instance`も正しく
+適用されていることが分かる。
+
+**認証・LLM・DBをモックした完全なパイプライン実行(実データでの動作
+確認)**: 6章と同様の手法(`bench_auth`のJWT/user解決と、LLM呼び出し・
+DB呼び出しのみをモック、パイプラインのオーケストレーション自体はモック
+しない)で、**今回配置した本物の完全なファイル**(6章のような抜粋
+コピーではない)に対して実行し、正常に完走することを確認した:
+
+```
+LoCoMoファイルを読み込みました: eval\bench_data\locomo10.json (10 会話)
+--limit 2 により、先頭 2 会話のみ実行します。
+--max-questions-per-instance 4 により、各会話の質問数を制限します。
+実行対象: 2 会話、合計 8 問
+ベンチマーク専用アカウントで実行します (user_id=bench-user-id)
+
+実行中... (2 会話)
+  [conv-26] 4/4 正解
+  [conv-30] 4/4 正解
+
+============================================================
+Phase C-full: LoCoMo (公開ベンチマーク・客観指標)
+============================================================
+conversations       : 2
+total_questions     : 8
+correct_count       : 8
+overall_accuracy    : 1.000
+------------------------------------------------------------
+カテゴリ別正答率:
+  multi_hop                    1.000  (2/2)
+  open_domain                  1.000  (1/1)
+  single_hop                   1.000  (1/1)
+  temporal_reasoning           1.000  (4/4)
+============================================================
+
+--dry-run のため sigmaris_bench_runs には記録していません。
+```
+
+```
+LongMemEvalファイルを読み込みました: eval\bench_data\longmemeval_oracle.json (500 インスタンス)
+--limit 5 により、先頭 5 件のみ実行します。
+ベンチマーク専用アカウントで実行します (user_id=bench-user-id)
+
+実行中... (5 インスタンス、各1問)
+  [gpt4_2655b836] 1/1 正解
+  [gpt4_2487a7cb] 1/1 正解
+  [gpt4_76048e76] 1/1 正解
+  [gpt4_2312f94c] 1/1 正解
+  [0bb5a684] 1/1 正解
+
+============================================================
+Phase C-full: LongMemEval (公開ベンチマーク・客観指標)
+============================================================
+instances           : 5
+total_questions     : 5
+correct_count       : 5
+overall_accuracy    : 1.000
+------------------------------------------------------------
+カテゴリ別正答率:
+  temporal_reasoning           1.000  (5/5)
+============================================================
+
+--dry-run のため sigmaris_bench_runs には記録していません。
+```
+
+6章と同じく、**正答率100%はLLM呼び出しをモックで固定した結果であり、
+実際の記憶精度を表すものではない**。今回新たに確認できたのは、6章の
+「実データの小規模抜粋」ではなく、**このサーバーに実際に配置された
+完全なデータセットファイル(500インスタンス・10会話全体)に対して、
+`--limit`/`--max-questions-per-instance`で範囲を絞った上で、ファイル
+読み込みからスコア集計・CLI出力までが一気通貫で正常に動作する**ことで
+ある。実際のベースラインスコアの取得(LLM呼び出しをモックせず、実
+`SIGMARIS_EVAL_BENCH_REFRESH_TOKEN`・`OPENAI_API_KEY`等を用いた実行)は、
+引き続き運用者側の環境で行う必要がある(5.1節の手順を参照)。
+
+既存の`backend/tests/`(16件)も再実行し、本追記(データファイルの配置
+のみ、コードの変更なし)による回帰がないことを確認した。
 
 ---
 
