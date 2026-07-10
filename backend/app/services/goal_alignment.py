@@ -36,6 +36,7 @@ from typing import Any
 from app.config import settings
 from app.services.decision_log import get_recent_decisions
 from app.services.local_llm import TaskType, get_llm_router
+from app.services.memory_search import search_relevant_memories
 from app.services.supabase_rest import _get_client, _require_supabase_config
 from app.services.topic_tracker import get_recent_topics
 from app.services.user_fact_data import get_fact_items_for_user
@@ -53,6 +54,17 @@ _MIN_SUPPORTING_EVIDENCE = 2
 
 _RECENT_DECISIONS_LIMIT = 50
 _RECENT_TOPICS_LIMIT = 20
+
+# How many existing facts (Phase B1 hybrid search) to show the analysis LLM
+# as background context, and how many existing flags to show for
+# goal_reference reuse. Same two-part design as knowledge_graph.py (B9)/
+# decision_log.py's extract_preference_patterns (B14): B1 only indexes
+# user_fact_items, not sigmaris_goal_alignment_flags, so the facts search
+# alone doesn't address goal_reference fragmentation — showing the existing
+# flags directly (not via search) is what actually does that. See
+# docs/sigmaris/bug_inventory.md 11 section.
+_RELEVANT_FACTS_SEARCH_LIMIT = 15
+_EXISTING_FLAGS_CONTEXT_LIMIT = 50
 
 # How often a stored flag may be offered to the response-generation LLM as
 # something it *may* mention — a much longer cooldown than active_inquiry.
@@ -76,6 +88,13 @@ _ANALYZE_PROMPT = """海星さんの長期的な目標(user_fact_itemsのcategor
 ## 直近の話題の推移({topic_count}件、sigmaris_topic_log)
 {topics}
 
+## 参考: 関連度の高い既知の記憶(背景理解に使ってよい)
+{relevant_facts_context}
+
+## 既に登録されている乖離フラグ(参考。実質的に同じ目標についての乖離であれば、
+新しいgoal_referenceを作らず必ずこの一覧のgoal_referenceをそのまま使うこと)
+{existing_flags_context}
+
 ---
 上記の決定・話題が、長期的な目標と明らかに矛盾している、またはある目標から長期
 間離れている(その目標に関連する決定・話題が全く見られない)といった、はっき
@@ -90,6 +109,10 @@ _ANALYZE_PROMPT = """海星さんの長期的な目標(user_fact_itemsのcategor
   こと(例:「目標『AdFlow AIの収益化』について、直近の決定はUI改善に集中して
   おり、収益化に直接つながる決定は見られない」)。伝え方のトーン調整は別の処理
   で行うため、ここでは中立的な記述のみでよい
+- 既に登録されている乖離フラグと実質的に同じ目標についての乖離(表現が違うだけ
+  の言い換えを含む)を検出する場合は、絶対に新しいgoal_referenceを作らず、既存
+  の一覧にあるgoal_referenceをそのまま使うこと。新しいgoal_referenceを作って
+  よいのは、既存のどれとも異なる、本当に新しい乖離の場合だけである
 - evidence_refsには、根拠とした決定または話題のid(上記に付与されているものを
   そのまま)を全て列挙すること
 
@@ -182,11 +205,79 @@ async def _upsert_flag(
     return rows[0].get("id") if isinstance(rows, list) and rows else None
 
 
-async def extract_goal_alignment_flags(user_id: str) -> dict[str, Any]:
+async def _build_relevant_facts_context(
+    decisions: list[dict[str, Any]], topics: list[dict[str, Any]], *, jwt: str | None, user_id: str
+) -> str:
+    """B1 hybrid search over user_fact_items, using this batch's decision
+    titles + topic labels (concatenated) as the query — same query-strategy
+    reasoning as knowledge_graph.py's (B9) analogous fix, which reads the
+    same three sources."""
+    query = " / ".join(
+        [
+            *(str(d.get("title")).strip() for d in decisions if isinstance(d.get("title"), str) and d.get("title").strip()),
+            *(str(t.get("topic_label")).strip() for t in topics if isinstance(t.get("topic_label"), str) and t.get("topic_label").strip()),
+        ]
+    )[:2000]
+    if not query or not jwt:
+        return "（なし）"
+
+    try:
+        results = await search_relevant_memories(
+            query, user_id, limit=_RELEVANT_FACTS_SEARCH_LIMIT, jwt=jwt
+        )
+    except Exception:
+        logger.debug("goal_alignment: relevant-facts search failed, proceeding without it", exc_info=True)
+        return "（なし）"
+
+    lines = [
+        f"- {row.get('category')}/{row.get('key')}: {row.get('value')}"
+        for row in results
+        if isinstance(row.get("category"), str) and isinstance(row.get("key"), str) and row.get("value")
+    ]
+    return "\n".join(lines) if lines else "（なし）"
+
+
+async def _get_all_flags_for_context(limit: int = _EXISTING_FLAGS_CONTEXT_LIMIT) -> list[dict[str, Any]]:
+    """All stored flags regardless of surface-cooldown status, for
+    goal_reference-reuse context — deliberately separate from
+    get_active_goal_alignment_flags(), whose cooldown filter exists for a
+    different purpose (deciding what's eligible to show 海星さん right now)
+    and would wrongly hide an on-cooldown flag's goal_reference from this
+    dedup check, defeating the point."""
+    try:
+        base_url, _ = _require_supabase_config()
+        client = await _get_client()
+        r = await client.get(
+            f"{base_url}/rest/v1/{_TABLE}",
+            headers=_svc_headers(),
+            params={"order": "evidence_count.desc,last_confirmed_at.desc", "limit": str(limit)},
+        )
+        r.raise_for_status()
+        data = r.json()
+        return data if isinstance(data, list) else []
+    except Exception:
+        logger.exception("goal_alignment: failed to _get_all_flags_for_context")
+        return []
+
+
+def _build_existing_flags_context(flags: list[dict[str, Any]]) -> str:
+    lines = [
+        f"- {f.get('goal_reference')}: {f.get('flag_statement')}"
+        for f in flags
+        if isinstance(f.get("goal_reference"), str) and f.get("flag_statement")
+    ]
+    return "\n".join(lines) if lines else "（なし）"
+
+
+async def extract_goal_alignment_flags(user_id: str, *, jwt: str | None = None) -> dict[str, Any]:
     """Sunday 4:35 AM scheduled: cross-reference category='goals' facts
     against recent decisions/topics, storing only clearly and repeatedly
     evidenced drift. Deliberately conservative — see this module's
     docstring and phase_b16_report.md for the full reasoning.
+
+    jwt is optional (used only for the relevant-facts B1 search); omitting
+    it degrades that one context block to "（なし）" without blocking
+    extraction.
     """
     result: dict[str, Any] = {
         "goals_found": 0,
@@ -231,6 +322,12 @@ async def extract_goal_alignment_flags(user_id: str) -> dict[str, Any]:
             f"- id={t.get('id')} label={t.get('topic_label')}" for t in topics
         ) or "（なし）"
 
+        relevant_facts_context = await _build_relevant_facts_context(
+            decisions, topics, jwt=jwt, user_id=user_id
+        )
+        existing_flags = await _get_all_flags_for_context()
+        existing_flags_context = _build_existing_flags_context(existing_flags)
+
         router = get_llm_router()
         raw = await router.chat(
             TaskType.SELF_REFLECT,
@@ -242,6 +339,8 @@ async def extract_goal_alignment_flags(user_id: str) -> dict[str, Any]:
                     decisions=decision_lines or "（なし）",
                     topic_count=len(topics),
                     topics=topic_lines,
+                    relevant_facts_context=relevant_facts_context,
+                    existing_flags_context=existing_flags_context,
                 )},
             ],
             temperature=0.2,

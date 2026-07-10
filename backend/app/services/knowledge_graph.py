@@ -41,6 +41,7 @@ from typing import Any
 from app.config import settings
 from app.services.decision_log import get_recent_decisions
 from app.services.local_llm import TaskType, get_llm_router
+from app.services.memory_search import search_relevant_memories
 from app.services.supabase_rest import _get_client, _require_supabase_config
 from app.services.topic_tracker import get_recent_topics
 from app.services.user_fact_data import get_fact_items_for_user
@@ -65,6 +66,19 @@ _RECENT_TOPICS_LIMIT = 20
 # a tuned production limit.
 _HINT_LOOKUP_LIMIT = 200
 
+# How many existing facts (Phase B1 hybrid search) to show the extraction
+# LLM as background context. Note this is a *different* fix from
+# decision_log.py/experience_layer.py's: those searched user_fact_items
+# because user_fact_items *was* the write target, so "relevant memories"
+# and "existing items to reuse" were the same search. Here the write
+# targets are sigmaris_entities/sigmaris_entity_relations, which B1 doesn't
+# cover at all — so this facts search only provides background grounding
+# (e.g. established device/project names already in memory), not direct
+# entity-name dedup. See _build_existing_entities_context() for the part
+# that actually addresses entity-name fragmentation. Documented in
+# docs/sigmaris/bug_inventory.md 11 section.
+_RELEVANT_FACTS_SEARCH_LIMIT = 15
+
 _EXTRACT_SYSTEM = (
     "あなたはシグマリスのナレッジグラフ抽出システムです。海星さんに関する記"
     "録から、人物・場所・プロジェクト・技術要素などのエンティティと、それら"
@@ -82,6 +96,13 @@ _EXTRACT_PROMPT = """海星さんの長期的な目標(user_fact_itemsのcategor
 ## 直近の話題の推移({topic_count}件、sigmaris_topic_log)
 {topics}
 
+## 参考: 関連度の高い既知の記憶(用語・呼び方の統一に使ってよい)
+{relevant_facts_context}
+
+## 既に登録されているエンティティ(参考。実質的に同じ対象を指す場合は、新しい名
+前を作らず必ずこの一覧の名前・種別をそのまま使うこと)
+{existing_entities_context}
+
 ---
 上記から、人物・場所・プロジェクト・技術要素などのエンティティと、それらの間の
 明確な関係性を抽出してください。
@@ -90,6 +111,10 @@ _EXTRACT_PROMPT = """海星さんの長期的な目標(user_fact_itemsのcategor
 - エンティティ名と種別、関係の種類のみを短く記述すること。決定の詳細な理由や内
   容そのものを複製しないこと(それらは既存の記録にそのまま残っている)
 - 明確に読み取れる関係のみを抽出し、推測で関係をでっち上げないこと
+- 既に登録されているエンティティと実質的に同じ対象を指す場合(表記が違うだけの
+  言い換えを含む)は、絶対に新しい名前を作らず、既存の一覧にある名前・種別を
+  そのまま使うこと。新しい名前を作ってよいのは、既存のどれとも異なる、本当に
+  新しいエンティティの場合だけである
 - source_refには、根拠とした決定または話題のid(上記に付与されているものをそ
   のまま)を1つ指定すること
 
@@ -197,10 +222,68 @@ async def _get_or_create_relation(
     return rows[0].get("id") if isinstance(rows, list) and rows else None
 
 
-async def extract_entities_and_relations(user_id: str) -> dict[str, Any]:
+async def _build_relevant_facts_context(
+    decisions: list[dict[str, Any]], topics: list[dict[str, Any]], *, jwt: str | None, user_id: str
+) -> str:
+    """B1 hybrid search over user_fact_items, using this batch's decision
+    titles + topic labels (concatenated) as the query — same query-strategy
+    reasoning as experience_layer.py's consolidation fix (no single "current
+    turn" exists for a weekly batch, so a representative summary of the
+    batch's content stands in for one). Best-effort: falls back to no
+    context on any failure, never blocks extraction."""
+    query = " / ".join(
+        [
+            *(str(d.get("title")).strip() for d in decisions if isinstance(d.get("title"), str) and d.get("title").strip()),
+            *(str(t.get("topic_label")).strip() for t in topics if isinstance(t.get("topic_label"), str) and t.get("topic_label").strip()),
+        ]
+    )[:2000]
+    if not query or not jwt:
+        return "（なし）"
+
+    try:
+        results = await search_relevant_memories(
+            query, user_id, limit=_RELEVANT_FACTS_SEARCH_LIMIT, jwt=jwt
+        )
+    except Exception:
+        logger.debug("knowledge_graph: relevant-facts search failed, proceeding without it", exc_info=True)
+        return "（なし）"
+
+    lines = [
+        f"- {row.get('category')}/{row.get('key')}: {row.get('value')}"
+        for row in results
+        if isinstance(row.get("category"), str) and isinstance(row.get("key"), str) and row.get("value")
+    ]
+    return "\n".join(lines) if lines else "（なし）"
+
+
+def _build_existing_entities_context(entities: list[dict[str, Any]]) -> str:
+    """Existing sigmaris_entities, shown so _get_or_create_entity()'s
+    exact-(name, entity_type)-match dedup actually has a chance to fire —
+    this is the part that directly addresses entity-name fragmentation
+    (see _RELEVANT_FACTS_SEARCH_LIMIT's comment for why the B1 facts search
+    above doesn't, on its own, solve that). Not a B1 search — B1 doesn't
+    index sigmaris_entities at all — just the same bounded snapshot fetch
+    get_entities_and_relations() already provides for B7's hint-matching,
+    reused here as-is; the table is weekly-extracted and expected to stay
+    small, so showing it in full (rather than searching it) is both simpler
+    and more complete than any partial-relevance search would be."""
+    lines = [
+        f"- {e.get('name')} ({e.get('entity_type')})"
+        for e in entities
+        if isinstance(e.get("name"), str) and isinstance(e.get("entity_type"), str)
+    ]
+    return "\n".join(lines) if lines else "（なし）"
+
+
+async def extract_entities_and_relations(user_id: str, *, jwt: str | None = None) -> dict[str, Any]:
     """Sunday 5:15 AM scheduled: extract entities/relations from the same
     three sources goal_alignment.py (B16) already reads. Fire-and-forget,
     zero response-path impact.
+
+    jwt is optional (used only for the relevant-facts B1 search below);
+    omitting it degrades that one context block to "（なし）" without
+    blocking extraction — existing callers that don't have it keep working
+    unchanged.
     """
     result: dict[str, Any] = {
         "goals_found": 0,
@@ -242,6 +325,12 @@ async def extract_entities_and_relations(user_id: str) -> dict[str, Any]:
             f"- id={t.get('id')} label={t.get('topic_label')}" for t in topics
         ) or "（なし）"
 
+        relevant_facts_context = await _build_relevant_facts_context(
+            decisions, topics, jwt=jwt, user_id=user_id
+        )
+        existing_entities, _existing_relations = await get_entities_and_relations()
+        existing_entities_context = _build_existing_entities_context(existing_entities)
+
         router = get_llm_router()
         raw = await router.chat(
             TaskType.SELF_REFLECT,
@@ -253,6 +342,8 @@ async def extract_entities_and_relations(user_id: str) -> dict[str, Any]:
                     decisions=decision_lines,
                     topic_count=len(topics),
                     topics=topic_lines,
+                    relevant_facts_context=relevant_facts_context,
+                    existing_entities_context=existing_entities_context,
                 )},
             ],
             temperature=0.2,

@@ -168,8 +168,28 @@ async def _decision_analyze() -> None:
 
 async def _preference_pattern_extract() -> None:
     from app.services.decision_log import extract_preference_patterns  # noqa: PLC0415
+    from app.services.supabase_rest import get_current_user  # noqa: PLC0415
+    # Unlike knowledge_graph's job, this one previously had zero dependency
+    # on fetching a user JWT (extract_preference_patterns() only read/wrote
+    # service-role-only tables). jwt/user_id are now used for an *optional*
+    # relevant-facts search, so a failure here must degrade to the old
+    # no-context behavior rather than taking the whole job down with it —
+    # hence this fetch gets its own try/except, separate from the main call.
+    jwt: str | None = None
+    user_id: str | None = None
     try:
-        result = await extract_preference_patterns()
+        jwt = await get_sigmaris_jwt()
+        user = await get_current_user(jwt)
+        resolved_id = user.get("id")
+        user_id = resolved_id if isinstance(resolved_id, str) else None
+    except Exception:
+        logger.warning(
+            "Preference pattern extraction: could not fetch jwt/user_id, "
+            "proceeding without relevant-facts context",
+            exc_info=True,
+        )
+    try:
+        result = await extract_preference_patterns(jwt=jwt, user_id=user_id)
         logger.info("Preference pattern extraction job done: %s", result)
     except Exception:
         logger.exception("Preference pattern extraction job raised unexpectedly")
@@ -204,7 +224,7 @@ async def _goal_alignment_extract() -> None:
         if not isinstance(user_id, str):
             logger.warning("Goal alignment job skipped: authenticated user id is missing")
             return
-        result = await extract_goal_alignment_flags(user_id)
+        result = await extract_goal_alignment_flags(user_id, jwt=jwt)
         logger.info("Goal alignment extraction job done: %s", result)
     except Exception:
         logger.exception("Goal alignment extraction job raised unexpectedly")
@@ -220,7 +240,7 @@ async def _knowledge_graph_extract() -> None:
         if not isinstance(user_id, str):
             logger.warning("Knowledge graph job skipped: authenticated user id is missing")
             return
-        result = await extract_entities_and_relations(user_id)
+        result = await extract_entities_and_relations(user_id, jwt=jwt)
         logger.info("Knowledge graph extraction job done: %s", result)
     except Exception:
         logger.exception("Knowledge graph extraction job raised unexpectedly")

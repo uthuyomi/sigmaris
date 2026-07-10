@@ -130,6 +130,13 @@ decision_type が policy_change のものは、海星さん自身が実際に下
 ## 決定記録({n}件)
 {decisions}
 
+## 参考: 関連度の高い既知の記憶(判断の背景理解に使ってよい)
+{relevant_facts_context}
+
+## 既に登録されている判断傾向(参考。実質的に同じ傾向であれば、新しい
+pattern_keyを作らず必ずこの一覧のpattern_keyをそのまま使うこと)
+{existing_patterns_context}
+
 ---
 これらの決定に共通する、海星さんの判断傾向(判断軸)を抽出してください。
 
@@ -139,6 +146,10 @@ decision_type が policy_change のものは、海星さん自身が実際に下
 - 根拠が薄い場合は無理に傾向を捏造せず、patternsを空リストにしてよい
 - 各傾向について、根拠とした決定の id を(上記の決定記録に付与されている
   ものをそのまま)全て列挙すること
+- 既に登録されている判断傾向と実質的に同じ内容(表現が違うだけの言い換えを
+  含む)を抽出する場合は、絶対に新しいpattern_keyを作らず、既存の一覧にある
+  pattern_keyをそのまま使うこと。新しいpattern_keyを作ってよいのは、既存の
+  どれとも異なる、本当に新しい傾向の場合だけである
 
 以下のJSON形式で出力してください:
 {{
@@ -417,7 +428,71 @@ async def get_active_preference_patterns(limit: int = 5) -> list[dict[str, Any]]
         return []
 
 
-async def extract_preference_patterns() -> dict[str, Any]:
+async def _build_relevant_facts_context_for_patterns(
+    decisions: list[dict[str, Any]], *, jwt: str | None, user_id: str | None
+) -> str:
+    """B1 hybrid search over user_fact_items, using this batch's decision
+    titles (concatenated) as the query — same query-strategy reasoning as
+    experience_layer.py/knowledge_graph.py's weekly-batch fixes (no single
+    "current turn" exists for a batch, so a representative summary of the
+    batch's content stands in for one)."""
+    query = " / ".join(
+        str(d.get("title")).strip()
+        for d in decisions
+        if isinstance(d.get("title"), str) and d.get("title").strip()
+    )[:2000]
+    if not query or not jwt:
+        return "（なし）"
+
+    try:
+        resolved_user_id = user_id
+        if not resolved_user_id:
+            user = await get_current_user(jwt)
+            resolved_user_id = user.get("id")
+        if not isinstance(resolved_user_id, str):
+            return "（なし）"
+
+        results = await search_relevant_memories(
+            query, resolved_user_id, limit=_RELEVANT_FACTS_SEARCH_LIMIT, jwt=jwt
+        )
+    except Exception:
+        logger.debug(
+            "decision_log: relevant-facts search failed (preference patterns), "
+            "proceeding without it",
+            exc_info=True,
+        )
+        return "（なし）"
+
+    lines = [
+        f"- {row.get('category')}/{row.get('key')}: {row.get('value')}"
+        for row in results
+        if isinstance(row.get("category"), str) and isinstance(row.get("key"), str) and row.get("value")
+    ]
+    return "\n".join(lines) if lines else "（なし）"
+
+
+def _build_existing_patterns_context(patterns: list[dict[str, Any]]) -> str:
+    """Existing sigmaris_user_preference_patterns, shown so
+    _upsert_preference_pattern()'s exact-pattern_key-match evidence
+    accumulation actually has a chance to fire — this is the part that
+    directly addresses pattern_key fragmentation (the B1 facts search above
+    only provides background grounding; sigmaris_user_preference_patterns
+    isn't indexed by B1 at all). Reuses get_active_preference_patterns()
+    as-is with a larger limit than its normal "top few for hint injection"
+    caller uses — its ordering (evidence_count desc) has no cooldown-style
+    exclusion, so it's safe to reuse directly rather than writing a second
+    fetch."""
+    lines = [
+        f"- {p.get('pattern_key')}: {p.get('pattern_statement')}"
+        for p in patterns
+        if isinstance(p.get("pattern_key"), str) and p.get("pattern_statement")
+    ]
+    return "\n".join(lines) if lines else "（なし）"
+
+
+async def extract_preference_patterns(
+    *, jwt: str | None = None, user_id: str | None = None
+) -> dict[str, Any]:
     """Sunday 4:45 AM scheduled (right after analyze_decision_patterns, same
     underlying table): LLM extraction of recurring judgment patterns from
     sigmaris_decision_log, persisted to sigmaris_user_preference_patterns.
@@ -427,6 +502,10 @@ async def extract_preference_patterns() -> dict[str, Any]:
     *recurring* pattern across) — this is reported as insufficient_data,
     not silently skipped, so it's visible in job logs that the feature is
     waiting on more data rather than broken.
+
+    jwt/user_id are optional (used only for the relevant-facts B1 search);
+    omitting them degrades that one context block to "（なし）" without
+    blocking extraction.
     """
     result: dict[str, Any] = {
         "analyzed": 0,
@@ -453,6 +532,11 @@ async def extract_preference_patterns() -> dict[str, Any]:
             f"reason={(d.get('reason') or 'N/A')[:150]} outcome={(d.get('outcome') or 'N/A')[:150]}"
             for d in decisions
         ]
+        relevant_facts_context = await _build_relevant_facts_context_for_patterns(
+            decisions, jwt=jwt, user_id=user_id
+        )
+        existing_patterns = await get_active_preference_patterns(limit=50)
+        existing_patterns_context = _build_existing_patterns_context(existing_patterns)
 
         router = get_llm_router()
         raw = await router.chat(
@@ -461,6 +545,8 @@ async def extract_preference_patterns() -> dict[str, Any]:
                 {"role": "system", "content": _EXTRACT_PREFERENCE_SYSTEM},
                 {"role": "user", "content": _EXTRACT_PREFERENCE_PROMPT.format(
                     n=len(decisions), decisions="\n".join(lines),
+                    relevant_facts_context=relevant_facts_context,
+                    existing_patterns_context=existing_patterns_context,
                 )},
             ],
             temperature=0.2,
