@@ -225,6 +225,8 @@ grep調査で確認: `backend`配下のどのファイルからも`persona_rewri
 | 16 | 公開ランディングページに無料枠上限に関する矛盾した文言が残存 | incident_free_limit_removal_report.md 5章item1 | 低 | 対外文言の更新漏れ | 低 |
 | 17 | `sigmaris_decision_log`の実データ蓄積量・`insufficient_data`への転落頻度が一度も確認されていない（B13〜B16が依存） | phase_b9_report.md, phase_b_summary.md | 中 | 運用データの未観測 | 中（#5の調査結果と合わせて評価すべき） |
 | 18 | 多数の暫定チューニング定数（B1/B7/B8/B11/B14/B15/B16/B17/SB-3の各種閾値）が実データ未検証のまま本番稼働している | 1.1節item4、各該当報告書 | 低（個々は） | チューニング不足 | 低（運用データが十分蓄積してから一括見直しが効率的） |
+| 19 | 【2026-07-10修正済み】`decision_type`が42件中41件`action`に偏っていた原因（プロンプトが5種類中2種類しか例示していなかった）を特定し、5種類全てを定義付きで列挙するよう修正。スクラッチテスト5件・既存16件とも成功 | 本タスク10.1〜10.2節（コード確認・修正済み） | 中→修正済み | プロンプト設計の不備（enum未明示） | 対応済み。効果は数週間の運用後に分布を再確認する必要あり（10.5節） |
+| 20 | 【2026-07-10発見・一部修正】B2(`experience_layer.py::consolidate_episodic_memory()`)にmemory_extractor.py/decision_log.pyと同型の欠陥（既存事実を見せずに新規category/keyを発明）を確認し修正。同型の欠陥がB9(`knowledge_graph.py`)・B14(`extract_preference_patterns()`)・B16(`goal_alignment.py`)にも存在することを新たに確認したが、この3箇所は未修正のまま次タスクへ申し送り | 本タスク10.3〜10.4節（コード確認済み、B9/B14/B16は未修正） | 中 | 設計上の欠陥（横展開、9件目の同型欠陥） | 中（B9/B14/B16の修正は次タスクへ申し送り、10.4節） |
 
 ---
 
@@ -515,9 +517,91 @@ ERROR: 'PersonaRewriteResult' object has no attribute 'text'
 
 ### 9.6 気づいた懸念点・残るHigh項目に影響しそうな発見
 
+> **【2026-07-10追記】本節item1（decision_type偏り）・item2（B2への同種欠陥の横展開）は10章で調査・対応済み。**
+
 - **`_DETECT_PROMPT`のJSON出力例が`decision_type`について`"policy_change または proposal"`しか示していないにもかかわらず、実データでは41/42件(97.6%)が`action`という、例示すらされていない値に分類されている（9.1節D1）。** `_VALID_TYPES`には`action`が含まれるため技術的には妥当な値だが、プロンプトがLLMにこの値の使い分けを一切教えていない状態で、LLMが独自の判断でほぼ全件をこの型に分類し続けているのは、決定の分類精度そのものに疑問符がつく状態だと考えられる。本タスクの範囲外として修正はしていないが、次タスクで`_DETECT_PROMPT`のdecision_type例示を全5種類に拡充し、それぞれの使い分けを明記することを検討する価値がある。
 - **本タスクの修正（B1検索によるコンテキスト注入）は、7章の`memory_extractor.py`修正と全く同じパターンの、2件目の適用例である。** 同一の構造的欠陥（LLMに文脈非依存の固定リストしか見せない設計）が、ファクト抽出（B4/memory_extractor.py）と決定検出（A3/decision_log.py）という独立した2つのサブシステムに、独立に埋め込まれていたことになる。7.7節で触れた`experience_layer.py::consolidate_episodic_memory()`（B2週次バッチ）も同型の欠陥を抱えていることは既に判明しており、**同種の欠陥が他の「LLMに何かを判定・分類させる」処理にも潜んでいないか、横断的に確認する価値がある**（例: `topic_tracker.py`のトピック遷移検出、`goal_alignment.py`のゴール整合性チェック等、本タスクでは確認していない）。
 - 今回の修正により、`_cognitive_layer_bg`の1ターンあたりの処理に、検索呼び出しが1回追加された（7章のmemory_extractor.py修正と合わせると、1ターンあたり2回分のB1検索が新たに追加されたことになる）。いずれもfire-and-forgetのバックグラウンド処理でユーザー体感レイテンシには影響しないが、B1検索の呼び出し頻度・コストの増加は運用コスト監視の対象に加えておくとよい。
 - **decision_log.py::analyze_decision_patterns()・extract_preference_patterns()（Phase B14）は、`decision_type`の分布（`type_counts`、`proposal_rate`/`refusal_rate`）を分析対象にしている。** 上記の`action`偏重が続く限り、これらの週次分析の意味のある差別化が乏しくなる可能性がある。今回のmemory_refs修正とは独立の問題だが、関連する既知の懸念として記録しておく。
 
-**さらなる調査が必要な場合の追加手順**: 0.049（旧値）が実際にいつ・どの`error_window_days=7`のウィンドウで計測されたものかが分かれば、そのウィンドウ内の`agent_invocation_audit_logs`を同様に`caller_agent_id`で層別集計し、「X投稿フィルタ起因」対「schedule-agent起因」の内訳比率が新旧でどう変化したかを直接比較することで、6.4節の2つの要因の寄与度をより正確に切り分けられる。今回は0.049計測時点の正確な日付・ウィンドウが分からなかったため、この比較はできていない。
+---
+
+## 10. `decision_type=action`偏りの調査・修正、およびB2への同種欠陥の横展開修正（2026-07-10）
+
+### 10.1 `decision_type=action`偏りの原因調査
+
+`decision_log.py`の`_DETECT_PROMPT`（修正前）を精読した結果、原因を特定した。
+
+- **プロンプトのJSON出力例は`"decision_type": "policy_change または proposal"`という1行のみで、`_VALID_TYPES = {"proposal", "refusal", "notification", "action", "policy_change"}`（コード側が受理する5種類）のうち2種類しかLLMに提示していなかった。** `refusal`・`action`・`notification`という残り3つの値については、それが何を意味するか、いつ使うべきかの説明が一切ない状態だった。
+- **コード側に`action`をデフォルト値とするフォールバック処理は存在しない。** `decision_type = parsed.get("decision_type"); if decision_type not in _VALID_TYPES: decision_type = "policy_change"`（修正前後で変更していない）——コードのフォールバック先は`policy_change`であり、`action`ではない。これはテストでも直接確認した（10.4節）。したがって41/42件の`action`は、**LLM自身が能動的に選択した値**であり、パース失敗等によるコード側の後付けデフォルトではないと断定できる。
+- LLMがこの値を選んだ理由そのもの（学習データ由来の一般的な分類語彙として"action"が自然に選ばれやすい、等）を直接検証する手段はないが、少なくとも「プロンプトが選択肢を十分に説明していない」ことは確定した事実であり、これが最有力の説明であると判断した。
+- なお、同ファイル内の`_EXTRACT_PREFERENCE_PROMPT`（B14）に、`policy_change`のみが「海星さん自身が実際に下した決定・方針転換」で、それ以外（proposal/refusal/notification/action）は「シグマリス側の行動記録」だという既存の使い分け方針が明記されていた。今回の修正はこの既存方針に準拠する形で行った。
+
+### 10.2 `decision_type`偏りの修正
+
+`_DETECT_PROMPT`のJSON出力例を、5種類全ての`decision_type`を列挙し、それぞれに一行程度の定義を付与する形に書き換えた。「自由記述は禁止」であることも明記した。
+
+- `policy_change`: 海星さん自身が方針・ルールを決定または変更した（海星さん本人の決定）
+- `proposal`: シグマリスが海星さんに何かを提案した（まだ確定していない）
+- `refusal`: シグマリスが海星さんの提案・依頼を断った
+- `action`: シグマリスが実際に何らかの操作・行動を実行した（方針決定ではなく処理の実施）
+- `notification`: シグマリスが海星さんに何かを知らせた・報告した（他の4つに該当しない場合の最終手段としてのみ）
+
+JSON schemaのプレースホルダ自体も、説明文をそのまま値として埋め込む形（`"decision_type": "以下の5種類の...一つ（...）: - policy_change: ...\n    - proposal: ..."`）を一度検討したが、これは実際のJSON応答としては不正な形（LLMがこの説明文自体をそのままコピーしてしまうリスクがある）と判断し、**説明はJSON schemaの外（prose）に置き、schema内のプレースホルダは`"policy_change | proposal | refusal | action | notification のいずれか一つ"`という簡潔な一行に留めた。** これは判断が分かれうる実装上の選択だったため、根拠を明記しておく。
+
+`notification`について、`notification_budget.py::record_notification()`が既に`log_decision(decision_type="notification", ...)`を直接呼ぶ別経路を持っている（この`detect_and_record_decision()`のLLM検出フローとは無関係）ため、両者の役割が重複しないよう、プロンプト内で「他の4つのいずれにも該当しない場合の最終手段としてのみ選ぶこと」と明記し、detect_and_record_decision側では極力使われないよう誘導した。
+
+### 10.3 B2（`experience_layer.py`）の調査結果
+
+`consolidate_episodic_memory()`（Phase B2週次バッチ、エピソード→意味記憶昇格）の`_CONSOLIDATE_PROMPT`を確認した結果、**`decision_log.py`で発見・修正したのと全く同型の欠陥が存在することを確認した**（これは実は前々タスク・7章の`memory_duplicate_rate`修正時に既に発見していた内容の再確認であり、今回はそれを実際に修正した）。
+
+具体的には、最大100件のエピソード記憶を意味記憶（`user_fact_items`）に昇格させる際、LLMには昇格対象のエピソード群のみが渡され、**既存の`user_fact_items`は一切見せられていなかった。** そのため、昇格させる`category`/`key`をLLMが毎回ゼロから発明しており、既存の類似事実と表記が食い違う形で重複登録される（`memory_duplicate_rate`と同じ問題）リスクを抱えていた。
+
+**修正**: `memory_extractor.py`（7章）・`decision_log.py`（9章・本章）で確立したパターンに倣い、B1のハイブリッド検索で関連する既存事実を検索してからプロンプトに注入する`_build_existing_facts_context_for_consolidation()`を新設した。
+
+ただし、`consolidate_episodic_memory()`は単一の会話ターンではなく最大100件のエピソードを一括処理するバッチ形状のため、「直近のユーザー発言」に相当する自然な検索クエリが存在しない。**このタスクでの設計判断として、対象エピソード群のtitleを`" / "`で連結したもの（最大2000文字にトランケート）を検索クエリとして採用した。** これは、話題が多様なバッチに対しては単一の検索で全ての候補に関連する既存事実を網羅的に拾いきれない可能性がある、という限界を伴う妥協案だが、「既存事実を全く見せない」という修正前の状態よりは明確な改善であり、過剰実装を避けつつ確立済みパターンを再利用するという方針に合致すると判断した。
+
+`jwt`のみを受け取り`user_id`を持たない`consolidate_episodic_memory(jwt)`の呼び出し形状（週次スケジューラから`get_sigmaris_jwt()`のみで呼ばれる）に合わせ、`_build_existing_facts_context_for_consolidation()`内部で`get_current_user(jwt)`により`user_id`を導出する形にした（`decision_log.py`・`memory_extractor.py`で確立済みのフォールバック導出パターンと同一）。検索失敗時は既存事実なし（`"（なし）"`）にフォールバックし、統合処理自体は継続する。
+
+マイグレーションは不要（スキーマ変更なし、B1の既存検索インフラを再利用）。
+
+### 10.4 他の分類系処理への横断確認結果（本タスクでは修正せず、申し送り事項として記録）
+
+指示の通り、以下5箇所を確認したが、**発見した欠陥はこのタスクでは修正していない。**
+
+- **`orchestrator/service.py`**: 独自のLLM分類呼び出し（`TaskType`/プロンプト定数）は存在しない。他モジュールへのオーケストレーションのみで、この欠陥パターンには該当しない。
+- **`topic_tracker.py`（B6）**: `detect_and_record_topic_transition()`は「現在アクティブな話題ラベル1件」とのみ比較する設計で、`decision_log.py`/`experience_layer.py`のような「既存アイテムの固定/不在リスト」という構造にはそもそも該当しない。ただし、話題ラベルの重複排除が完全表記一致でしか機能しない（bug_inventory.md 1.3節で既に記録済みの既知の懸念）という、**関連するが異なる種類の問題**を抱えている。
+- **`knowledge_graph.py`（B9）**: `extract_entities_and_relations()`（週次バッチ）の`_EXTRACT_PROMPT`は、抽出元となる目標・決定・話題の情報のみを渡しており、**既存の`sigmaris_entities`（エンティティ一覧）を一切見せていない。** `_get_or_create_entity()`は`(name, entity_type)`の完全一致でしかマッチングしないため、LLMが週ごとに微妙に異なるエンティティ名（例:「AdFlow AI」と「AdFlowAI」）を生成すると、同一エンティティが別々のノードとして重複登録されるリスクがある。**decision_log.py・experience_layer.pyと同型の欠陥が存在することを確認した。**
+- **`goal_alignment.py`（B16）**: `_ANALYZE_PROMPT`（週次バッチ）も同様に、目標・決定・話題の情報のみを渡しており、**既存の目標整合性フラグ一覧を一切見せていない。** `_upsert_flag()`は`goal_reference`（LLMが生成する短い識別子文字列）の完全一致でのみエビデンスを蓄積するため、表記ゆれがあると同じ乖離が複数の別々のフラグ行に分裂しうる。bug_inventory.md 1.3節が既に「B6の話題ラベル表記ゆれがB16の整合性判定精度にも間接的に影響しうる」と指摘していた懸念と直接関連しており、**decision_log.py・experience_layer.pyと同型の欠陥が存在することを確認した。**
+- **B14（`decision_log.py::extract_preference_patterns()`）**: 本タスクで既に`decision_log.py`を扱った延長で確認したところ、こちらも同様に既存の`sigmaris_user_preference_patterns`一覧を一切見せておらず、`_upsert_preference_pattern()`が`pattern_key`の完全一致でのみエビデンスを蓄積する。**同型の欠陥が存在することを確認した。**
+
+**申し送り**: `knowledge_graph.py`（B9）・`goal_alignment.py`（B16）・`decision_log.py::extract_preference_patterns()`（B14）の3箇所に、本タスクで修正した`decision_log.py::detect_and_record_decision()`・`experience_layer.py::consolidate_episodic_memory()`と同型の欠陥が存在することを確認した。次タスクで、同じ「B1検索で関連する既存アイテムを検索してから注入する」パターンによる修正を検討することを推奨する。いずれも週次バッチ処理であり、`consolidate_episodic_memory()`と同様に「単一ターンに相当する自然なクエリが存在しない」というクエリ戦略上の課題を共有しているため、10.3節で採用した「対象データの要約テキストを連結してクエリにする」アプローチが同様に適用できる可能性が高い。
+
+### 10.5 テスト結果
+
+`backend/tests/`には新規テストを追加していない（既定の方針通り、スクラッチディレクトリに作成）。5件のテストを作成し、以下を確認した:
+
+- `_DETECT_PROMPT`をレンダリングした結果に、5種類全てのdecision_typeとそれぞれの定義文（「海星さん本人の決定」「承認待ちの提案」等）が実際に含まれること。「自由記述は禁止」という文言が含まれること。
+- 不正な/未知の`decision_type`をLLMが返した場合、コード側のフォールバックが`policy_change`になること（`action`にはならないこと）を直接確認し、10.1節の「コード側デフォルトではない」という判断を裏付けた。
+- `experience_layer.py::consolidate_episodic_memory()`が、対象エピソード群のtitleを連結したクエリで`search_relevant_memories()`を正しく呼び出し、その検索結果が実際に`_CONSOLIDATE_PROMPT`へ渡されるプロンプト文字列に反映されること。
+- 検索が失敗した場合でも、統合処理全体は例外を投げずに完走し、「（なし）」のフォールバックが使われること。
+
+```
+5 passed in 1.19s
+```
+
+既存の`backend/tests/`（16件）も全て成功し、リグレッションは確認されなかった。
+
+```
+16 passed in 0.74s
+```
+
+なお、スクラッチディレクトリには本タスクと無関係な、過去のセッションで作成された陳腐化したテストファイル（`test_classify_intent_lightweight.py`・`test_phase_ba1_service_integration.py`・`test_phase_ba1_stream_integration.py`、いずれも既に削除された`rewrite_with_persona_stream`を参照している）が残っており、スクラッチディレクトリ全体を一括実行すると8件が失敗する。これらは3.1節で既に「BA4関連の陳腐化したスクラッチテスト」として記録済みの既知の状態であり、本タスクの変更や`backend/tests/`の結果には一切影響しない。
+
+**実モデルAPIでの検証は行っていない。** 本タスクの注意事項通り、追加のサーバーアクセス・APIキー取得は試みていない。**運用者側で、次回decision_type分類・エピソード統合が実行された後、実際の分布が改善しているか（`action`偏重が緩和されているか）、B2の統合結果に重複が発生していないかを、数週間の運用後に確認することを推奨する。**
+
+### 10.6 気づいた懸念点
+
+- **10.4節で発見した3箇所（B9・B14・B16）は本タスクでは修正していない、次タスクへの明確な申し送り事項である。** 特にB9・B16は、bug_inventory.md 1.3節で既に「表記ゆれ」問題として一部認識されていたものが、実は根本的には「既存アイテムを見せていない」という、今回3回連続で発見・修正してきたのと同一の構造的欠陥に起因している可能性が高いことが、本タスクで初めて明確になった。
+- **decision_typeの5値のうち`refusal`・`notification`は、本タスクの実データ（42件）には1件も出現していない。** プロンプト修正により`action`偏重が緩和された場合、次にどの値へ分布がシフトするか（`policy_change`が増えるのか、`refusal`が新たに現れるのか）は実データでの再確認が必要。
+- 今回の一連の修正（7章memory_extractor.py、9章decision_log.py、10章decision_log.py再修正+experience_layer.py）により、B1のハイブリッド検索がバックグラウンドタスクから呼ばれる箇所が着実に増えている（現時点で1チャットターンあたり最大2箇所、週次バッチで1箇所）。B1検索自体の負荷・コストが今後どの程度になるかは、運用データでの継続的な監視が必要（7.7節・9.6節で既に触れた懸念の延長）。
