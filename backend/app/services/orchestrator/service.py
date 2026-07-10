@@ -786,6 +786,7 @@ async def _cognitive_layer_bg(
     turn_messages: list[dict[str, str]],
     fact_items: list[dict[str, Any]] | None,
     jwt: str,
+    user_id: str,
 ) -> None:
     """Fire-and-forget: detect+record real decisions and episodic memory,
     reflect any pending memory re-confirmation (Phase B3) and pending
@@ -796,7 +797,11 @@ async def _cognitive_layer_bg(
     writes a row when the turn actually contained a decision or policy
     change, and (Phase B2) detect_and_record_episode() only writes a row
     when the turn contained an event worth remembering episodically. All
-    six calls run concurrently since they're independent. jwt is only
+    six calls run concurrently since they're independent. jwt/user_id are
+    additionally passed to detect_and_record_decision() so it can search for
+    turn-relevant facts (related_fact_keys candidates) instead of a fixed
+    global-importance-ranked list, see docs/sigmaris/bug_inventory.md 9
+    section for why. jwt is also separately
     needed by reflect_pending_confirmation() (it may write to
     user_fact_items through the per-user RLS path) —
     decision/episode/topic/abstention-reaction detection and the goal-
@@ -816,6 +821,8 @@ async def _cognitive_layer_bg(
                 fact_items=fact_items,
                 thread_id=thread_id,
                 invocation_id=invocation_id,
+                jwt=jwt,
+                user_id=user_id,
             ),
             detect_and_record_episode(
                 messages=turn_messages,
@@ -1066,6 +1073,7 @@ async def run_orchestrator_chat(
             turn_messages=turn_messages,
             fact_items=fact_items,
             jwt=jwt,
+            user_id=user_id,
         ),
         name=f"cognitive_layer:{invocation_id}",
     )
@@ -1305,6 +1313,7 @@ async def run_orchestrator_chat_stream(
             turn_messages=turn_messages,
             fact_items=fact_items,
             jwt=jwt,
+            user_id=user_id,
         ),
         name=f"cognitive_layer:{invocation_id}",
     )

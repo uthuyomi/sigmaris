@@ -7,7 +7,8 @@ from typing import Any
 
 from app.config import settings
 from app.services.local_llm import TaskType, get_llm_router
-from app.services.supabase_rest import _get_client, _require_supabase_config
+from app.services.memory_search import search_relevant_memories
+from app.services.supabase_rest import _get_client, _require_supabase_config, get_current_user
 from app.services.user_fact_data import build_facts_context
 
 logger = logging.getLogger(__name__)
@@ -17,6 +18,20 @@ _PATTERNS_TABLE = "sigmaris_user_preference_patterns"
 _FACT_ITEMS_TABLE = "user_fact_items"
 
 _VALID_TYPES = frozenset({"proposal", "refusal", "notification", "action", "policy_change"})
+
+# How many existing facts (Phase B1 hybrid search, ranked by relevance to the
+# latest user turn) to show the decision-detection LLM as candidates for
+# related_fact_keys. See docs/sigmaris/bug_inventory.md 2.4/9 for why this
+# exists: facts_context used to be build_facts_context(fact_items, top_n=15)
+# — the 15 GLOBALLY most important facts by importance*confidence, regardless
+# of what the current decision is actually about. With 500+ active facts,
+# the one a given decision actually concerns is very unlikely to be in that
+# fixed top-15 list, so related_fact_keys came back empty essentially every
+# time (confirmed against production data: 42/42 sigmaris_decision_log rows
+# had empty memory_refs). Searching for facts relevant to *this* turn (same
+# fix pattern already applied to memory_extractor.py) makes the fact the
+# decision is actually about far more likely to be visible to the LLM.
+_RELEVANT_FACTS_SEARCH_LIMIT = 15
 
 # Phase B14: don't even attempt extraction below this many total decisions
 # (there's nothing to find a *recurring* pattern across).
@@ -576,12 +591,69 @@ def _format_transcript(messages: list[dict[str, str]]) -> str:
     return "\n".join(lines)
 
 
+def _latest_user_text(messages: list[dict[str, str]]) -> str | None:
+    """Most recent user-role message content, used as the search query for
+    _build_relevant_facts_context() — mirrors memory_extractor.py's helper
+    of the same name/purpose."""
+    for message in reversed(messages):
+        if message.get("role") == "user":
+            content = str(message.get("content") or "").strip()
+            if content:
+                return content
+    return None
+
+
+async def _build_relevant_facts_context(
+    messages: list[dict[str, str]],
+    fact_items: list[dict[str, Any]] | None,
+    *,
+    jwt: str | None,
+    user_id: str | None,
+) -> str:
+    """Facts context for _DETECT_PROMPT, ranked by relevance to the current
+    turn (Phase B1 hybrid search) rather than by global importance — see
+    _RELEVANT_FACTS_SEARCH_LIMIT's comment for why. Falls back to the
+    previous global-importance-ranked build_facts_context() when jwt/user_id
+    aren't available (e.g. a future caller that doesn't have them) or the
+    search itself fails — this must never block decision detection."""
+    query = _latest_user_text(messages)
+    if jwt and query:
+        try:
+            resolved_user_id = user_id
+            if not resolved_user_id:
+                user = await get_current_user(jwt)
+                resolved_user_id = user.get("id")
+            if not isinstance(resolved_user_id, str):
+                raise ValueError("could not resolve user_id")
+            results = await search_relevant_memories(
+                query, resolved_user_id, limit=_RELEVANT_FACTS_SEARCH_LIMIT, jwt=jwt
+            )
+            lines = [
+                f"- {row.get('category')}/{row.get('key')}: {row.get('value')}"
+                for row in results
+                if isinstance(row.get("category"), str)
+                and isinstance(row.get("key"), str)
+                and row.get("value")
+            ]
+            if lines:
+                return "\n".join(lines)
+        except Exception:
+            logger.debug(
+                "decision_log: relevant-facts search failed, falling back to "
+                "importance-ranked facts_context",
+                exc_info=True,
+            )
+    return build_facts_context(fact_items or [], top_n=15) or "（なし）"
+
+
 async def detect_and_record_decision(
     *,
     messages: list[dict[str, str]],
     fact_items: list[dict[str, Any]] | None = None,
     thread_id: str | None = None,
     invocation_id: str | None = None,
+    jwt: str | None = None,
+    user_id: str | None = None,
 ) -> str | None:
     """Fire-and-forget: ask the LLM whether the just-completed turn contains
     an actual decision or policy change (not small talk / a plain question).
@@ -592,13 +664,20 @@ async def detect_and_record_decision(
     the assistant's reply) — not the full cross-thread session window —
     so the same earlier exchange isn't re-detected as "a new decision" on
     every subsequent turn it happens to still be in context for.
+
+    jwt/user_id are optional and used only to look up facts relevant to this
+    turn (_build_relevant_facts_context) for related_fact_keys candidates;
+    omitting them falls back to the previous global-importance-ranked facts
+    list, so existing callers that don't have them keep working unchanged.
     """
     try:
         transcript = _format_transcript(messages)
         if not transcript:
             return None
 
-        facts_context = build_facts_context(fact_items or [], top_n=15) or "（なし）"
+        facts_context = await _build_relevant_facts_context(
+            messages, fact_items, jwt=jwt, user_id=user_id
+        )
 
         active_decisions = [
             d for d in await get_recent_decisions(limit=10) if not d.get("superseded_by")
