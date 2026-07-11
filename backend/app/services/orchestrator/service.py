@@ -38,6 +38,8 @@ from app.services.user_fact_data import (
     get_fact_items_for_user,
     get_fact_items,
     get_user_profile,
+    mark_facts_mentioned,
+    select_top_facts,
 )
 
 logger = logging.getLogger(__name__)
@@ -509,6 +511,47 @@ def _build_relevant_memories_context(memories: list[dict[str, Any]]) -> str | No
     return "\n".join(lines)
 
 
+# Temporal Layer Step 2 (docs/sigmaris/temporal_layer_report.md): "already
+# mentioned, don't repeat it" only applies to the scheduler's self-initiated
+# morning/evening/weekly briefings (proactive/actions.py), never to ordinary
+# user-typed chat — a passive answer must keep working regardless of
+# last_mentioned_at (requirement 2), so this whole mechanism is gated on the
+# caller_agent_id proactive/actions.py's _run_action() always sets, not on
+# any new parameter threaded through run_orchestrator_chat's public signature.
+_PROACTIVE_CALLER_PREFIX = "proactive-scheduler:"
+
+
+def _is_proactive_call(caller_agent_id: str) -> bool:
+    return caller_agent_id.startswith(_PROACTIVE_CALLER_PREFIX)
+
+
+def _fact_items_excluding_mentioned_events(fact_items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Proactive-briefing path only: drops event-kind facts Sigmaris has
+    already spontaneously mentioned (last_mentioned_at set), so they stop
+    competing for build_facts_context()'s top-5 ambient-context slots and a
+    still-unmentioned event (or a state/trait fact) can surface instead.
+    State/trait/unclassified facts are never filtered — only events carry
+    the "don't repeat what I already said" semantics this task addresses."""
+    return [
+        item
+        for item in fact_items
+        if not (item.get("memory_kind") == "event" and item.get("last_mentioned_at"))
+    ]
+
+
+async def _mark_events_mentioned_bg(*, jwt: str, event_ids: list[str]) -> None:
+    """Fire-and-forget (matches _extract_facts_bg/_cognitive_layer_bg's
+    pattern below): records that the events actually surfaced in this
+    proactive turn's top-5 facts_ctx were just spontaneously mentioned, so
+    the *next* briefing skips them. A failure here only means one future
+    briefing might repeat an event once more — never a data-loss risk — so
+    it's logged and swallowed rather than propagated."""
+    try:
+        await mark_facts_mentioned(jwt, event_ids)
+    except Exception:
+        logger.exception("orchestrator: failed to mark events as mentioned event_ids=%s", event_ids)
+
+
 async def _build_memory_context(
     *,
     jwt: str,
@@ -922,6 +965,12 @@ async def run_orchestrator_chat(
         if isinstance(request_context.get("caller_agent_id"), str):
             caller_agent_id = request_context["caller_agent_id"][:80]
 
+    # Temporal Layer Step 2: see _is_proactive_call's docstring above.
+    is_proactive = _is_proactive_call(caller_agent_id)
+    memory_context_fact_items = (
+        _fact_items_excluding_mentioned_events(fact_items) if is_proactive else fact_items
+    )
+
     audit_row = await start_invocation(
         jwt=jwt,
         invocation_id=invocation_id,
@@ -948,12 +997,18 @@ async def run_orchestrator_chat(
     # incident_facts_context_overwrite_fix.md) for why facts_ctx/trends_ctx
     # used to be built here, then silently discarded by this same
     # assignment overwriting them.
+    #
+    # fact_items= below is memory_context_fact_items, not fact_items, so a
+    # proactive briefing's top-5 ambient facts_ctx selection excludes
+    # already-mentioned events (Temporal Layer Step 2) — the B1 relevant_
+    # context built further inside this same function is untouched by that
+    # filtering (search_with_decomposition() below never sees it).
     profile_context = await _build_memory_context(
         jwt=jwt,
         user_id=user_id,
         messages=messages,
         fact_profile=fact_profile,
-        fact_items=fact_items,
+        fact_items=memory_context_fact_items,
         active_trends=active_trends,
         recent_topic_labels=_topic_labels_for_hint(current_topic, previous_topic),
         thread_id=effective_thread_id,
@@ -1078,6 +1133,26 @@ async def run_orchestrator_chat(
         name=f"cognitive_layer:{invocation_id}",
     )
 
+    # Fire-and-forget (Temporal Layer Step 2): mark whichever event facts
+    # actually made it into this proactive turn's top-5 facts_ctx as just
+    # spontaneously mentioned, so the next briefing doesn't repeat them.
+    # Recomputes the same top-5 selection build_facts_context() made inside
+    # _build_memory_context() above (select_top_facts is the shared helper
+    # both call) rather than threading the selection back out of that
+    # function, since it's a cheap in-process sort over an already-fetched,
+    # single-tenant-sized list.
+    if is_proactive:
+        surfaced_event_ids = [
+            item["id"]
+            for item in select_top_facts(memory_context_fact_items, top_n=5)
+            if item.get("memory_kind") == "event" and item.get("id")
+        ]
+        if surfaced_event_ids:
+            asyncio.create_task(
+                _mark_events_mentioned_bg(jwt=jwt, event_ids=surfaced_event_ids),
+                name=f"mark_events_mentioned:{invocation_id}",
+            )
+
     return {
         "ok": True,
         "text": response_text,
@@ -1143,6 +1218,12 @@ async def run_orchestrator_chat_stream(
         if isinstance(request_context.get("caller_agent_id"), str):
             caller_agent_id = request_context["caller_agent_id"][:80]
 
+    # Temporal Layer Step 2: see _is_proactive_call's docstring above.
+    is_proactive = _is_proactive_call(caller_agent_id)
+    memory_context_fact_items = (
+        _fact_items_excluding_mentioned_events(fact_items) if is_proactive else fact_items
+    )
+
     audit_row = await start_invocation(
         jwt=jwt,
         invocation_id=invocation_id,
@@ -1165,13 +1246,15 @@ async def run_orchestrator_chat_stream(
 
     # See run_orchestrator_chat's identical comment / docs/sigmaris/
     # incident_facts_context_overwrite_fix.md — facts_ctx/trends_ctx are now
-    # built inside _build_memory_context() itself, not here.
+    # built inside _build_memory_context() itself, not here. fact_items=
+    # below is memory_context_fact_items for the same Temporal Layer Step 2
+    # reason documented on run_orchestrator_chat's identical call.
     profile_context = await _build_memory_context(
         jwt=jwt,
         user_id=user_id,
         messages=messages,
         fact_profile=fact_profile,
-        fact_items=fact_items,
+        fact_items=memory_context_fact_items,
         active_trends=active_trends,
         recent_topic_labels=_topic_labels_for_hint(current_topic, previous_topic),
         thread_id=effective_thread_id,
@@ -1317,6 +1400,20 @@ async def run_orchestrator_chat_stream(
         ),
         name=f"cognitive_layer:{invocation_id}",
     )
+
+    # Fire-and-forget (Temporal Layer Step 2): see run_orchestrator_chat's
+    # identical block for the full rationale.
+    if is_proactive:
+        surfaced_event_ids = [
+            item["id"]
+            for item in select_top_facts(memory_context_fact_items, top_n=5)
+            if item.get("memory_kind") == "event" and item.get("id")
+        ]
+        if surfaced_event_ids:
+            asyncio.create_task(
+                _mark_events_mentioned_bg(jwt=jwt, event_ids=surfaced_event_ids),
+                name=f"mark_events_mentioned:{invocation_id}",
+            )
 
     yield OrchestratorStreamEvent(
         done=True,
