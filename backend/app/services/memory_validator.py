@@ -24,6 +24,32 @@ _DECAY_RULES: dict[str, tuple[int | None, float]] = {
     "environment":   (180,  0.9),
 }
 
+# Temporal layer Step 1 (docs/sigmaris/temporal_layer_report.md):
+# memory_kind='event' facts decay on this fixed rule *instead of* their
+# category's rule, regardless of category — a one-off event should fade on
+# its own transient nature, not on how slowly its category happens to
+# decay (e.g. an event filed under 'devices' shouldn't get devices' 180-day/
+# 0.8 treatment just because of its category). 90 days matches the task's
+# own "90日を目安としたTTL的な減衰" spec; 0.5 (matching health, the most
+# aggressive existing category rule) was chosen because an event is meant
+# to fade *faster* than most standing facts, not just as fast as the
+# fastest category coincidentally already does. Composes with
+# _importance_adjusted_decay() exactly like every category rule already
+# does (task requirement: "重要度が高いeventは...減衰しにくくなる(そのまま
+# でよい)") — a high-importance event still gets the onset-extension/
+# severity-dampening treatment, just anchored to this rule instead of a
+# category rule. memory_kind='state'/'trait'/None (every pre-existing row)
+# are entirely unaffected — they keep using _DECAY_RULES exactly as before
+# this feature existed.
+_EVENT_DECAY_RULE: tuple[int, float] = (90, 0.5)
+
+
+def _decay_rule_for(category: str, memory_kind: str | None) -> tuple[int | None, float]:
+    if memory_kind == "event":
+        return _EVENT_DECAY_RULE
+    return _DECAY_RULES.get(category, (None, 1.0))
+
+
 # importance_score × confidence below this → logical delete
 _FORGET_THRESHOLD = 0.1
 # physical delete this many days after is_deleted=true is set
@@ -165,7 +191,7 @@ def _importance_adjusted_decay(
 # returns 1.0 (no decay at all yet), identically to the batch job's own
 # gate (`if age_days < decay_days: continue`).
 def compute_freshness_multiplier(
-    category: str, *, age_days: float, importance_score: float
+    category: str, *, age_days: float, importance_score: float, memory_kind: str | None = None
 ) -> float:
     """Return a 0..1 multiplier reflecting how "fresh" a fact is, purely as
     a function of elapsed time since it was last created/confirmed
@@ -174,12 +200,17 @@ def compute_freshness_multiplier(
     discount at all", which is always the answer for a no-decay category
     (e.g. profile) regardless of age — requirement: permanent facts must
     never be unfairly penalized just for being old.
+
+    memory_kind (temporal layer, optional/defaults to None for callers that
+    predate it): 'event' facts use _EVENT_DECAY_RULE instead of the
+    category rule, exactly mirroring validate_all_facts()'s Phase 1 — see
+    _decay_rule_for()'s comment for why this must stay in lockstep with the
+    batch job rather than drift into a second decay curve.
     """
-    rule = _DECAY_RULES.get(category)
-    if rule is None or rule[0] is None:
+    base_decay_days, base_decay_factor = _decay_rule_for(category, memory_kind)
+    if base_decay_days is None:
         return 1.0
 
-    base_decay_days, base_decay_factor = rule
     decay_days, decay_factor = _importance_adjusted_decay(base_decay_days, base_decay_factor, importance_score)
     if age_days < decay_days or decay_days <= 0:
         return 1.0
@@ -221,11 +252,10 @@ async def validate_all_facts(jwt: str) -> dict[str, Any]:
     for item in facts:
         try:
             category = item.get("category") or ""
-            rule = _DECAY_RULES.get(category)
-            if rule is None or rule[0] is None:
+            base_decay_days, base_decay_factor = _decay_rule_for(category, item.get("memory_kind"))
+            if base_decay_days is None:
                 continue
 
-            base_decay_days, base_decay_factor = rule
             updated_str = item.get("updated_at")
             if not updated_str:
                 continue

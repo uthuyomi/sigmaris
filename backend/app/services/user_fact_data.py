@@ -47,7 +47,8 @@ _PROFILE_JSONB_FIELDS = [
 FACT_ITEM_SELECT = (
     "id,user_id,category,key,value,confidence,source,notes,expires_at,"
     "created_at,updated_at,is_stale,is_deleted,deleted_at,importance_score,"
-    "privacy_level,thread_id,invocation_id,adoption_count,source_experience_ids"
+    "privacy_level,thread_id,invocation_id,adoption_count,source_experience_ids,"
+    "memory_kind,valid_from,superseded_by"
 )
 
 
@@ -64,8 +65,9 @@ async def get_fact_items(
 ) -> list[dict[str, Any]]:
     """Returns user_fact_items, optionally filtered by category.
 
-    active_only=True adds is_deleted=eq.false,is_stale=eq.false filters.
-    Requires migration 202606270019_trend_memory to be applied.
+    active_only=True adds is_deleted=eq.false,is_stale=eq.false,
+    superseded_by=is.null filters. Requires migration
+    202606270019_trend_memory to be applied.
     """
     params: dict[str, str] = {"select": FACT_ITEM_SELECT, "order": "category.asc,key.asc"}
     if category:
@@ -73,6 +75,14 @@ async def get_fact_items(
     if active_only:
         params["is_deleted"] = "eq.false"
         params["is_stale"] = "eq.false"
+        # Temporal layer: a superseded state fact (an old value a newer
+        # state fact has replaced, per upsert_fact_item()'s invalidate-
+        # never-delete branch) is not "active" in the same sense
+        # is_deleted/is_stale already gate on — see
+        # docs/sigmaris/temporal_layer_report.md. Rows with memory_kind
+        # other than 'state' (or NULL, i.e. every pre-existing row) never
+        # get superseded_by set, so this is a no-op for them.
+        params["superseded_by"] = "is.null"
     result = await rest_select(jwt, "user_fact_items", params)
     return result if isinstance(result, list) else []
 
@@ -109,6 +119,14 @@ async def get_fact_items_with_embeddings(
     if active_only:
         params["is_deleted"] = "eq.false"
         params["is_stale"] = "eq.false"
+        # Temporal layer: a superseded state fact (an old value a newer
+        # state fact has replaced, per upsert_fact_item()'s invalidate-
+        # never-delete branch) is not "active" in the same sense
+        # is_deleted/is_stale already gate on — see
+        # docs/sigmaris/temporal_layer_report.md. Rows with memory_kind
+        # other than 'state' (or NULL, i.e. every pre-existing row) never
+        # get superseded_by set, so this is a no-op for them.
+        params["superseded_by"] = "is.null"
     result = await rest_select(jwt, "user_fact_items", params)
     return result if isinstance(result, list) else []
 
@@ -140,6 +158,14 @@ async def get_fact_items_for_user(
     if active_only:
         params["is_deleted"] = "eq.false"
         params["is_stale"] = "eq.false"
+        # Temporal layer: a superseded state fact (an old value a newer
+        # state fact has replaced, per upsert_fact_item()'s invalidate-
+        # never-delete branch) is not "active" in the same sense
+        # is_deleted/is_stale already gate on — see
+        # docs/sigmaris/temporal_layer_report.md. Rows with memory_kind
+        # other than 'state' (or NULL, i.e. every pre-existing row) never
+        # get superseded_by set, so this is a no-op for them.
+        params["superseded_by"] = "is.null"
 
     client = await _get_client()
     response = await client.get(
@@ -201,6 +227,8 @@ async def upsert_fact_item(
     thread_id: str | None = None,
     invocation_id: str | None = None,
     source_experience_ids: list[str] | None = None,
+    memory_kind: str | None = None,
+    valid_from: str | None = None,
 ) -> dict[str, Any]:
     """Atomically upserts one fact item and appends a history row via RPC.
 
@@ -211,6 +239,16 @@ async def upsert_fact_item(
     consolidated from), not who last touched it, so passing them on an
     update to an existing (category, key) is harmless (the RPC ignores them
     then).
+
+    memory_kind/valid_from (temporal layer, see
+    docs/sigmaris/temporal_layer_report.md): when memory_kind='state' and
+    this call's value contradicts an existing active row for the same
+    (category, key), the RPC invalidates the old row (superseded_by, never
+    deleted) instead of overwriting it in place — every other case
+    (event/trait/None, or a 'state' call with no existing row or an
+    unchanged value) behaves as a plain upsert-in-place, unchanged from
+    before this parameter existed. valid_from is only meaningful for
+    memory_kind='state'; the RPC defaults it to "now" if omitted.
     """
     return await rest_rpc(jwt, "upsert_fact_item", {
         "p_category": category,
@@ -221,6 +259,8 @@ async def upsert_fact_item(
         "p_reason": reason,
         "p_notes": notes,
         "p_expires_at": expires_at,
+        "p_memory_kind": memory_kind,
+        "p_valid_from": valid_from,
         "p_thread_id": thread_id,
         "p_invocation_id": invocation_id,
         "p_source_experience_ids": source_experience_ids,
@@ -320,7 +360,15 @@ def build_facts_context(
     """
     scored: list[tuple[float, dict[str, Any]]] = []
     for item in items:
-        if item.get("is_deleted") or item.get("is_stale"):
+        # superseded_by (temporal layer): an invalidated state fact — the
+        # old value a newer, contradicting state fact replaced. Same
+        # reasoning as excluding is_deleted/is_stale: this function forms
+        # the schedule-agent's injected memory context, and showing a
+        # superseded fact here is exactly the "reports old info as current"
+        # symptom this feature exists to fix. get_fact_items(active_only=
+        # True) already filters this at the query level, but this function
+        # takes whatever list it's handed, so it re-checks defensively.
+        if item.get("is_deleted") or item.get("is_stale") or item.get("superseded_by"):
             continue
         value = item.get("value")
         if value is None:
