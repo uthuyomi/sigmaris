@@ -2,12 +2,13 @@ from __future__ import annotations
 
 import json
 import logging
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime
 from typing import Any
 
 from app.services.local_llm import TaskType, get_llm_router
 from app.services.memory_search import search_relevant_memories
 from app.services.supabase_rest import get_current_user
+from app.services.temporal_parsing import resolve_relative_date_phrase
 from app.services.user_fact_data import get_fact_items, upsert_fact_item
 
 logger = logging.getLogger(__name__)
@@ -25,27 +26,6 @@ _VALID_CATEGORIES = frozenset({
 # unclassified (None) rather than rejected outright — extraction must not
 # start failing facts over a new, optional classification.
 _VALID_MEMORY_KINDS = frozenset({"event", "state", "trait"})
-
-# Deliberately a small fixed set of common Japanese relative-date phrases,
-# not a general natural-language time parser (explicit task constraint —
-# "過度に複雑な自然言語時間解析は行わないこと"). Used only to estimate
-# valid_from for memory_kind='state' facts; first match wins. If nothing
-# matches, valid_from is left unset and upsert_fact_item()'s RPC defaults it
-# to "now" — the task's own explicitly-sanctioned fallback ("会話から推定
-# できない場合はcreated_atと同じ値でよい").
-_RELATIVE_DATE_PHRASES: list[tuple[str, int]] = [
-    ("一昨日", -2),
-    ("おととい", -2),
-    ("昨日", -1),
-    ("今日", 0),
-    ("本日", 0),
-    ("先週", -7),
-    ("来週", 7),
-    ("今週", 0),
-    ("先月", -30),
-    ("来月", 30),
-    ("今月", 0),
-]
 
 # How many existing facts (Phase B1 hybrid search, ranked by relevance to the
 # latest user turn) to show the extraction LLM as "already-recorded" context.
@@ -307,12 +287,11 @@ async def _build_existing_facts_context(
 def _estimate_valid_from(conversation: str) -> str | None:
     """Best-effort valid_from estimate for a memory_kind='state' fact, from
     a small fixed set of common Japanese relative-date phrases (see
-    _RELATIVE_DATE_PHRASES) — not a general time-expression parser. Returns
-    None (RPC defaults to "now") when nothing matches."""
-    for phrase, offset_days in _RELATIVE_DATE_PHRASES:
-        if phrase in conversation:
-            return (datetime.now(UTC) + timedelta(days=offset_days)).isoformat()
-    return None
+    temporal_parsing.RELATIVE_DATE_PHRASES, shared with Step 3's diary-date
+    extraction as of Temporal Layer Step 3) — not a general time-expression
+    parser. Returns None (RPC defaults to "now") when nothing matches."""
+    resolved = resolve_relative_date_phrase(conversation, now=datetime.now(UTC))
+    return resolved.isoformat() if resolved else None
 
 
 def _format_conversation(messages: list[dict[str, str]]) -> str:

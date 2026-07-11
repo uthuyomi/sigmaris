@@ -7,12 +7,17 @@ import time
 import uuid
 from collections.abc import AsyncGenerator
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import Any
 from zoneinfo import ZoneInfo
 
 from app.config import settings
-from app.services.app_chat_data import create_chat_thread, get_chat_thread, get_recent_messages_across_threads
+from app.services.app_chat_data import (
+    create_chat_thread,
+    get_chat_thread,
+    get_earliest_message_at,
+    get_recent_messages_across_threads,
+)
 from app.services.orchestrator.agent_registry import get_schedule_agent
 from app.services.orchestrator.audit import finish_invocation, start_invocation
 from app.services.orchestrator.persona_loader import load_persona
@@ -31,10 +36,12 @@ from app.services.memory_compression import compress_memories_if_needed
 from app.services.memory_snapshot import get_memory_snapshot
 from app.services.multihop_search import search_with_decomposition
 from app.services.self_model import get_self_model
+from app.services.temporal_parsing import extract_diary_date_range
 from app.services.user_fact_data import (
     build_facts_context,
     build_profile_context,
     extract_call_name,
+    get_events_in_date_range,
     get_fact_items_for_user,
     get_fact_items,
     get_user_profile,
@@ -252,6 +259,24 @@ async def _cached_active_trends(jwt: str) -> list:
         result = []
     _cache_set(key, result)
     return result or []
+
+
+async def _cached_relationship_origin_date(jwt: str) -> str | None:
+    """Temporal Layer Step 3: the caller's first-ever chat_messages
+    created_at, used as the "relationship origin date" for elapsed-days
+    awareness. Cached on the same 5-minute TTL as the other _cached_* reads
+    in this module for consistency, even though the underlying value never
+    actually changes once set — the query is a single indexed limit-1 read
+    on a single-tenant table, so the redundant re-fetch every 5 minutes is
+    negligible, and a dedicated never-expiring cache would be one more
+    caching mechanism to reason about for no measurable benefit."""
+    key = f"relationship_origin:{_jwt_cache_key(jwt)}"
+    hit, val = _cache_get(key)
+    if hit:
+        return val
+    result = await _timed(get_earliest_message_at(jwt), timeout=3.0, label="relationship_origin_date")
+    _cache_set(key, result)
+    return result
 
 
 # ─── Context builders ─────────────────────────────────────────────────────────
@@ -552,6 +577,89 @@ async def _mark_events_mentioned_bg(*, jwt: str, event_ids: list[str]) -> None:
         logger.exception("orchestrator: failed to mark events as mentioned event_ids=%s", event_ids)
 
 
+# Temporal Layer Step 3 (docs/sigmaris/temporal_layer_report.md): "elapsed
+# days" is only worth mentioning at a round number, per the task's own
+# examples (100日, 365日) — every multiple of 100 or 365 days.
+_RELATIONSHIP_MILESTONE_INTERVALS = (100, 365)
+
+
+def _is_relationship_milestone(days_elapsed: int) -> bool:
+    return days_elapsed > 0 and any(
+        days_elapsed % interval == 0 for interval in _RELATIONSHIP_MILESTONE_INTERVALS
+    )
+
+
+def _build_relationship_duration_context(origin_date_iso: str | None) -> str | None:
+    """Elapsed-days-awareness context (Temporal Layer Step 3). Injected
+    every turn (not just on milestone days) so the LLM can also surface it
+    when "a natural moment in conversation" arises, per the task's own
+    requirement — a Python-side gate can only recognize the deterministic
+    milestone case, not "the conversation flow happened to lead here", so
+    the non-milestone branch instead carries an explicit, strongly-worded
+    restraint instruction rather than being omitted outright. See
+    docs/sigmaris/temporal_layer_report.md for why this split (Python
+    decides milestone-or-not deterministically; the LLM decides whether a
+    non-milestone moment is "natural" per persona.md) was chosen over
+    either extreme (always silent unless milestone, or always free to
+    mention).
+    """
+    if not origin_date_iso:
+        return None
+    try:
+        origin_dt = datetime.fromisoformat(str(origin_date_iso).replace("Z", "+00:00"))
+    except ValueError:
+        return None
+
+    tz = ZoneInfo("Asia/Tokyo")
+    days_elapsed = (datetime.now(tz).date() - origin_dt.astimezone(tz).date()).days
+    if days_elapsed <= 0:
+        return None
+
+    if _is_relationship_milestone(days_elapsed):
+        return (
+            f"[関係の積み重ね] 本日で、海星さんとシグマリスの最初の会話から{days_elapsed}日目という節目です。"
+            "話の流れが自然であれば触れてよいですが、無理に持ち出す必要はありません。"
+        )
+    return (
+        f"[関係の積み重ね] 海星さんとシグマリスの最初の会話から{days_elapsed}日目です。"
+        "節目の日ではないため、本当に自然な文脈でない限りこの情報を自分から持ち出さないでください。"
+        "毎回の会話で機械的に言及しないこと。"
+    )
+
+
+def _build_diary_events_context(date_from_iso: str, events: list[dict[str, Any]]) -> str:
+    """Temporal Layer Step 3's diary-style date-range context ("7月3日に何
+    してた?"). events is already created_at-ascending from
+    get_events_in_date_range()'s ORDER BY, so this just formats it."""
+    try:
+        day_jst = datetime.fromisoformat(str(date_from_iso).replace("Z", "+00:00")).astimezone(ZoneInfo("Asia/Tokyo"))
+        day_label = f"{day_jst.year}年{day_jst.month}月{day_jst.day}日"
+    except ValueError:
+        day_label = "指定日"
+
+    if not events:
+        return (
+            f"[{day_label}の記憶] この日に記録されたevent種別の記憶は見つかりませんでした。"
+            "「特に記録がない」旨を素直に伝えてよい。"
+        )
+
+    lines = [f"[{day_label}の記憶（時系列）]"]
+    for item in events:
+        time_label = ""
+        created_at = item.get("created_at")
+        if created_at:
+            try:
+                dt_jst = datetime.fromisoformat(str(created_at).replace("Z", "+00:00")).astimezone(ZoneInfo("Asia/Tokyo"))
+                time_label = f"{dt_jst.strftime('%H:%M')} "
+            except ValueError:
+                pass
+        cat = item.get("category") or ""
+        key = item.get("key") or ""
+        val = (item.get("value") or "")[:200]
+        lines.append(f"- {time_label}{cat}/{key}: {val}")
+    return "\n".join(lines)
+
+
 async def _build_memory_context(
     *,
     jwt: str,
@@ -663,11 +771,28 @@ async def _build_memory_context(
                 relevant_context = f"{relevant_context}\n{guidance}" if relevant_context else guidance
         except Exception:
             logger.exception("orchestrator: relevant memory search failed")
-    if relevant_context and profile_context:
-        return profile_context + "\n\n" + relevant_context
-    if relevant_context:
-        return relevant_context
-    return profile_context
+
+    # Temporal Layer Step 3: diary-style date questions ("7月3日に何してた?")
+    # — a sibling of the B7/B1 relevant_context above, not a replacement.
+    # extract_diary_date_range() only returns non-None for messages matching
+    # both a resolvable date and an explicit diary trigger phrase (see
+    # temporal_parsing.py), so this is a no-op for the overwhelming majority
+    # of turns. Runs unconditionally alongside relevant_context rather than
+    # branching instead of it, since a genuine diary question could still
+    # also have loosely-related B1 hits worth keeping.
+    diary_context = None
+    if latest_user_text:
+        date_range = extract_diary_date_range(latest_user_text, now=datetime.now(UTC))
+        if date_range:
+            try:
+                date_from, date_to = date_range
+                events = await get_events_in_date_range(jwt, date_from=date_from, date_to=date_to)
+                diary_context = _build_diary_events_context(date_from, events)
+            except Exception:
+                logger.exception("orchestrator: diary date-range search failed")
+
+    parts = [part for part in (profile_context, diary_context, relevant_context) if part]
+    return "\n\n".join(parts) if parts else None
 
 
 # ─── Session continuity: cross-thread recent-log window (Phase A1) ───────────
@@ -1023,6 +1148,12 @@ async def run_orchestrator_chat(
     topic_context = _build_topic_context(current_topic, previous_topic)
     goal_alignment_context = _build_goal_alignment_context(goal_alignment_flags)
     persona_context = _build_unified_persona_context(persona, call_name)
+    # Temporal Layer Step 3: elapsed-days awareness. Computed every turn (not
+    # gated on is_proactive) since a "natural moment in conversation" can
+    # arise in ordinary chat, not just proactive briefings.
+    relationship_duration_context = _build_relationship_duration_context(
+        await _cached_relationship_origin_date(jwt)
+    )
 
     try:
         schedule_result = await call_schedule_agent(
@@ -1040,6 +1171,7 @@ async def run_orchestrator_chat(
             topic_context=topic_context,
             goal_alignment_context=goal_alignment_context,
             persona_context=persona_context,
+            relationship_duration_context=relationship_duration_context,
             persist_thread=persist_thread,
         )
         response_text, guard_violations = _finalize_unified_response(text=schedule_result.text)
@@ -1269,6 +1401,10 @@ async def run_orchestrator_chat_stream(
     topic_context = _build_topic_context(current_topic, previous_topic)
     goal_alignment_context = _build_goal_alignment_context(goal_alignment_flags)
     persona_context = _build_unified_persona_context(persona, call_name)
+    # Temporal Layer Step 3: see run_orchestrator_chat's identical block.
+    relationship_duration_context = _build_relationship_duration_context(
+        await _cached_relationship_origin_date(jwt)
+    )
     schedule_text = ""
     tool_events: list[dict[str, Any]] = []
     returned_thread_id = effective_thread_id
@@ -1293,6 +1429,7 @@ async def run_orchestrator_chat_stream(
             topic_context=topic_context,
             goal_alignment_context=goal_alignment_context,
             persona_context=persona_context,
+            relationship_duration_context=relationship_duration_context,
             persist_thread=persist_thread,
         ):
             if event.tool_event:
