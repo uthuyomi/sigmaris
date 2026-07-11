@@ -158,6 +158,33 @@ async def list_chat_messages(jwt: str, *, thread_id: str) -> list[dict[str, Any]
     return result if isinstance(result, list) else []
 
 
+async def get_earliest_message_at(jwt: str) -> str | None:
+    """Returns the created_at of this user's very first chat_messages row
+    (across all threads), or None if they have never sent a message yet.
+
+    Temporal Layer Step 3 (docs/sigmaris/temporal_layer_report.md): used as
+    the "relationship origin date" for Sigmaris's elapsed-days awareness —
+    the first-ever exchange is the only data-driven, unambiguous candidate
+    in this schema (sigmaris_self_model has no project-start field; its own
+    created_at only reflects when that table/feature was introduced, not
+    when 海星さん and Sigmaris actually started talking).
+    """
+    context = await get_profile_context(jwt)
+    user_id = context["userId"]
+    result = await rest_select(
+        jwt,
+        "chat_messages",
+        {
+            "select": "created_at",
+            "user_id": f"eq.{user_id}",
+            "order": "created_at.asc",
+            "limit": "1",
+        },
+    )
+    rows = result if isinstance(result, list) else []
+    return rows[0]["created_at"] if rows else None
+
+
 async def get_recent_messages_across_threads(
     jwt: str,
     *,

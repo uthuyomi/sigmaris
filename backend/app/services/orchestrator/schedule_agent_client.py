@@ -67,6 +67,7 @@ def _build_system_override(
     topic_context: str | None = None,
     goal_alignment_context: str | None = None,
     persona_context: str | None = None,
+    relationship_duration_context: str | None = None,
 ) -> str:
     parts = []
     if persona_context:
@@ -81,6 +82,17 @@ def _build_system_override(
         parts.append(topic_context)
     if goal_alignment_context:
         parts.append(goal_alignment_context)
+    # Temporal Layer Step 3: last among the per-turn dynamic blocks (only
+    # _BASE_SYSTEM_OVERRIDE, which is fully fixed, follows it) — elapsed-days
+    # changes once per calendar day, the most-variable-by-content block here,
+    # so it belongs closest to the tail per Phase A2's "stable content
+    # first, variable content last" cache-ordering principle. See
+    # docs/sigmaris/temporal_layer_report.md for why true tail placement
+    # (after chat_prompts.py's own time_instruction) isn't reachable from
+    # this module without touching chat_prompts.py, which chat.py's
+    # unrelated direct-chat path also depends on.
+    if relationship_duration_context:
+        parts.append(relationship_duration_context)
     dynamic_context = "\n\n".join(parts)
     if not dynamic_context:
         return _BASE_SYSTEM_OVERRIDE
@@ -143,6 +155,7 @@ def _build_payload(
     topic_context: str | None = None,
     goal_alignment_context: str | None = None,
     persona_context: str | None = None,
+    relationship_duration_context: str | None = None,
     persist_thread: bool = False,
 ) -> dict[str, Any]:
     return {
@@ -158,6 +171,7 @@ def _build_payload(
         "system_override": _build_system_override(
             user_profile_context, self_model_context, preference_patterns_context,
             topic_context, goal_alignment_context, persona_context,
+            relationship_duration_context,
         ),
         "context": {
             "reason": reason,
@@ -183,6 +197,7 @@ async def call_schedule_agent(
     topic_context: str | None = None,
     goal_alignment_context: str | None = None,
     persona_context: str | None = None,
+    relationship_duration_context: str | None = None,
     persist_thread: bool = False,
 ) -> ScheduleAgentResult:
     headers = _build_headers(
@@ -202,6 +217,7 @@ async def call_schedule_agent(
         topic_context=topic_context,
         goal_alignment_context=goal_alignment_context,
         persona_context=persona_context,
+        relationship_duration_context=relationship_duration_context,
         persist_thread=persist_thread,
     )
 
@@ -248,6 +264,7 @@ async def call_schedule_agent_stream(
     topic_context: str | None = None,
     goal_alignment_context: str | None = None,
     persona_context: str | None = None,
+    relationship_duration_context: str | None = None,
     persist_thread: bool = False,
 ) -> AsyncGenerator[ScheduleAgentStreamEvent, None]:
     headers = _build_headers(
@@ -268,6 +285,7 @@ async def call_schedule_agent_stream(
         topic_context=topic_context,
         goal_alignment_context=goal_alignment_context,
         persona_context=persona_context,
+        relationship_duration_context=relationship_duration_context,
         persist_thread=persist_thread,
     )
     stream_endpoint = agent.chat_endpoint.replace("/complete", "/stream")

@@ -441,6 +441,43 @@ def build_facts_context(
     return "\n".join(lines)
 
 
+async def get_events_in_date_range(
+    jwt: str,
+    *,
+    date_from: str,
+    date_to: str,
+) -> list[dict[str, Any]]:
+    """Direct (non-embedding) date-range query for Temporal Layer Step 3's
+    diary-style questions ("7月3日に何してた?") — active event-kind facts
+    whose created_at falls in [date_from, date_to), oldest first.
+
+    Deliberately bypasses the B1 vector/trigram RPCs (search_fact_memory /
+    search_fact_memory_trgm): those rank a fixed-size candidate pool by
+    similarity to a query string, which is the wrong tool for "return
+    everything recorded on this specific day" — an exhaustive, unranked
+    date-window scan is what a diary question actually needs. This is a
+    sibling read path on the same table B1 already indexes, not a change to
+    B1's own search/ranking logic (search_relevant_memories() and the two
+    RPCs are untouched). See docs/sigmaris/temporal_layer_report.md.
+
+    Uses PostgREST's `and=(...)` combinator (see app_event_data.py's
+    search_events() for the same pattern) since date_from/date_to are two
+    conditions on the *same* created_at column — a plain dict can't express
+    two filters under one key.
+    """
+    params: dict[str, str] = {
+        "select": FACT_ITEM_SELECT,
+        "memory_kind": "eq.event",
+        "is_deleted": "eq.false",
+        "is_stale": "eq.false",
+        "superseded_by": "is.null",
+        "and": f"(created_at.gte.{date_from},created_at.lt.{date_to})",
+        "order": "created_at.asc",
+    }
+    result = await rest_select(jwt, "user_fact_items", params)
+    return result if isinstance(result, list) else []
+
+
 async def mark_facts_mentioned(jwt: str, fact_ids: list[str]) -> None:
     """Records that Sigmaris just spontaneously said these fact_ids out loud
     (Temporal Layer Step 2's last_mentioned_at) — called fire-and-forget from
