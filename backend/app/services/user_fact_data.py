@@ -2,10 +2,12 @@ from __future__ import annotations
 
 # 役割: ユーザー事実記憶層の読み書きを提供する。
 
+from datetime import datetime, timezone
 from typing import Any
+from zoneinfo import ZoneInfo
 
 from app.config import settings
-from app.services.supabase_rest import _get_client, _require_supabase_config, rest_rpc, rest_select
+from app.services.supabase_rest import _get_client, _require_supabase_config, rest_rpc, rest_select, rest_update
 
 # Category-level importance scores (mirrors DB trigger set_fact_category_defaults).
 # Used for Python-side sorting without requiring the DB column to exist.
@@ -48,7 +50,7 @@ FACT_ITEM_SELECT = (
     "id,user_id,category,key,value,confidence,source,notes,expires_at,"
     "created_at,updated_at,is_stale,is_deleted,deleted_at,importance_score,"
     "privacy_level,thread_id,invocation_id,adoption_count,source_experience_ids,"
-    "memory_kind,valid_from,superseded_by"
+    "memory_kind,valid_from,superseded_by,last_mentioned_at"
 )
 
 
@@ -347,16 +349,21 @@ def extract_call_name(profile: dict[str, Any] | None) -> str | None:
     return None
 
 
-def build_facts_context(
+def select_top_facts(
     items: list[dict[str, Any]],
     *,
     top_n: int = 20,
-) -> str | None:
-    """Format fact items for injection into the schedule-agent system prompt.
+) -> list[dict[str, Any]]:
+    """Sorts fact items by importance_score × confidence (descending) and
+    returns the top N items that have a non-null value. Falls back to
+    CATEGORY_IMPORTANCE when the importance_score column does not yet exist
+    on the row.
 
-    Sorts items by importance_score × confidence (descending) and includes the
-    top N items that have a non-null value. Falls back to CATEGORY_IMPORTANCE
-    when the importance_score column does not yet exist on the row.
+    Split out of build_facts_context() (Temporal Layer Step 2) so the
+    orchestrator's proactive-briefing path can determine *which* event facts
+    would be surfaced this turn — needed to fire the last_mentioned_at
+    update for exactly those facts, without duplicating the selection logic.
+    See docs/sigmaris/temporal_layer_report.md.
     """
     scored: list[tuple[float, dict[str, Any]]] = []
     for item in items:
@@ -381,17 +388,74 @@ def build_facts_context(
         scored.append((importance * confidence, item))
 
     scored.sort(key=lambda x: x[0], reverse=True)
-    top = scored[:top_n]
+    return [item for _, item in scored[:top_n]]
+
+
+def _format_event_time_hint(created_at: Any) -> str:
+    """Renders an event fact's created_at as a compact JST timestamp, so the
+    persona-generation LLM can compute a natural relative-time expression
+    itself (persona.md's time-expression rules, Temporal Layer Step 2) —
+    this function only supplies the raw anchor date, never a pre-computed
+    phrase like "3日前", since the LLM already receives the current time
+    separately (chat_prompts.py's time_instruction) and doing the subtraction
+    in Python would duplicate that logic in two places."""
+    if not created_at:
+        return ""
+    try:
+        dt = datetime.fromisoformat(str(created_at).replace("Z", "+00:00"))
+    except ValueError:
+        return ""
+    jst = dt.astimezone(ZoneInfo("Asia/Tokyo"))
+    return f"（発生日時の目安: {jst.strftime('%Y-%m-%d %H:%M')} JST）"
+
+
+def build_facts_context(
+    items: list[dict[str, Any]],
+    *,
+    top_n: int = 20,
+) -> str | None:
+    """Format fact items for injection into the schedule-agent system prompt.
+
+    Sorts items by importance_score × confidence (descending) and includes the
+    top N items that have a non-null value. Falls back to CATEGORY_IMPORTANCE
+    when the importance_score column does not yet exist on the row.
+    """
+    top = select_top_facts(items, top_n=top_n)
 
     if not top:
         return None
 
     lines = ["[記憶した事実（重要度順）]"]
-    for _, item in top:
+    for item in top:
         cat = item.get("category") or ""
         key = item.get("key") or ""
         val = (item.get("value") or "")[:200]
         conf = float(item.get("confidence") or 1.0)
-        lines.append(f"- {cat}/{key}: {val}（確信度{conf:.1f}）")
+        # Temporal Layer Step 2: only event-kind facts get a date hint —
+        # state/trait facts are meant to be stated as current fact without a
+        # time qualifier (persona.md's time-expression rules), so attaching
+        # one here would actively contradict that rule.
+        time_hint = _format_event_time_hint(item.get("created_at")) if item.get("memory_kind") == "event" else ""
+        lines.append(f"- {cat}/{key}: {val}（確信度{conf:.1f}）{time_hint}")
 
     return "\n".join(lines)
+
+
+async def mark_facts_mentioned(jwt: str, fact_ids: list[str]) -> None:
+    """Records that Sigmaris just spontaneously said these fact_ids out loud
+    (Temporal Layer Step 2's last_mentioned_at) — called fire-and-forget from
+    the proactive-briefing path only (orchestrator/service.py's is_proactive
+    gate), never from ordinary chat, so a passive answer never marks an event
+    "already mentioned" and blocks the next legitimate spontaneous mention.
+    See docs/sigmaris/temporal_layer_report.md.
+    """
+    ids = [fact_id for fact_id in fact_ids if fact_id]
+    if not ids:
+        return
+    now_iso = datetime.now(timezone.utc).isoformat()
+    await rest_update(
+        jwt,
+        "user_fact_items",
+        {"last_mentioned_at": now_iso},
+        {"id": f"in.({','.join(ids)})"},
+    )
