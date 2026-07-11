@@ -148,8 +148,11 @@ def _freshness_weighted_score(
     importance = row.get("importance_score")
     importance = float(importance) if importance is not None else _DEFAULT_IMPORTANCE_SCORE
     category = str(row.get("category") or "")
+    memory_kind = row.get("memory_kind")
 
-    freshness = compute_freshness_multiplier(category, age_days=age_days, importance_score=importance)
+    freshness = compute_freshness_multiplier(
+        category, age_days=age_days, importance_score=importance, memory_kind=memory_kind
+    )
     weight = _FRESHNESS_RANKING_WEIGHT_TIME_SENSITIVE if time_sensitive_query else _FRESHNESS_RANKING_WEIGHT
     return base_score * (1.0 - weight * (1.0 - freshness))
 

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from app.services.local_llm import TaskType, get_llm_router
@@ -16,6 +17,35 @@ _VALID_CATEGORIES = frozenset({
     "profile", "health", "lifestyle", "environment",
     "devices", "preferences", "relationships", "finance", "goals",
 })
+
+# Temporal layer Step 1 (docs/sigmaris/temporal_layer_report.md): must match
+# the memory_kind CHECK constraint added by
+# 202607220045_temporal_memory_layer.sql. A fact with no memory_kind (LLM
+# omitted it, or returned something outside this set) is left
+# unclassified (None) rather than rejected outright — extraction must not
+# start failing facts over a new, optional classification.
+_VALID_MEMORY_KINDS = frozenset({"event", "state", "trait"})
+
+# Deliberately a small fixed set of common Japanese relative-date phrases,
+# not a general natural-language time parser (explicit task constraint —
+# "過度に複雑な自然言語時間解析は行わないこと"). Used only to estimate
+# valid_from for memory_kind='state' facts; first match wins. If nothing
+# matches, valid_from is left unset and upsert_fact_item()'s RPC defaults it
+# to "now" — the task's own explicitly-sanctioned fallback ("会話から推定
+# できない場合はcreated_atと同じ値でよい").
+_RELATIVE_DATE_PHRASES: list[tuple[str, int]] = [
+    ("一昨日", -2),
+    ("おととい", -2),
+    ("昨日", -1),
+    ("今日", 0),
+    ("本日", 0),
+    ("先週", -7),
+    ("来週", 7),
+    ("今週", 0),
+    ("先月", -30),
+    ("来月", 30),
+    ("今月", 0),
+]
 
 # How many existing facts (Phase B1 hybrid search, ranked by relevance to the
 # latest user turn) to show the extraction LLM as "already-recorded" context.
@@ -52,6 +82,15 @@ categoryは以下の9つのみ使用可能。それ以外は使わないこと:
 - 0.6: 会話から強く示唆される
 - 0.4: 推測・間接的示唆
 
+memory_kindは必ず次の3種類のいずれか一つとし、自由記述は禁止します:
+- event: 一時的な出来事（例:「今日AdFlow AIの実装で詰まった」「先週旅行に
+  行った」）。今は事実でも、時間が経つとともに古い情報になっていくもの
+- state: 現在の状態、常に最新の1つだけが正である情報（例:「Phase Bは完了
+  している」「今は札幌に住んでいる」）。新しい情報が来たら古い情報を置き
+  換えるべきもの
+- trait: 判断傾向・好み（例:「スピード重視で判断する」「猫が好き」）。継
+  続的な性格・嗜好を表すもの
+
 ## 既に記録されている関連事実（参考。今回の会話に関連度が高い順）
 {existing_facts_context}
 
@@ -71,6 +110,7 @@ JSON形式で返してください:
       "key": "snake_case_key",
       "value": "事実の内容",
       "confidence": 0.9,
+      "memory_kind": "event | state | trait のいずれか一つ",
       "reason": "抽出理由（1文）"
     }}
   ]
@@ -162,6 +202,8 @@ async def extract_from_conversation(
         cat = str(fact["category"]).strip()
         key = str(fact["key"]).strip()
         new_conf = float(fact.get("confidence", 0.5))
+        memory_kind = fact.get("memory_kind")
+        memory_kind = memory_kind if memory_kind in _VALID_MEMORY_KINDS else None
 
         if cat not in _VALID_CATEGORIES:
             logger.debug("memory_extractor: skip invalid category '%s' (key=%s)", cat, key)
@@ -169,12 +211,21 @@ async def extract_from_conversation(
             continue
 
         existing_conf = confidence_map.get((cat, key), 0.0)
-        if existing_conf > new_conf:
+        # For memory_kind='state', a lower-confidence *contradiction* must
+        # still reach upsert_fact_item() so its supersede branch can run —
+        # this confidence-skip predates the temporal layer and was designed
+        # for "don't let a shakier restatement downgrade a solid fact", not
+        # for "block a real update just because it happened to be phrased
+        # less certainly". event/trait/unclassified keep the original
+        # behavior unchanged.
+        if memory_kind != "state" and existing_conf > new_conf:
             logger.debug(
                 "memory_extractor: skip %s/%s (existing=%.1f > new=%.1f)",
                 cat, key, existing_conf, new_conf,
             )
             continue
+
+        valid_from = _estimate_valid_from(conversation) if memory_kind == "state" else None
 
         try:
             result = await upsert_fact_item(
@@ -187,6 +238,8 @@ async def extract_from_conversation(
                 reason=str(fact.get("reason", ""))[:200],
                 thread_id=thread_id,
                 invocation_id=invocation_id,
+                memory_kind=memory_kind,
+                valid_from=valid_from,
             )
             upserted.append(result)
         except Exception:
@@ -249,6 +302,17 @@ async def _build_existing_facts_context(
         if isinstance(row.get("category"), str) and isinstance(row.get("key"), str) and row.get("value")
     ]
     return "\n".join(lines) if lines else "（なし）"
+
+
+def _estimate_valid_from(conversation: str) -> str | None:
+    """Best-effort valid_from estimate for a memory_kind='state' fact, from
+    a small fixed set of common Japanese relative-date phrases (see
+    _RELATIVE_DATE_PHRASES) — not a general time-expression parser. Returns
+    None (RPC defaults to "now") when nothing matches."""
+    for phrase, offset_days in _RELATIVE_DATE_PHRASES:
+        if phrase in conversation:
+            return (datetime.now(UTC) + timedelta(days=offset_days)).isoformat()
+    return None
 
 
 def _format_conversation(messages: list[dict[str, str]]) -> str:
