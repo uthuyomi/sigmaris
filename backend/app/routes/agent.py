@@ -94,6 +94,14 @@ class AgentChatRequest(BaseModel):
     system_override: str | None = Field(default=None, max_length=4000)
     persist_thread: bool = False
     context: dict[str, Any] | None = None
+    # Context-fabrication / message-order fix (docs/sigmaris/
+    # phase_ba4_report.md): the caller's genuinely-new user message, kept
+    # separate from `messages` (a cross-thread recent-log window since
+    # Phase A1, not this thread's own history). When provided,
+    # run_chat_completion()/stream_chat_completion_ui() persist only this
+    # thread's own existing messages (re-read fresh at write time) plus
+    # this one, instead of overwriting the thread with the window blend.
+    new_user_message: dict[str, Any] | None = None
 
 
 class AgentToolRequest(BaseModel):
@@ -136,6 +144,7 @@ async def agent_chat_complete(
             system=payload.system_override,
             persist_messages=persist,
             audit_info=audit_info,
+            new_user_message=payload.new_user_message,
         )
     except RuntimeError as error:
         logger.warning("agent chat complete error agent_id=%s error=%s", agent_id, error)
@@ -188,6 +197,7 @@ async def agent_chat_stream(
                 persist_messages=persist,
                 audit_info=audit_info,
                 emit_status_delta=False,
+                new_user_message=payload.new_user_message,
             )
             async for raw_chunk in upstream:
                 text = raw_chunk.decode("utf-8")

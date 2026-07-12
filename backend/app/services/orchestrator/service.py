@@ -874,6 +874,19 @@ def _latest_user_message(messages: list[dict[str, str]]) -> dict[str, str] | Non
     return None
 
 
+def _to_storable_new_user_message(latest_user: dict[str, str] | None) -> dict[str, Any] | None:
+    """Converts _latest_user_message()'s {role, content} shape into the
+    {role, parts, metadata}-ish shape chat_messages storage expects (see
+    schedule_agent_client.py's new_user_message payload field and
+    docs/sigmaris/phase_ba4_report.md). None in, None out — chat.py's
+    persistence falls back to its pre-fix behavior when there's no new
+    turn to scope persistence around (e.g. a cold-start call with no user
+    message at all)."""
+    if latest_user is None:
+        return None
+    return {"role": "user", "parts": [{"type": "text", "text": latest_user["content"]}]}
+
+
 async def _ensure_chat_thread(jwt: str, thread_id: str) -> None:
     """Make sure a chat_threads row exists for thread_id before the
     schedule-agent is asked to persist messages against it — chat.py raises
@@ -1190,6 +1203,12 @@ async def run_orchestrator_chat(
     relationship_duration_context = _build_relationship_duration_context(
         await _cached_relationship_origin_date(jwt)
     )
+    # Context-fabrication / message-order fix (docs/sigmaris/
+    # phase_ba4_report.md): messages here is this call's own caller-
+    # supplied turn, not session_messages' cross-thread window — exactly
+    # the "genuinely new" content chat.py needs to scope persistence to
+    # this thread's own history instead of overwriting it with the window.
+    new_user_message = _to_storable_new_user_message(_latest_user_message(messages))
 
     try:
         schedule_result = await call_schedule_agent(
@@ -1209,6 +1228,7 @@ async def run_orchestrator_chat(
             persona_context=persona_context,
             relationship_duration_context=relationship_duration_context,
             persist_thread=persist_thread,
+            new_user_message=new_user_message,
         )
         response_text, guard_violations = _finalize_unified_response(text=schedule_result.text)
         used_fallback = False
@@ -1441,6 +1461,9 @@ async def run_orchestrator_chat_stream(
     relationship_duration_context = _build_relationship_duration_context(
         await _cached_relationship_origin_date(jwt)
     )
+    # Context-fabrication / message-order fix: see run_orchestrator_chat's
+    # identical block for the full rationale.
+    new_user_message = _to_storable_new_user_message(_latest_user_message(messages))
     schedule_text = ""
     tool_events: list[dict[str, Any]] = []
     returned_thread_id = effective_thread_id
@@ -1467,6 +1490,7 @@ async def run_orchestrator_chat_stream(
             persona_context=persona_context,
             relationship_duration_context=relationship_duration_context,
             persist_thread=persist_thread,
+            new_user_message=new_user_message,
         ):
             if event.tool_event:
                 tool_events.append(event.tool_event)

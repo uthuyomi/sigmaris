@@ -18,6 +18,7 @@ from app.services.app_data import (
     get_chat_thread,
     get_chat_thread_version,
     get_profile_context,
+    list_chat_messages,
     replace_chat_messages,
 )
 from app.services.chat_attachments import build_attachment_facts, extract_latest_image_contexts
@@ -397,7 +398,9 @@ async def _persist_chat_messages_safely(
     *,
     jwt: str,
     thread_id: str,
-    messages_to_store: list[dict[str, Any]],
+    fallback_messages: list[dict[str, Any]],
+    new_user_message: dict[str, Any] | None,
+    assistant_message: dict[str, Any],
     expected_version: int | None,
 ) -> None:
     """Persist a turn's messages without ever letting a failure here break
@@ -406,24 +409,84 @@ async def _persist_chat_messages_safely(
     the time this runs, so failing loudly here would only hide a working
     answer behind a 500.
 
+    Context-fabrication / message-order fix (docs/sigmaris/
+    phase_ba4_report.md): `fallback_messages` used to be the *only* thing
+    this persisted — the orchestrator's `messages` argument, which since
+    Phase A1 is a cross-thread recent-log window (up to 40 messages
+    spanning any of the caller's threads, built to give the LLM
+    continuity), not this thread's own history. Every turn's
+    replace_chat_messages() call was silently overwriting this thread's
+    entire chat_messages with that cross-thread blend, which both (a)
+    could bleed unrelated threads' content into this thread's saved
+    history, feeding a future turn's "さっきの続きだけど" with content
+    that never actually happened in *this* conversation, and (b) re-
+    stamped every carried-over row with a fresh created_at (see
+    _message_insert_payload()'s docstring), collapsing the whole thread's
+    ordering to whatever instant each save happened to run at.
+
+    When the caller supplies `new_user_message` (the orchestrator now
+    does, on every call — see run_orchestrator_chat[_stream]()), this
+    function instead re-reads *this thread's own* current messages via
+    list_chat_messages() — fresh, right before writing, not a stale
+    snapshot from whenever generation started — and persists exactly
+    [existing thread history, this turn's new user message, this turn's
+    new assistant reply]. `fallback_messages` (the old, unscoped
+    behavior) is kept only for a caller that doesn't pass
+    new_user_message, so nothing breaks silently if one exists.
+
     A ThreadVersionConflictError means another writer replaced this
-    thread's messages first (Phase A4); chat_messages was never touched by
-    this call in that case, so nothing was destroyed — this request's view
-    of the thread is just stale. Logged distinctly from other failures so
-    it's identifiable in production logs, but still non-fatal: the next
-    turn re-reads the thread's current version and will persist normally.
+    thread's messages first (Phase A4). When new_user_message is
+    available, this is now recoverable: the thread's current version and
+    messages are re-fetched (picking up whatever the winning writer just
+    saved) and the write is retried once, appending this turn on top of
+    the now-current state rather than silently dropping it. Without
+    new_user_message there isn't enough information to safely rebuild the
+    array without risking duplicated window content, so that path keeps
+    the original log-and-drop behavior — logged distinctly from other
+    failures so it's identifiable in production logs.
     """
+
+    async def _build_messages_to_store() -> list[dict[str, Any]]:
+        if new_user_message is not None:
+            existing = await list_chat_messages(jwt, thread_id=thread_id)
+            return [*existing, new_user_message, assistant_message]
+        return [*fallback_messages, assistant_message]
+
+    messages_to_store = await _build_messages_to_store()
     try:
         await replace_chat_messages(
             jwt, thread_id=thread_id, messages=messages_to_store, expected_version=expected_version
         )
     except ThreadVersionConflictError:
         logger.warning(
-            "chat: thread_id=%s concurrent write conflict (expected_version=%s) — "
-            "this turn's messages were not persisted; existing DB state is untouched",
+            "chat: thread_id=%s concurrent write conflict (expected_version=%s)",
             thread_id,
             expected_version,
         )
+        if new_user_message is None:
+            logger.warning(
+                "chat: thread_id=%s no new_user_message to safely retry with — "
+                "this turn's messages were not persisted; existing DB state is untouched",
+                thread_id,
+            )
+            return
+        try:
+            fresh_version = await get_chat_thread_version(jwt, thread_id)
+            retry_messages = await _build_messages_to_store()
+            await replace_chat_messages(
+                jwt, thread_id=thread_id, messages=retry_messages, expected_version=fresh_version
+            )
+            logger.info(
+                "chat: thread_id=%s persisted on retry after version conflict (retry_version=%s)",
+                thread_id,
+                fresh_version,
+            )
+        except ThreadVersionConflictError:
+            logger.warning(
+                "chat: thread_id=%s retry also hit a version conflict — "
+                "this turn's messages were not persisted; existing DB state is untouched",
+                thread_id,
+            )
     except Exception:
         logger.exception("failed to persist chat messages thread_id=%s", thread_id)
 
@@ -471,6 +534,7 @@ async def run_chat_completion(
     system: str | None = None,
     persist_messages: bool = True,
     audit_info: dict[str, str | None] | None = None,
+    new_user_message: dict[str, Any] | None = None,
 ) -> tuple[str, list[dict[str, Any]], str]:
     expected_version: int | None = None
     if persist_messages:
@@ -561,7 +625,9 @@ async def run_chat_completion(
             await _persist_chat_messages_safely(
                 jwt=jwt,
                 thread_id=thread_id,
-                messages_to_store=messages_to_store,
+                fallback_messages=messages,
+                new_user_message=new_user_message,
+                assistant_message=assistant_message,
                 expected_version=expected_version,
             )
         return final_text, messages_to_store, assistant_message["id"]
@@ -720,7 +786,9 @@ async def run_chat_completion(
         await _persist_chat_messages_safely(
             jwt=jwt,
             thread_id=thread_id,
-            messages_to_store=messages_to_store,
+            fallback_messages=messages,
+            new_user_message=new_user_message,
+            assistant_message=assistant_message,
             expected_version=expected_version,
         )
     return final_text, messages_to_store, assistant_message["id"]
@@ -736,6 +804,7 @@ async def stream_chat_completion_ui(
     persist_messages: bool = True,
     audit_info: dict[str, str | None] | None = None,
     emit_status_delta: bool = True,
+    new_user_message: dict[str, Any] | None = None,
 ) -> AsyncIterator[bytes]:
     message_id = str(uuid.uuid4())
     text_part_id = str(uuid.uuid4())
@@ -855,7 +924,9 @@ async def stream_chat_completion_ui(
             await _persist_chat_messages_safely(
                 jwt=jwt,
                 thread_id=thread_id,
-                messages_to_store=messages_to_store,
+                fallback_messages=messages,
+                new_user_message=new_user_message,
+                assistant_message=assistant_message,
                 expected_version=expected_version,
             )
         for chunk in (
@@ -1078,7 +1149,9 @@ async def stream_chat_completion_ui(
         await _persist_chat_messages_safely(
             jwt=jwt,
             thread_id=thread_id,
-            messages_to_store=messages_to_store,
+            fallback_messages=messages,
+            new_user_message=new_user_message,
+            assistant_message=assistant_message,
             expected_version=expected_version,
         )
 
