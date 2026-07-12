@@ -153,3 +153,117 @@
 5. **`/calendar`・`/timeline`が空ディレクトリのまま残っている。** 実装のための一時的なスキャフォールドなのか、構想倒れになったものなのかは判別できない。今後これらのパスを使う計画があるなら着手を、ないなら削除して構造をすっきりさせることを検討してもよいかもしれない。
 
 6. **`/admin/memory`の"開発者専用"は、認可(authorization)としては強制されていない。** 現状は単一テナントのため実害はないが、将来的にマルチユーザー化する可能性が少しでもあるなら、ロールベースのアクセス制御を検討する価値がある（優先度は低いと考えられる — 現状のリスクは実質ゼロ）。
+
+---
+
+# フロントエンド 不要ページ・レガシーコードの削除・整理（実施報告）
+
+**実施日**: 2026-07-12
+**関連**: 上記の棚卸し調査（6章の懸念点1〜3）を受けての削除作業
+
+## 7. 削除した内容の一覧
+
+### 7.1 `/sigmaris`（レガシーな簡易チャットUI）
+
+削除前に、棚卸し調査時点の結果を`grep`で再検証し、`frontend/src/app/sigmaris/page.tsx`自身と`frontend/src/components/sigmaris-chat.tsx`自身を除いて、参照が一切ないことを再確認した上で削除した。
+
+- `frontend/src/app/sigmaris/page.tsx`（ページ本体）
+- `frontend/src/components/sigmaris-chat.tsx`（`SigmarisChat`コンポーネント）
+
+**判断根拠として明記する、依頼書の字面を超えた追加削除**: 依頼書は「該当するページ・コンポーネントを削除する」とのみ指示していたが、`sigmaris-chat.tsx`が使っていた以下3ファイルも、削除後に他の利用箇所が一切ないことを確認した上で、あわせて削除した。
+
+- `frontend/src/lib/orchestrator/client.ts`（`sendOrchestratorMessage()`。`sigmaris-chat.tsx`の唯一の呼び出し元）
+- `frontend/src/lib/orchestrator/types.ts`（`OrchestratorMessage`型。`client.ts`からのみ参照）
+- `frontend/src/app/api/orchestrator/chat/route.ts`（フロントエンドのNext.js APIルート。`client.ts`の`fetch("/api/orchestrator/chat")`からのみ呼ばれていた）
+
+この3ファイルを残すと、`/sigmaris`を消した直後から「呼び出し元が存在しないコード」という、まさに本タスクが解消しようとしている類の孤立コードを新たに生み出すことになるため、削除範囲に含めるのが妥当と判断した。なお、`frontend/src/lib/orchestrator/stream-translator.ts`は`/chat`が使う`frontend/src/app/api/chat/route.ts`から現役で参照されているため、削除していない（`frontend/src/lib/orchestrator/`ディレクトリ自体は残存）。
+
+またWearOSアプリ（`wearos/app/.../MainActivity.kt`）およびPythonスクリプト（`scripts/sigmaris_chat.py`）も`/api/orchestrator/chat`という文言を含むが、いずれも**バックエンドの`/api/orchestrator/chat`エンドポイントを自分のbaseURL設定から直接呼んでおり**、今回削除したフロントエンドのNext.js APIルート（`frontend/src/app/api/orchestrator/chat/route.ts`）は経由していないことをコードで確認済み。これらへの影響はない。
+
+### 7.2 孤立したランディングページ一式
+
+削除前に`grep`で再検証し、以下6ファイルが相互参照のみで、`frontend/src/app/`配下のどのページからもimportされていないことを再確認した上で削除した。
+
+- `frontend/src/components/landing/landing-page-content.tsx`
+- `frontend/src/components/landing/index.ts`
+- `frontend/src/i18n/landing/copies.ts`
+- `frontend/src/i18n/landing/index.ts`
+- `frontend/src/i18n/landing/locale.ts`
+- `frontend/src/i18n/landing/types.ts`
+
+### 7.3 Stripe課金UI（フロントエンド側のみ）
+
+- `frontend/src/components/billing-panel.tsx`（`BillingPanel`コンポーネント本体）
+- `frontend/src/components/settings/index.ts`から`export * from "@/components/billing-panel";`の1行を削除（バレルファイルの更新のみ、他のエクスポートは無変更）
+- `frontend/src/app/settings/page.tsx`から`BillingPanel`の import・JSX呼び出し・`readBillingStatus(user.id, user.email)`の呼び出しと`billing`変数を削除（他のパネル・機能には一切手を加えていない）
+- `frontend/src/app/api/billing/checkout/route.ts`
+- `frontend/src/app/api/billing/portal/route.ts`
+- `frontend/src/app/api/billing/status/route.ts`
+- `frontend/src/app/api/billing/webhook/route.ts`（Stripeからの受信Webhookエンドポイント。フロントエンド内部からの呼び出し元は元々存在しなかった——Stripe側の設定でこのURLへのWebhook送信が現在も有効になっている場合、削除後は404になる点に注意。Stripeダッシュボード側の設定変更要否はこの調査・実装の範囲外のため、8節に運用者向けの確認事項として記載する）
+
+## 8. Stripe関連で、バックエンド・関連コードに残したものとその理由
+
+以下は**意図的に削除していない**。依頼書の指示（バックエンドのテーブル・関連コードに触れないこと、`/legal`に一切触れないこと）に基づく判断。
+
+- **`frontend/src/lib/billing.ts`（`readBillingStatus`・`isProBillingStatus`等）**: 削除していない。理由は2つある。(1) `frontend/src/lib/billing-gate.ts`の`requireProPlan()`が、Google Calendar同期(`/api/sync/google-calendar`)・データインポート(`/api/import/preview`・`/api/import/commit`)・移動予定スケジュール(`/api/mobility/schedule`)・プッシュ通知購読(`/api/import/subscribe`)という**現役で使われている4つのAPIルートの機能ゲート**として、この関数を直接呼び出している（HTTP経由ではなく関数呼び出し）。依頼書が削除対象として明示したのは`/settings`のProパネルと`/api/billing/*`の4ルートのみであり、これらのゲート機能自体は削除対象に含まれていない。誤って削除すると、この4機能に予期しない影響（型エラーによるビルド不能、またはゲート判定不能によるランタイムエラー）が及ぶため、意図的に残した。(2) これは今回削除した`/api/billing/*`（Stripeの決済・ポータル・受信Webhook）とは異なる、Pro/Free判定という**読み取り専用の判定ロジック**であり、依頼書が指す「Stripe課金UI」（決済導線そのもの）には該当しないと判断した。
+- **`frontend/src/lib/billing-gate.ts`**: 上記と同じ理由で残した。中身は一切変更していない。
+- **`frontend/src/lib/stripe.ts`**（`PRO_MONTHLY_PRICE_JPY`・`getStripe`・`getProPriceId`・`hasStripeConfig`）: 削除していない。`frontend/src/app/legal/terms/page.tsx`と`frontend/src/app/legal/tokushoho/page.tsx`が`PRO_MONTHLY_PRICE_JPY`を直接importしており、削除すると`/legal`のビルドが壊れる。依頼書が「`/legal`には一切触れないこと」と明示している以上、このファイルは全体を残す以外の選択肢がないと判断した。**`getStripe`・`getProPriceId`・`hasStripeConfig`は、`/api/billing/*`削除後は呼び出し元がなくなり、この3つの関数自体は未使用コードとして残っている**（`PRO_MONTHLY_PRICE_JPY`のみ現役）。同一ファイル内の一部エクスポートだけを削除する編集は、`/legal`が依存するファイルに手を入れることになり「一切触れない」という制約と衝突するリスクがあると判断し、ファイル全体を無変更のまま残すことを選んだ。これは判断根拠として明記する——もし`/legal`の内容自体を見直すタイミングが来れば、その時に合わせてこの3関数の要否も再検討するのが安全だと考える。
+- **バックエンドの`billing_customers`・`subscriptions`等のテーブル・関連するPythonコード**: 一切調査・変更していない（依頼書の指示通り、フロントエンドのUI・APIルートのみを対象とした）。
+
+## 9. テスト結果
+
+### 9.1 ビルド・Lint
+
+```
+cd frontend && rm -rf .next && npx next build
+```
+
+初回ビルドは`.next/dev/types/validator.ts`という**過去のビルドキャッシュが生成した、削除済み`/sigmaris`ルートを参照する型検証ファイル**の残存によりTypeScriptエラーで失敗した。これはソースコードではなくビルド成果物（`.next/`、gitignore対象）であり、`.next`ディレクトリを削除してクリーンビルドし直したところ、型エラーは解消し、正常にビルドが完了した。
+
+```
+✓ Compiled successfully in 11.7s
+  Running TypeScript ...
+  Finished TypeScript in 10.3s ...
+✓ Generating static pages using 15 workers (39/39)
+```
+
+ビルド出力のルート一覧（`Route (app)`）を確認し、`/sigmaris`・`/api/orchestrator/chat`・`/api/billing/*`が一覧から消え、`/chat`・`/memory`・`/settings`・`/admin/memory`・`/login`・`/legal`とその配下3ページを含む他の全ルートが引き続き存在することを確認した。
+
+```
+cd frontend && npx eslint .
+```
+
+警告・エラーとも0件（出力なし）。
+
+### 9.2 コードベース全体の参照チェック
+
+`grep`で以下のパターンをフロントエンド全体（`frontend/src`配下）に対して検索し、**削除対象への参照が一切残っていないことを確認した**（マッチ0件）。
+
+```
+sigmaris-chat|SigmarisChat|components/landing|i18n/landing|BillingPanel|billing-panel|api/billing|lib/orchestrator/client|lib/orchestrator/types|app/sigmaris
+```
+
+`frontend`全体（`.ts`/`.tsx`/`.json`/`.mjs`/`.js`、大文字小文字無視）に対しても`sigmaris|landing|billing`で広く再検索し、ヒットした29ファイルを個別に目視確認した。全て「Sigmaris」というブランド名としての言及、または本タスクで意図的に残した`lib/billing.ts`・`lib/billing-gate.ts`・`lib/stripe.ts`・`/legal`関連であり、削除対象への参照は含まれていなかった。
+
+### 9.3 既存テスト
+
+```
+cd backend && ./.venv/Scripts/python.exe -m pytest tests/ -q
+16 passed in 1.60s
+```
+
+本タスクはフロントエンドのみが対象のため、バックエンドの既存テストへの影響はそもそもない（実際に影響なしを確認済み）。フロントエンド側には元々テストスイートが存在しないため（`package.json`の`scripts`は`dev`/`build`/`start`/`lint`のみ）、9.1節のビルド成功とLintのクリーンさを、フロントエンドの検証結果として位置づけている。
+
+### 9.4 要件との対応
+
+1. `/sigmaris`削除、`/chat`機能への影響なし: ビルド成功・`/chat`のルート出力に変化なし・`sendOrchestratorMessage`等の削除ファイルへの参照0件で確認済み
+2. 孤立ランディングページの削除: 完了、参照0件で確認済み
+3. Stripe課金UI(フロントエンド側)削除・バックエンドテーブル保持: フロントエンドのコンポーネント・APIルートのみ削除、バックエンドは未調査・未変更
+4. `/legal`に一切手を加えていないこと: `frontend/src/app/legal/`配下は今回のdiffに一切含まれていない（`git status`で確認）
+5. 既存主要ページへの悪影響なし: ビルド成功、ルート一覧に`/chat`・`/memory`・`/settings`・`/admin/memory`・`/login`が全て残存
+
+## 10. 気づいた懸念点
+
+1. **Stripe Webhookの受信設定（Stripeダッシュボード側）が、今回のコード削除と同期していない可能性がある。** `/api/billing/webhook`を削除したため、もしStripe側の設定でこのアプリのURLへWebhookを送信する設定が現在も有効なら、今後そのリクエストは404になる。実際にStripeでの決済が有効化された状態で運用されているかは、この調査・実装だけでは判断できないため、運用者側での確認を推奨する。
+2. **`lib/stripe.ts`の`getStripe`・`getProPriceId`・`hasStripeConfig`が未使用のまま残っている。** 8節で述べた通り、`/legal`に触れないという制約を優先した結果の意図的な残置であり、今すぐの実害はない。`/legal`の内容を将来見直す際に、あわせて整理を検討する価値がある。
+3. **今回の削除は棚卸し調査で発見した3点（`/sigmaris`・ランディングページ・Stripe UI）に限定しており、`/calendar`・`/timeline`の空ディレクトリ、および`requireProPlan`で機能ゲートされている4つのAPIルート（Google Calendar同期・データインポート・移動予定・プッシュ通知購読）については、依頼書の明示的な指示通り一切手を加えていない。** これらのAPIルートは、海星さんのアカウントのbilling状態（`billing_customers`/`subscriptions`テーブル）次第では、実際には現在も402エラーでブロックされている可能性がある——これは今回の変更が原因ではなく、Stripe課金機能の削除前から存在していた状態であり、本タスクのスコープ外として触れていない。単一テナント運用の実態に照らして、これらのゲート自体の要否を見直すかどうかは、別タスクとしての検討価値がある。

@@ -4,7 +4,6 @@ import { AppShell } from "@/components/app-shell";
 import {
   AiTonePreferencePanel,
   ArrivalLeadMinutesPanel,
-  BillingPanel,
   GoogleCalendarSyncPanel,
   IntegrationStatusPanel,
   LanguagePreferencePanel,
@@ -16,7 +15,6 @@ import { hasGoogleCalendarWriteConfig } from "@/lib/google/calendar";
 import { hasGoogleMapsConfig } from "@/lib/google/maps";
 import { hasGoogleSheetsReadConfig } from "@/lib/google/sheets";
 import { getDictionary } from "@/lib/i18n";
-import { readBillingStatus } from "@/lib/billing";
 import { readSettingsPageSettings } from "@/lib/profile-settings";
 import { requireUser } from "@/lib/supabase/auth";
 import { hasSupabaseConfig } from "@/lib/supabase/client";
@@ -29,10 +27,9 @@ type SettingsPageProps = {
 
 export default async function SettingsPage({ searchParams }: SettingsPageProps) {
   const user = await requireUser("/settings");
-  const [resolved, settings, billing] = await Promise.all([
+  const [resolved, settings] = await Promise.all([
     searchParams ? searchParams : Promise.resolve(undefined),
     readSettingsPageSettings(user.id),
-    readBillingStatus(user.id, user.email),
   ]);
   const {
     locale,
@@ -57,8 +54,6 @@ export default async function SettingsPage({ searchParams }: SettingsPageProps) 
       theme={theme}
     >
       <div className="settings-page grid gap-4 xl:grid-cols-[1.2fr_1fr]">
-        <BillingPanel initialBilling={billing} />
-
         <ThemePreferencePanel currentTheme={theme} />
 
         <LanguagePreferencePanel
