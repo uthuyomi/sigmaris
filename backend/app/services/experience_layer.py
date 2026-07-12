@@ -298,6 +298,32 @@ async def get_recent_experiences(
         return []
 
 
+async def get_experiences_by_ids(experience_ids: list[str]) -> list[dict[str, Any]]:
+    """Return sigmaris_experience rows for a specific set of ids.
+
+    Phase R-1 (docs/sigmaris/phase_r_report.md): the dereferencing step
+    cycle_trace.py uses to turn user_fact_items.source_experience_ids into
+    the actual Experience-stage rows a consolidated fact came from.
+    """
+    ids = [str(eid) for eid in experience_ids if eid]
+    if not ids:
+        return []
+    try:
+        base_url, _ = _require_supabase_config()
+        client = await _get_client()
+        r = await client.get(
+            f"{base_url}/rest/v1/{_TABLE}",
+            headers=_svc_headers(),
+            params={"id": f"in.({','.join(ids)})"},
+        )
+        r.raise_for_status()
+        data = r.json()
+        return data if isinstance(data, list) else []
+    except Exception:
+        logger.exception("experience_layer: failed to get_experiences_by_ids")
+        return []
+
+
 async def analyze_patterns() -> dict[str, Any] | None:
     """Weekly scheduled: LLM analysis of recent experience patterns."""
     try:

@@ -79,7 +79,7 @@ _ANALYZE_SYSTEM = (
     "さい。必ず有効なJSONのみを返してください。"
 )
 
-_ANALYZE_PROMPT = """海星さんの長期的な目標(user_fact_itemsのcategory=goals):
+_ANALYZE_PROMPT = """海星さんの長期的な目標(user_fact_itemsのcategory=goals、idは下記のfacts参照用):
 {goals}
 
 ## 直近の決定記録({decision_count}件、sigmaris_decision_log)
@@ -115,12 +115,15 @@ _ANALYZE_PROMPT = """海星さんの長期的な目標(user_fact_itemsのcategor
   よいのは、既存のどれとも異なる、本当に新しい乖離の場合だけである
 - evidence_refsには、根拠とした決定または話題のid(上記に付与されているものを
   そのまま)を全て列挙すること
+- goal_fact_idには、対象の目標に対応するuser_fact_itemsのid(上記の目標一覧に
+  付与されているものをそのまま)を指定すること
 
 以下のJSON形式で出力してください:
 {{
   "flags": [
     {{
       "goal_reference": "対象の目標を表す短い識別子(目標のkeyやvalueの要約)",
+      "goal_fact_id": "対象の目標のuser_fact_items id",
       "flag_statement": "観察された乖離の中立的な説明",
       "evidence_refs": ["id1", "id2", "..."]
     }}
@@ -150,11 +153,17 @@ async def _upsert_flag(
     goal_reference: str,
     flag_statement: str,
     evidence_refs: list[str],
+    goal_fact_ids: list[str],
     analyzed_decision_count: int,
 ) -> str | None:
     """Insert a new flag, or merge new evidence into an existing one
     (matched by goal_reference) — same accumulate-across-runs pattern as
-    decision_log._upsert_preference_pattern (Phase B14)."""
+    decision_log._upsert_preference_pattern (Phase B14).
+
+    goal_fact_ids (Phase R-1) merges the same way evidence_refs already
+    does — a later run may resolve the same goal_reference against a
+    goal_fact_id not seen (or not resolvable) in an earlier run.
+    """
     base_url, _ = _require_supabase_config()
     client = await _get_client()
     now = datetime.now(UTC).isoformat()
@@ -162,7 +171,7 @@ async def _upsert_flag(
     existing_resp = await client.get(
         f"{base_url}/rest/v1/{_TABLE}",
         headers=_svc_headers(),
-        params={"goal_reference": f"eq.{goal_reference}", "select": "id,evidence_refs"},
+        params={"goal_reference": f"eq.{goal_reference}", "select": "id,evidence_refs,goal_fact_ids"},
     )
     existing_resp.raise_for_status()
     existing_rows = existing_resp.json()
@@ -172,10 +181,14 @@ async def _upsert_flag(
         prior_refs = existing.get("evidence_refs")
         prior_refs = prior_refs if isinstance(prior_refs, list) else []
         merged_refs = list(dict.fromkeys([*prior_refs, *evidence_refs]))
+        prior_goal_fact_ids = existing.get("goal_fact_ids")
+        prior_goal_fact_ids = prior_goal_fact_ids if isinstance(prior_goal_fact_ids, list) else []
+        merged_goal_fact_ids = list(dict.fromkeys([*prior_goal_fact_ids, *goal_fact_ids]))
         payload = {
             "flag_statement": flag_statement,
             "evidence_refs": merged_refs,
             "evidence_count": len(merged_refs),
+            "goal_fact_ids": merged_goal_fact_ids,
             "last_confirmed_at": now,
             "last_analyzed_decision_count": analyzed_decision_count,
         }
@@ -191,6 +204,7 @@ async def _upsert_flag(
             "flag_statement": flag_statement,
             "evidence_refs": evidence_refs,
             "evidence_count": len(evidence_refs),
+            "goal_fact_ids": goal_fact_ids,
             "last_confirmed_at": now,
             "last_analyzed_decision_count": analyzed_decision_count,
         }
@@ -203,6 +217,30 @@ async def _upsert_flag(
     resp.raise_for_status()
     rows = resp.json()
     return rows[0].get("id") if isinstance(rows, list) and rows else None
+
+
+async def get_goal_alignment_flags_by_ids(flag_ids: list[str]) -> list[dict[str, Any]]:
+    """Return sigmaris_goal_alignment_flags rows for a specific set of ids.
+    Phase R-1 (docs/sigmaris/phase_r_report.md): the entry point
+    cycle_trace.py's Policy->evidence trace uses to fetch a specific flag
+    before walking its evidence_refs/goal_fact_ids."""
+    ids = [str(fid) for fid in flag_ids if fid]
+    if not ids:
+        return []
+    try:
+        base_url, _ = _require_supabase_config()
+        client = await _get_client()
+        r = await client.get(
+            f"{base_url}/rest/v1/{_TABLE}",
+            headers=_svc_headers(),
+            params={"id": f"in.({','.join(ids)})"},
+        )
+        r.raise_for_status()
+        data = r.json()
+        return data if isinstance(data, list) else []
+    except Exception:
+        logger.exception("goal_alignment: failed to get_goal_alignment_flags_by_ids")
+        return []
 
 
 async def _build_relevant_facts_context(
@@ -309,9 +347,10 @@ async def extract_goal_alignment_flags(user_id: str, *, jwt: str | None = None) 
         decision_ids = {d.get("id") for d in decisions if d.get("id")}
         topic_ids = {t.get("id") for t in topics if t.get("id")}
         evidence_ids = decision_ids | topic_ids
+        goal_fact_ids_known = {g.get("id") for g in goals if g.get("id")}
 
         goal_lines = "\n".join(
-            f"- key={g.get('key')} value={g.get('value')}" for g in goals
+            f"- id={g.get('id')} key={g.get('key')} value={g.get('value')}" for g in goals
         )
         decision_lines = "\n".join(
             f"- id={d.get('id')} type={d.get('decision_type')} title={d.get('title')} "
@@ -377,11 +416,28 @@ async def extract_goal_alignment_flags(user_id: str, *, jwt: str | None = None) 
                 )
                 continue
 
+            # Phase R-1 (docs/sigmaris/phase_r_report.md): goal_fact_ids is
+            # this flag's id-based reference back to the specific
+            # user_fact_items (category='goals') row(s) it concerns —
+            # goal_reference alone (a free-text label) was never a stable
+            # pointer. Same never-trust-an-LLM-invented-id validation as
+            # evidence_refs above; a candidate whose goal_fact_id doesn't
+            # resolve to a real goal we actually sent the LLM is dropped
+            # (empty array), not defaulted to a guess — an unresolvable
+            # reference is worse than an absent one.
+            raw_goal_fact_id = candidate.get("goal_fact_id")
+            goal_fact_ids = (
+                [raw_goal_fact_id]
+                if isinstance(raw_goal_fact_id, str) and raw_goal_fact_id in goal_fact_ids_known
+                else []
+            )
+
             try:
                 await _upsert_flag(
                     goal_reference=goal_reference,
                     flag_statement=flag_statement,
                     evidence_refs=supporting_refs,
+                    goal_fact_ids=goal_fact_ids,
                     analyzed_decision_count=len(decisions),
                 )
                 result["flags_stored"] += 1

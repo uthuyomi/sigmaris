@@ -184,6 +184,41 @@ async def get_fact_items_for_user(
     return result if isinstance(result, list) else []
 
 
+async def get_fact_items_by_ids(fact_ids: list[str]) -> list[dict[str, Any]]:
+    """Return user_fact_items rows for a specific set of ids, service-role
+    (same rationale as get_fact_items_for_user: this is Sigmaris's own
+    introspection, not a user-initiated request with a JWT in hand).
+
+    Phase R-1 (docs/sigmaris/phase_r_report.md): the dereferencing step
+    cycle_trace.py uses to turn an id reference (decision_log.memory_refs,
+    sigmaris_goal_alignment_flags.goal_fact_ids, ...) into the actual
+    Memory-stage rows it points at. Order is whatever PostgREST returns
+    (not meaningful for a fixed id set); callers needing a specific order
+    should re-sort client-side.
+    """
+    ids = [str(fid) for fid in fact_ids if fid]
+    if not ids:
+        return []
+    base_url, _ = _require_supabase_config()
+    key = settings.supabase_service_role_key
+    if not key:
+        raise RuntimeError("SUPABASE_SERVICE_ROLE_KEY is not configured.")
+
+    client = await _get_client()
+    response = await client.get(
+        f"{base_url}/rest/v1/user_fact_items",
+        headers={
+            "apikey": key,
+            "Authorization": f"Bearer {key}",
+            "Content-Type": "application/json",
+        },
+        params={"select": FACT_ITEM_SELECT, "id": f"in.({','.join(ids)})"},
+    )
+    response.raise_for_status()
+    result = response.json()
+    return result if isinstance(result, list) else []
+
+
 # Phase B5: columns needed by the memory freshness/contradiction dashboard.
 # Deliberately excludes `embedding` (vector(768), large and irrelevant to a
 # human-facing list) and the generated `search_text` column.
