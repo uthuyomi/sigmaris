@@ -303,6 +303,34 @@ async def get_recent_decisions(
         return []
 
 
+async def get_decisions_by_ids(decision_ids: list[str]) -> list[dict[str, Any]]:
+    """Return sigmaris_decision_log rows for a specific set of ids.
+
+    Phase R-1 (docs/sigmaris/phase_r_report.md): the dereferencing step
+    cycle_trace.py uses to turn sigmaris_user_preference_patterns.
+    supporting_decision_ids into the actual decision rows a Belief-Update
+    pattern was inferred from — and, one hop further, each of those
+    decisions' own memory_refs into the Memory-stage facts they relied on.
+    """
+    ids = [str(did) for did in decision_ids if did]
+    if not ids:
+        return []
+    try:
+        base_url, _ = _require_supabase_config()
+        client = await _get_client()
+        r = await client.get(
+            f"{base_url}/rest/v1/{_TABLE}",
+            headers=_svc_headers(),
+            params={"id": f"in.({','.join(ids)})"},
+        )
+        r.raise_for_status()
+        data = r.json()
+        return data if isinstance(data, list) else []
+    except Exception:
+        logger.exception("decision_log: failed to get_decisions_by_ids")
+        return []
+
+
 async def analyze_decision_patterns() -> dict[str, Any] | None:
     """Sunday 4:30 AM scheduled: LLM analysis of recent decision patterns."""
     try:
@@ -425,6 +453,30 @@ async def get_active_preference_patterns(limit: int = 5) -> list[dict[str, Any]]
         return data if isinstance(data, list) else []
     except Exception:
         logger.exception("decision_log: failed to get_active_preference_patterns")
+        return []
+
+
+async def get_preference_patterns_by_ids(pattern_ids: list[str]) -> list[dict[str, Any]]:
+    """Return sigmaris_user_preference_patterns rows for a specific set of
+    ids. Phase R-1 (docs/sigmaris/phase_r_report.md): the entry point
+    cycle_trace.py's Belief->Memory trace uses to fetch a specific pattern
+    before walking its supporting_decision_ids."""
+    ids = [str(pid) for pid in pattern_ids if pid]
+    if not ids:
+        return []
+    try:
+        base_url, _ = _require_supabase_config()
+        client = await _get_client()
+        r = await client.get(
+            f"{base_url}/rest/v1/{_PATTERNS_TABLE}",
+            headers=_svc_headers(),
+            params={"id": f"in.({','.join(ids)})"},
+        )
+        r.raise_for_status()
+        data = r.json()
+        return data if isinstance(data, list) else []
+    except Exception:
+        logger.exception("decision_log: failed to get_preference_patterns_by_ids")
         return []
 
 

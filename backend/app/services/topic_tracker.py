@@ -115,6 +115,33 @@ async def get_current_and_previous_topic() -> tuple[dict[str, Any] | None, dict[
     return current, previous
 
 
+async def get_topics_by_ids(topic_ids: list[str]) -> list[dict[str, Any]]:
+    """Return sigmaris_topic_log rows for a specific set of ids.
+
+    Phase R-1 (docs/sigmaris/phase_r_report.md): the dereferencing step
+    cycle_trace.py uses to turn sigmaris_goal_alignment_flags.evidence_refs
+    (a mixed decision_log/topic_log id set) into the actual topic rows
+    among that evidence.
+    """
+    ids = [str(tid) for tid in topic_ids if tid]
+    if not ids:
+        return []
+    try:
+        base_url, _ = _require_supabase_config()
+        client = await _get_client()
+        r = await client.get(
+            f"{base_url}/rest/v1/{_TABLE}",
+            headers=_svc_headers(),
+            params={"id": f"in.({','.join(ids)})"},
+        )
+        r.raise_for_status()
+        data = r.json()
+        return data if isinstance(data, list) else []
+    except Exception:
+        logger.exception("topic_tracker: failed to get_topics_by_ids")
+        return []
+
+
 async def _record_topic(
     *,
     topic_label: str,
