@@ -816,9 +816,44 @@ def _extract_text_from_parts(parts: list[dict[str, Any]] | None) -> str:
     return "\n".join(texts).strip()
 
 
+def _format_message_timestamp_prefix(created_at: Any) -> str:
+    """JST timestamp prefix for one chat_messages row, in the same spirit
+    as Step 2's event date hints (user_fact_data.py's
+    _format_event_time_hint) — a raw anchor timestamp, not a pre-computed
+    relative phrase, since the model already receives the current time
+    separately (chat_prompts.py's time_instruction) and doing the
+    subtraction here would duplicate that logic in two places."""
+    if not created_at:
+        return ""
+    try:
+        dt = datetime.fromisoformat(str(created_at).replace("Z", "+00:00"))
+    except ValueError:
+        return ""
+    jst = dt.astimezone(ZoneInfo("Asia/Tokyo"))
+    return f"[{jst.strftime('%Y-%m-%d %H:%M')} JST] "
+
+
 def _window_rows_to_messages(rows: list[dict[str, Any]]) -> list[dict[str, str]]:
     """Convert chat_messages rows (parts-based) into the simple role/content
-    shape the orchestrator and schedule-agent already use."""
+    shape the orchestrator and schedule-agent already use.
+
+    Each row's created_at is prefixed onto its content as a compact JST
+    timestamp (see docs/sigmaris/temporal_layer_report.md). Without this,
+    every turn in this cross-thread window reached the model as a flat,
+    undated {role, content} pair, so it had no way to tell a turn from
+    moments ago apart from one several days old — the direct cause of a
+    reported "さっき"/"この前" mis-dating bug. Deliberately raw
+    (unconverted) timestamps: the model computes the natural relative
+    expression itself, per persona.md's time-expression rules, which this
+    fix also extended to cover conversation history (previously scoped to
+    memory_kind='event' facts only).
+
+    The just-typed latest turn is appended separately by this function's
+    only caller (_prepare_session_messages, via _latest_user_message) and
+    is deliberately left unprefixed — it's implicitly "now", which
+    time_instruction (chat_prompts.py) already tells the model, so dating
+    it here would be redundant.
+    """
     result: list[dict[str, str]] = []
     for row in rows:
         role = row.get("role")
@@ -827,7 +862,8 @@ def _window_rows_to_messages(rows: list[dict[str, Any]]) -> list[dict[str, str]]
         content = _extract_text_from_parts(row.get("parts"))
         if not content:
             continue
-        result.append({"role": role, "content": content})
+        prefix = _format_message_timestamp_prefix(row.get("created_at"))
+        result.append({"role": role, "content": f"{prefix}{content}"})
     return result
 
 
