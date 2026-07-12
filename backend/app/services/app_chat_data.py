@@ -149,7 +149,15 @@ async def list_chat_messages(jwt: str, *, thread_id: str) -> list[dict[str, Any]
         jwt,
         "chat_messages",
         {
-            "select": "id,role,parts,metadata",
+            # created_at (added for the chat_messages ordering/context-
+            # fabrication fix, docs/sigmaris/phase_ba4_report.md) is needed
+            # by replace_chat_messages()'s callers that re-persist rows
+            # returned from here — see _message_insert_payload()'s
+            # created_at-preservation logic below. Purely additive: every
+            # existing reader of this function already ignores unknown
+            # fields (the frontend's listChatMessages() only reads
+            # id/role/parts/metadata).
+            "select": "id,role,parts,metadata,created_at",
             "user_id": f"eq.{user_id}",
             "thread_id": f"eq.{thread_id}",
             "order": "message_order.asc",
@@ -298,8 +306,24 @@ async def replace_chat_messages(
 def _message_insert_payload(
     thread_id: str, user_id: str, messages: list[dict[str, Any]]
 ) -> list[dict[str, Any]]:
-    return [
-        {
+    """Builds the INSERT payload for replace_chat_messages()'s delete-then-
+    reinsert.
+
+    created_at is preserved from the source message dict when present
+    (docs/sigmaris/phase_ba4_report.md, "文脈捏造・表示順序の乱れ" fix):
+    every replace_chat_messages() call re-inserts the *entire* thread, and
+    a bulk INSERT's `now()` default resolves to one identical transaction
+    timestamp for every row with no explicit value — so before this fix,
+    every message already in a thread silently got re-stamped with the
+    exact same "just now" created_at on every single turn, collapsing the
+    whole thread's chronology to one instant. Messages genuinely new to
+    this call (no created_at key, e.g. the turn's own new user/assistant
+    messages) still fall through to the column's own `now()` default,
+    which is correct for them — they really are being created now.
+    """
+    payloads = []
+    for index, message in enumerate(messages):
+        payload = {
             "thread_id": thread_id,
             "user_id": user_id,
             "message_order": index,
@@ -307,5 +331,8 @@ def _message_insert_payload(
             "parts": compact_parts(message.get("parts", [])),
             "metadata": message.get("metadata", {}),
         }
-        for index, message in enumerate(messages)
-    ]
+        created_at = message.get("created_at")
+        if created_at:
+            payload["created_at"] = created_at
+        payloads.append(payload)
+    return payloads

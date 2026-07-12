@@ -157,6 +157,7 @@ def _build_payload(
     persona_context: str | None = None,
     relationship_duration_context: str | None = None,
     persist_thread: bool = False,
+    new_user_message: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     return {
         "thread_id": thread_id,
@@ -178,6 +179,12 @@ def _build_payload(
             "invocationId": invocation_id,
             "callerAgentId": settings.schedule_agent_id,
         },
+        # Context-fabrication / message-order fix (docs/sigmaris/
+        # phase_ba4_report.md): distinct from `messages` above (a cross-
+        # thread recent-log window) — the schedule-agent uses this to
+        # persist only this thread's own history plus this one new
+        # message, instead of overwriting the thread with the window.
+        "new_user_message": new_user_message,
     }
 
 
@@ -199,6 +206,7 @@ async def call_schedule_agent(
     persona_context: str | None = None,
     relationship_duration_context: str | None = None,
     persist_thread: bool = False,
+    new_user_message: dict[str, Any] | None = None,
 ) -> ScheduleAgentResult:
     headers = _build_headers(
         jwt=jwt,
@@ -219,6 +227,7 @@ async def call_schedule_agent(
         persona_context=persona_context,
         relationship_duration_context=relationship_duration_context,
         persist_thread=persist_thread,
+        new_user_message=new_user_message,
     )
 
     client = await _get_http_client()
@@ -266,6 +275,7 @@ async def call_schedule_agent_stream(
     persona_context: str | None = None,
     relationship_duration_context: str | None = None,
     persist_thread: bool = False,
+    new_user_message: dict[str, Any] | None = None,
 ) -> AsyncGenerator[ScheduleAgentStreamEvent, None]:
     headers = _build_headers(
         jwt=jwt,
@@ -287,6 +297,7 @@ async def call_schedule_agent_stream(
         persona_context=persona_context,
         relationship_duration_context=relationship_duration_context,
         persist_thread=persist_thread,
+        new_user_message=new_user_message,
     )
     stream_endpoint = agent.chat_endpoint.replace("/complete", "/stream")
 
