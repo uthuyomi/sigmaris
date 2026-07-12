@@ -1596,3 +1596,83 @@ async def run_orchestrator_chat_stream(
         used_fallback=used_fallback,
         guard_violations=guard_violations,
     )
+
+
+async def run_orchestrator_chat_stream_detached(
+    *,
+    jwt: str,
+    google_access_token: str | None,
+    google_refresh_token: str | None,
+    messages: list[dict[str, str]],
+    thread_id: str | None,
+    request_context: dict[str, Any] | None,
+) -> AsyncGenerator[OrchestratorStreamEvent, None]:
+    """Decouples response generation from the frontend's SSE connection
+    (docs/sigmaris/phase_ba4_report.md, "フロントエンド切断時の応答継続").
+
+    Investigation found that run_orchestrator_chat_stream() above is itself
+    the async generator directly driven by orchestrator.py's StreamingResponse
+    — and it in turn drives a *second*, nested HTTP streaming call
+    (schedule_agent_client.py's httpx call to /api/agent/chat/stream, which
+    wraps chat.py's own OpenAI streaming call). When the frontend
+    disconnects, Starlette cancels the outermost generator; that
+    cancellation (GeneratorExit) propagates straight through every `async
+    for` in this chain, aborting the still-in-flight OpenAI generation
+    itself before it finishes. Because chat_messages persistence
+    (chat.py::_persist_chat_messages_safely) and this module's own
+    fire-and-forget scheduling (_extract_facts_bg / _cognitive_layer_bg /
+    _mark_events_mentioned_bg, all below the `async for` loop in
+    run_orchestrator_chat_stream) only run *after* generation completes,
+    an early disconnect meant the turn was silently lost: never saved,
+    never fact-extracted, never decision-detected — matching 海星さん's
+    report of losing context after closing the app mid-response.
+
+    Fix: run the *entire* run_orchestrator_chat_stream() generator inside
+    an independent asyncio.Task (_produce below), and have this function —
+    the one orchestrator.py's route actually iterates — merely relay
+    events from a queue that task populates. A bare asyncio.create_task()
+    is not part of the request-handling coroutine's own await chain, so
+    Starlette cancelling *that* coroutine (on disconnect) does not cancel
+    this task — it keeps running to completion regardless, exactly like
+    this module's existing _extract_facts_bg/_cognitive_layer_bg
+    fire-and-forget tasks already do. If the frontend is still connected
+    when an event arrives, it's forwarded normally; if not, the queue
+    simply goes unread and is garbage-collected once the background task
+    finishes — the generation, persistence, and fire-and-forget scheduling
+    all still complete server-side either way.
+
+    Deliberately scoped to the streaming path only: the non-streaming
+    run_orchestrator_chat()/`/api/orchestrator/chat` is a single awaited
+    coroutine, not an async generator inside an actively disconnect-
+    monitored StreamingResponse — Starlette does not run the same
+    per-chunk disconnect watcher against it, so it does not share this
+    failure mode in the same way and was left as-is.
+    """
+    queue: asyncio.Queue[OrchestratorStreamEvent | Exception | None] = asyncio.Queue()
+
+    async def _produce() -> None:
+        try:
+            async for event in run_orchestrator_chat_stream(
+                jwt=jwt,
+                google_access_token=google_access_token,
+                google_refresh_token=google_refresh_token,
+                messages=messages,
+                thread_id=thread_id,
+                request_context=request_context,
+            ):
+                await queue.put(event)
+        except Exception as error:  # noqa: BLE001
+            logger.exception("orchestrator: detached stream generation failed")
+            await queue.put(error)
+        finally:
+            await queue.put(None)
+
+    asyncio.create_task(_produce(), name="orchestrator_stream_detached")
+
+    while True:
+        item = await queue.get()
+        if item is None:
+            return
+        if isinstance(item, Exception):
+            raise item
+        yield item

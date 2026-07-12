@@ -7,7 +7,10 @@ from fastapi import APIRouter, Header, HTTPException
 from fastapi.responses import StreamingResponse
 
 from app.schemas.orchestrator import OrchestratorChatRequest, OrchestratorChatResponse
-from app.services.orchestrator.service import run_orchestrator_chat, run_orchestrator_chat_stream
+from app.services.orchestrator.service import (
+    run_orchestrator_chat,
+    run_orchestrator_chat_stream_detached,
+)
 
 router = APIRouter(prefix="/api/orchestrator", tags=["orchestrator"])
 logger = logging.getLogger(__name__)
@@ -74,7 +77,14 @@ async def orchestrator_chat_stream(
 
     async def _generate():
         try:
-            async for event in run_orchestrator_chat_stream(
+            # run_orchestrator_chat_stream_detached() (not the plain
+            # run_orchestrator_chat_stream()) so a frontend disconnect
+            # mid-generation cancels only this SSE relay, not the
+            # generation/persistence/fire-and-forget work happening behind
+            # it — see that function's docstring and
+            # docs/sigmaris/phase_ba4_report.md ("フロントエンド切断時の
+            # 応答継続") for the full investigation and rationale.
+            async for event in run_orchestrator_chat_stream_detached(
                 jwt=jwt,
                 google_access_token=x_google_access_token,
                 google_refresh_token=x_google_refresh_token,
