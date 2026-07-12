@@ -25,6 +25,7 @@ from app.services.proactive.actions import (
     run_morning_briefing,
     run_weekly_review,
 )
+from app.services.decision_log import get_active_preference_patterns
 from app.services.memory_validator import validate_all_facts
 from app.services.memory_search import search_relevant_memories, update_fact_embeddings
 from app.services.trend_analyzer import analyze_trends, get_active_trends
@@ -516,6 +517,31 @@ async def agent_trends_list(
         logger.exception("trends/list failed")
         raise HTTPException(status_code=500, detail={"error": str(exc)}) from exc
     return {"ok": True, "trends": trends, "count": len(trends)}
+
+
+@router.get("/preference-patterns/list")
+async def agent_preference_patterns_list(
+    authorization: str | None = Header(default=None),
+    x_agent_id: str | None = Header(default=None),
+    x_agent_secret: str | None = Header(default=None),
+) -> dict[str, Any]:
+    """Read-only: B14's recurring judgment/preference patterns
+    (sigmaris_user_preference_patterns), most-evidenced first. Added for
+    the /timeline page's "trait" section — no existing /api/agent/* route
+    exposed this table for reading (see docs/sigmaris/frontend_inventory.md).
+    authorization is accepted for consistency with this router's other
+    endpoints, but get_active_preference_patterns() itself reads with the
+    service-role key (this table is service_role-only RLS, not per-user —
+    see 202607100032_user_preference_patterns.sql), so the jwt is not
+    otherwise used here."""
+    _verify_agent(x_agent_id, x_agent_secret)
+    _require_jwt(authorization)
+    try:
+        patterns = await get_active_preference_patterns(limit=50)
+    except Exception as exc:
+        logger.exception("preference-patterns/list failed")
+        raise HTTPException(status_code=500, detail={"error": str(exc)}) from exc
+    return {"ok": True, "patterns": patterns, "count": len(patterns)}
 
 
 # ─── /api/agent/proactive/ ────────────────────────────────────────────────────

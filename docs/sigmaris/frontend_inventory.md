@@ -267,3 +267,165 @@ cd backend && ./.venv/Scripts/python.exe -m pytest tests/ -q
 1. **Stripe Webhookの受信設定（Stripeダッシュボード側）が、今回のコード削除と同期していない可能性がある。** `/api/billing/webhook`を削除したため、もしStripe側の設定でこのアプリのURLへWebhookを送信する設定が現在も有効なら、今後そのリクエストは404になる。実際にStripeでの決済が有効化された状態で運用されているかは、この調査・実装だけでは判断できないため、運用者側での確認を推奨する。
 2. **`lib/stripe.ts`の`getStripe`・`getProPriceId`・`hasStripeConfig`が未使用のまま残っている。** 8節で述べた通り、`/legal`に触れないという制約を優先した結果の意図的な残置であり、今すぐの実害はない。`/legal`の内容を将来見直す際に、あわせて整理を検討する価値がある。
 3. **今回の削除は棚卸し調査で発見した3点（`/sigmaris`・ランディングページ・Stripe UI）に限定しており、`/calendar`・`/timeline`の空ディレクトリ、および`requireProPlan`で機能ゲートされている4つのAPIルート（Google Calendar同期・データインポート・移動予定・プッシュ通知購読）については、依頼書の明示的な指示通り一切手を加えていない。** これらのAPIルートは、海星さんのアカウントのbilling状態（`billing_customers`/`subscriptions`テーブル）次第では、実際には現在も402エラーでブロックされている可能性がある——これは今回の変更が原因ではなく、Stripe課金機能の削除前から存在していた状態であり、本タスクのスコープ外として触れていない。単一テナント運用の実態に照らして、これらのゲート自体の要否を見直すかどうかは、別タスクとしての検討価値がある。
+
+---
+
+# `/timeline`ページの実装（実施報告）
+
+**実施日**: 2026-07-12
+**関連**: Temporal Layer Step1〜3（`docs/sigmaris/temporal_layer_report.md`）の成果を可視化するページ
+
+## 11. 採用したグラフ・可視化ライブラリとその選定理由
+
+**Recharts(v3系)を新規に採用した。**
+
+判断根拠:
+
+- 導入前の調査で、`frontend/package.json`にグラフ・可視化ライブラリは一切導入されていないことを確認した（Recharts・Tremorいずれも未導入）。既存のUIは`shadcn`(CLI)・`radix-ui`・`tailwind-merge`・Tailwind v4という、プリミティブなコンポーネントを自前でTailwindスタイリングする構成(`frontend/src/components/ui/`に`avatar`・`button`・`collapsible`・`dialog`・`tooltip`の5つのみ)であることを確認した。
+- **Tremorは不採用とした。** Tremorは自身の配色・余白・カード等のデザイン言語をある程度前提としたコンポーネント群であり、依頼書が最優先事項として明示した「既存の`/chat`のデザインシステムを踏襲すること」「新規に大きく異なるデザイン言語を持ち込まないこと」という制約と相性が悪いと判断した。
+- **Rechartsを採用した。** SVGベースの薄いプリミティブ(`BarChart`・`Bar`・`XAxis`等)を組み合わせる設計で、独自のデザイン言語を持ち込まず、既存の`/memory`・`/admin/memory`が確立している配色トークン(背景`#212121`/`#2a2a2a`、アクセント`#9b59b6`、ミュートテキスト`#8e8ea0`等)をそのまま`fill`・`stroke`・`contentStyle`等のprops経由で適用できる。shadcn/uiの公式レシピ集(`shadcn/ui`のchartコンポーネント)もRechartsを標準の組み合わせ先としており、将来shadcnのchart系コンポーネントを追加導入する際の親和性も高い。
+- React 19・Next.js 16との互換性を`npm install`実行後の`package.json`(`"recharts": "^3.9.2"`)およびビルド成功で確認済み。
+
+用途は「出来事(event)」セクションの**週次件数の棒グラフ1つ**に限定した。state/traitセクションや個々のevent項目のTTL進捗表示は、既存の`/memory`ページの`ConfidenceBar`と同じ、素のTailwindによる進捗バー(`<div style={{width: ...}}>`)で実装している——グラフライブラリが必要なのは「複数時点にまたがる集計」を見せる場面に限られると判断し、単一の値を示すインジケーターにまでRechartsを持ち込むことは、依頼書の「新規に大きく異なるデザイン言語を持ち込まないこと」という制約に照らして過剰と考えた。
+
+## 12. 表示する情報の設計
+
+`/memory`ページと同じ`AppShell`・カード・配色トークンを踏襲した3セクション構成。
+
+### event(出来事)
+
+- 新しい順の時系列リスト。各カードに`category/key`・内容・生成日時(バッジ)を表示
+- **TTL(90日)の進捗インジケーター**: 生成からの経過日数を進捗バーで表示し、「あと{N}日で自然に薄れる目安」または(90日超過時)「自然減衰の目安を超えています」という文言を添える。**判断根拠**: B17の実際の減衰計算(`_EVENT_DECAY_RULE`の90日/0.5という減衰係数、importance_scoreによる調整等、`memory_validator.py`)をフロントエンドで再現するのではなく、依頼書が明示した「生成から90日でTTLの対象になることが分かるように」という要件に沿った、単純な経過日数の可視化にとどめた。実際の確信度減衰カーブとこの表示が数値的に一致するとは限らない、という点は明示しておく。
+- **週次件数の棒グラフ**(Recharts): 直近13週(91日)を週次バケットに分けて件数を表示。13週とした理由は、12週(84日)だとTTLの目安(90日)にわずかに届かず、TTL間際のeventがグラフの範囲外に出てしまうため——実装中にテストで発見し、13週に調整した(14節参照)。
+
+### state(状態)
+
+- 現在有効な状態(`superseded_by is null`)を`category/key`ごとに一覧表示
+- **supersededされた過去の状態の履歴**: 依頼書がA3のsupersede/superseded_byパターンを参照するよう指示していた通り、`(category, key)`でグルーピングし、`valid_from`(なければ`created_at`)昇順に並べたときの末尾を「アクティブな行」、それ以外を「履歴」として扱う設計にした。**判断根拠**: supersede/superseded_byは常に同一`(category, key)`内でのみ発生する(`upsert_fact_item` RPCの分岐ロジック、Temporal Layer Step1で確認済み)という前提に基づく単純化であり、`superseded_by`のIDを辿って厳密にチェーンを再構成しているわけではない。通常の運用ではこの前提が崩れることはないはずだが、万一データ不整合があった場合は表示が不正確になりうる、という制約として明記する。
+- 履歴は、既存のshadcn/uiプリミティブである`Collapsible`(`frontend/src/components/ui/collapsible.tsx`、既に導入済みで未使用だったコンポーネント)を使い、「過去の履歴を見る({N}件)」というトリガーで折りたたみ表示にした。デフォルトで閉じておくことで、通常表示は「現在の状態一覧」に集中できるようにしている。
+
+### trait(傾向)
+
+- **B14の判断傾向**(`sigmaris_user_preference_patterns`): `pattern_statement`と、根拠となった判断の件数(`evidence_count`)、最終確認日時を表示。
+- **memory_kind='trait'の事実記憶**(`user_fact_items`): `category/key`・内容と、`/memory`ページと同じ`ConfidenceBar`コンポーネントで実際のconfidence値を表示。
+
+**判断根拠(traitの二重表示について)**: 依頼書は「trait(傾向): B14が抽出した判断傾向を、確信度とともに表示する」と指示していたが、調査の結果`sigmaris_user_preference_patterns`テーブル(`202607100032_user_preference_patterns.sql`)には`confidence`列が存在せず、あるのは`evidence_count`(根拠となった判断の件数)のみだった。これを「confidence」と称して表示すると実態と異なるデータを確信度として提示することになるため、**B14のpatternは「根拠件数」として明示的に区別して表示し**、Temporal Layer Step1の移動コメント(「trait: 判断傾向・好み...B14が既にこの概念を所有している」)が示唆する通り、実際にconfidence値を持つ`memory_kind='trait'`の`user_fact_items`行を別枠で並べて表示する、という2ソース構成にした。これにより依頼書の「確信度とともに表示する」という要件は、少なくとも一方のデータソースで文字通り満たされている。
+
+### B5(`/admin/memory`)との役割分担
+
+13節で詳述。
+
+## 13. 追加したバックエンドAPI
+
+### 13.1 既存APIの確認結果(追加不要と判断した部分)
+
+`/admin/memory`が使う`/api/app/memory-dashboard`(`backend/app/routes/app_data.py`)は`_DASHBOARD_SELECT`という限定的な列セット(`memory_kind`・`valid_from`・`superseded_by`・`last_mentioned_at`を含まない)しか返さないため、これは`/timeline`の情報源として使えないことを確認した。
+
+一方、`/memory`ページが既に使っている`/api/agent/facts/items`(`backend/app/routes/agent.py`)は、内部で`get_fact_items(jwt, category=category)`を呼んでおり、`active_only`引数を渡していない(デフォルト`False`)ため、**`FACT_ITEM_SELECT`の全列(`memory_kind`・`valid_from`・`superseded_by`・`last_mentioned_at`を含む)を、`is_deleted`/`is_stale`/`superseded_by`によるフィルタなしで返す**ことをコードで確認した。これはStep1〜3のTemporal Layer実装が`FACT_ITEM_SELECT`にこれらの列を追加した際、この既存エンドポイント自体は変更していなかったため、意図せず(しかし都合よく)`/timeline`が必要とする全情報を既に返せる状態になっていた。**したがって、event/stateセクションについては新規のバックエンドAPI追加は不要と判断した**(依頼書2節の「不足していれば追加する」の"不足していない"側のケース)。
+
+### 13.2 新規追加したAPI
+
+`sigmaris_user_preference_patterns`(B14の判断傾向)を読み取る既存の`/api/agent/*`エンドポイントは存在しなかったため、以下を新規追加した。
+
+```
+GET /api/agent/preference-patterns/list
+```
+
+`backend/app/routes/agent.py`に、既存の`/trends/list`と全く同じ形(`_verify_agent`→`_require_jwt`→サービス関数呼び出し→`{"ok": True, "patterns": [...], "count": N}`)で実装した。内部では既存の`decision_log.py::get_active_preference_patterns(limit=50)`をそのまま呼んでいる(新規のサービス関数は書いていない、既存関数の再利用)。
+
+**判断根拠(jwt検証について)**: `get_active_preference_patterns()`は`sigmaris_user_preference_patterns`テーブルがservice_role専用RLS(`202607100032_user_preference_patterns.sql`)であるため、内部でサービスロールキーを使ってアクセスしており、渡された`jwt`自体は使っていない。それでも`_require_jwt(authorization)`の呼び出しは残した——この router の他の全エンドポイントが認証ヘッダーを必須にしている一貫性を優先し、将来ユーザースコープの絞り込みが必要になった場合の変更コストを下げるための判断。
+
+## 14. B5(`/admin/memory`)との役割分担の実装上の違い
+
+| 観点 | B5(`/admin/memory`) | `/timeline` |
+|---|---|---|
+| データ取得 | `/api/app/memory-dashboard`(限定列、`is_deleted=false`のみでフィルタ) | `/api/agent/facts/items`(全列、フィルタなし) + 新規`/api/agent/preference-patterns/list` |
+| 表示単位 | `user_fact_items`の生データをテーブル形式でそのまま一覧 | `memory_kind`(event/state/trait)という**Temporal Layerの分類軸**で再構成 |
+| 「変遷」の見せ方 | 個々の行の`updated_at`・`is_stale`フラグを列として並べるのみ | eventは週次グラフ+TTL進捗バー、stateはsupersedeチェーンの折りたたみ履歴、という**変化そのものを主役にした見せ方** |
+| ナビゲーション | 意図的にnavItemsから除外(コード内コメントで明記済み、既存) | navItemsに追加(4つ目のタブ) — 一般利用を想定 |
+| トーン | 開発者向けダッシュボード然としたテーブルUI(既存のまま変更なし) | `/memory`・`/chat`と統一感のあるカード・バッジ・進捗バーのUI |
+| 対象読者 | 開発者(海星さん自身が開発者としてデバッグする用途) | 海星さんが利用者として眺める用途 |
+
+コード面では、両ページとも最終的に同じ`user_fact_items`テーブルを読んでいる(B5は`get_memory_dashboard_items()`経由、`/timeline`は`get_fact_items()`経由)ため、データソースの二重管理にはなっていない——依頼書が要求した「役割分担」は、取得する列の粒度と、取得後の再構成・見せ方の違いとして実装した。
+
+## 15. フロントエンド実装の詳細
+
+- **`frontend/src/lib/backend/agent-client.ts`(新規、共有モジュール)**: `/memory`ページが個別に実装していた`readAgentHeaders()`・`fetchAgentJson()`を切り出した。`/timeline`でも同じ`/api/agent/*`呼び出しパターンが必要になったため、3箇所目の重複を避ける目的の純粋なリファクタリング(挙動は変更していない)。`/memory/page.tsx`はこの共有モジュールを使うよう更新し、ビルド・Lintで回帰がないことを確認した。
+- **`frontend/src/lib/timeline/transform.ts`(新規)**: event/state/traitへの分類、supersedeチェーンの構築、TTL経過日数計算等の**フレームワーク非依存の純粋関数群**をページ本体から切り出した。理由は2つ: (1) フロントエンドにテストランナー(Jest/Vitest等)が導入されていないため、React/Next.jsに依存しない純粋関数として切り出すことで、追加の依存ライブラリなしに`npx tsx`で直接テストできるようにするため(16節参照)、(2) データ整形とプレゼンテーションの関心分離。
+- **`frontend/src/components/timeline/event-volume-chart.tsx`(新規、クライアントコンポーネント)**: Rechartsの`BarChart`をラップ。
+- **`frontend/src/components/timeline/state-history-disclosure.tsx`(新規、クライアントコンポーネント)**: 既存の`Collapsible`プリミティブを使った履歴の折りたたみ表示。
+- **`frontend/src/app/timeline/page.tsx`(新規)**: サーバーコンポーネント。`requireUser("/timeline")`でログイン必須、`/memory`・`/settings`と同じ`AppShell`+ダーク配色トークンを使用。
+- **`frontend/src/components/app-shell.tsx`(更新)**: `navItems`に`/timeline`(ラベル「タイムライン」、アイコン`HistoryIcon`)を追加。モバイル下部ナビの`grid-cols-3`を`grid-cols-4`に変更(3項目決め打ちだったグリッドを4項目対応に修正)。
+
+## 16. テスト結果
+
+### 16.1 サンプルデータによる純粋関数の検証
+
+フロントエンドにテストランナーが未導入のため、`frontend/src/lib/timeline/transform.ts`の純粋関数を対象に、`npx tsx`で直接実行できるスクラッチテストを作成した(実行時のみ`frontend/`直下に一時配置し、検証後に削除——リポジトリには一切コミットしていない)。event 3件(直近・TTL内・TTL超過)・state 2系列(1系列はsupersede履歴あり)・trait 2件(confidence付き)・is_deletedの行1件、というサンプルデータで以下を検証した。
+
+- event/state/traitへの分類が正しく行われること、`is_deleted`行が除外されること
+- eventが新しい順に並ぶこと、traitがconfidence降順に並ぶこと
+- **supersededされた過去の状態(state)が、履歴として正しく抽出されること**(要件3の直接検証): 2段階supersedeされた系列で、アクティブな行(最新)と履歴(1件、過去の値)が正しく分離されることを確認
+- 履歴のないstate系列では、履歴が空配列になること
+- TTL(90日)内/超過それぞれのケースで、経過日数計算が正しいこと
+- 週次件数グラフのバケット数・集計件数が正しいこと(この検証中に、12週だとTTL目安に届かない不整合を発見し、13週に修正——後述)
+- 各種フォーマッタ(不正な日付文字列でも例外を投げない等)・confidenceのクランプ処理・patternのソート順
+
+```
+15 passed, 0 failed
+```
+
+### 16.2 ビルド・Lint
+
+```
+cd frontend && rm -rf .next && npx next build
+```
+
+```
+✓ Compiled successfully in 19.4s
+  Running TypeScript ...
+  Finished TypeScript in 17.0s ...
+✓ Generating static pages using 15 workers (40/40)
+```
+
+ビルド出力のルート一覧に`/timeline`が追加され、`/chat`・`/memory`・`/settings`・`/admin/memory`・`/login`・`/legal`とその配下を含む既存の全ルートが引き続き存在することを確認した。
+
+```
+cd frontend && npx eslint .
+```
+
+警告・エラーとも0件。
+
+### 16.3 バックエンド
+
+新規追加した`/api/agent/preference-patterns/list`について、`_verify_agent`・`_require_jwt`・`get_active_preference_patterns`をモックしたスクラッチテストを2件作成し、正常系(patternsが返る)・空配列(patternsが0件でもエラーにならない)を確認した。
+
+```
+2 passed
+```
+
+既存の`backend/tests/`(16件)も全て再実行し、リグレッションは確認されなかった。
+
+```
+16 passed in 0.76s
+```
+
+### 16.4 実モデル・実データでの確認について
+
+実際のSupabase認証・本番相当のバックエンドAPIを介した目視確認(ブラウザでの実際のレンダリング)は行っていない。依頼書の注意事項通り、追加のサーバーアクセス・APIキー取得は試みていない。16.1節のサンプルデータ検証は、ページ本体から切り出した純粋なデータ整形ロジックに対するものであり、実際のAPIレスポンス形式(バックエンドの`FACT_ITEM_SELECT`が返す実際のJSON)との整合は、型定義(`FactItem`型)を`user_fact_data.py`の`FACT_ITEM_SELECT`列一覧と手動で突き合わせる形でのみ確認している。**運用者側で確認すべきこと**: 実際にログインした状態で`/timeline`にアクセスし、(1) event/state/traitそれぞれのセクションに実データが表示されること、(2) supersedeされたstateの履歴が実際に折りたたみ表示されること、(3) モバイル下部ナビの4項目表示が崩れていないこと、を目視確認することを推奨する。
+
+### 16.5 要件との対応
+
+1. event/state/traitが時系列で表示されること: 実装済み、サンプルデータで検証済み
+2. `/chat`のデザインシステムとの統一感: `/memory`・`/admin/memory`と同じ`AppShell`・配色トークン・カードスタイルを踏襲(新規に持ち込んだのはRechartsのグラフ描画のみで、色は既存トークンをそのまま適用)
+3. supersededされた過去の状態を履歴として確認できること: 実装済み、サンプルデータで検証済み(16.1節)
+4. ナビゲーションから到達できること: `AppShell`の`navItems`に追加済み
+5. 既存機能への悪影響: ビルド成功・Lint成功・既存ルート一覧に変化なし・バックエンド既存テスト16件成功
+
+## 17. 気づいた懸念点
+
+1. **13節で述べた通り、`/api/agent/facts/items`は`active_only`フィルタなしで全件(is_deleted含む)を返す設計になっている。** `/timeline`側でクライアントサイドに`is_deleted`のフィルタを実装して対応したが、このエンドポイントの本来の呼び出し元である`/memory`ページも同じ「全件取得」を行っており、そちらは`is_deleted`のフィルタを行っていない(今回の調査で気づいたが、`/memory`ページ自体の修正はスコープ外のため触れていない)。削除済みの事実記憶が`/memory`ページに表示され続けている可能性があり、次の`/memory`ページ改修の際に確認する価値がある。
+2. **stateのsupersedeチェーン構築は`(category, key)`グルーピング+時系列ソートという単純化した前提に基づいている(12節)。** `superseded_by`のIDを厳密に辿ってグラフ構造として再構成しているわけではないため、万一データ不整合(同一`category`/`key`で複数のアクティブな行が存在する等、本来UNIQUE制約で起こり得ないはずの状態)があった場合、表示が実態と食い違う可能性がある。
+3. **traitセクションのB14 pattern表示は「根拠件数(evidence_count)」であり、依頼書が言う「確信度」そのものではない(12節)。** `sigmaris_user_preference_patterns`にconfidence列を追加する設計変更は本タスクのスコープ外と判断し、実施していない。
+4. **event種別のTTL進捗表示は、B17の実際の減衰計算式(`memory_validator.py`の`_EVENT_DECAY_RULE`、importance_scoreによる調整)を再現したものではなく、単純な経過日数/90日の可視化にとどめている(12節)。** 表示上の「あと{N}日」という数字と、実際にB17がconfidenceを減衰させ始めるタイミングは、厳密には一致しない場合がある。
+5. **`/api/agent/preference-patterns/list`は新規のjwt必須エンドポイントとして追加したが、実際にはservice-role専用テーブルを読むだけでjwtの中身は使っていない(13.2節)。** 依頼書の「既存のパターンに沿った実装とすること」を優先してこの一貫性のない状態を許容したが、将来的にはこのrouter全体の認証設計(jwtが実際に必要なエンドポイントとそうでないエンドポイントが混在している)を見直す価値があるかもしれない。
