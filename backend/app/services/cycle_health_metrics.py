@@ -6,9 +6,10 @@
 # あり、C-mini/C-fullのmemory_precision等と同一の尺度・同一のsigmaris_
 # eval_runsテーブルでは扱わない**(docs/sigmaris/phase_r_report.md参照)。
 #
-# 本タスク(R-2)ではRC-1(Cycle Completion Rate)・RC-2(Temporal
-# Consistency Score)の2指標のみを扱う。以前の議論で提案された残り3指標
-# (信念の安定性・方策と信念の一致度・循環破損の自動検知)はR-3で扱う。
+# R-2ではRC-1(Cycle Completion Rate)・RC-2(Temporal Consistency
+# Score)を実装した。R-3ではRC-3(Belief Stability Index)・RC-4
+# (Policy-Belief Alignment)・RC-5(Cycle Break Detection)を追加し、
+# RC指標を完成させる。
 #
 # I/Oを一切持たない純粋関数のみを置く。DB呼び出しはcycle_health_runner.py
 # 側の責務(eval_metrics.py/eval_runner.pyと同じ役割分担をそのまま踏襲)。
@@ -398,3 +399,312 @@ def compute_temporal_consistency_score(
         event_experience_checked=event_experience_checked,
         event_experience_violations=event_experience_violations,
     )
+
+
+# ─── RC-3: Belief Stability Index ──────────────────────────────────────────
+#
+# sigmaris_user_preference_patterns(B14)は、既存のpattern_keyへの2回目
+# 以降の書き込みが「その場でUPDATE」(decision_log._upsert_preference_
+# pattern())であり、過去のpattern_statementの履歴は一切保持されない
+# (upsert前の値はDBから失われる)。そのため「信念が覆ったか」を判定する
+# には、cycle_health_runs_store.pyに保存した**前回のRC計測実行時点の
+# スナップショット**(pattern_key -> {pattern_statement, evidence_count}、
+# `details.belief_snapshot`)とのdiffに頼るしかない。これは既存のB14の
+# 書き込み経路には一切手を加えない設計判断であり(既存機能への影響を
+# 避けるため)、副作用として「初回のRC実行時は比較対象がなく算出不能」
+# という制約を持つ(下記score=Noneのケース)。
+#
+# 「単発のノイズ」と「正当な信念の変化」の区別: pattern_statementが前回
+# 実行時から変化していた場合、その変化がevidence_count(裏付けとなる
+# distinctな決定の件数、B14自身の`_MIN_SUPPORTING_DECISIONS`ゲートと同じ
+# 概念)の十分な増加を伴っていたかを見る。文言だけが変わって裏付けの件数
+# がほとんど増えていない(=前回とほぼ同じ決定群を元に、LLMが単に違う
+# 言い回しで再生成しただけ、あるいは僅かな新情報で結論が反転した)場合を
+# "unsupported"(ノイズの疑いが強い)、十分な新規裏付けを伴う場合を
+# "evidenced"(正当な信念の更新の可能性が高い)として区別する。
+
+_MIN_EVIDENCE_GROWTH_FOR_EVIDENCED_CHANGE = 2  # decision_log._MIN_SUPPORTING_DECISIONSと同じ値で揃えた
+
+
+@dataclass
+class BeliefFlip:
+    pattern_key: str
+    previous_statement: str | None
+    current_statement: str | None
+    evidence_growth: int
+    evidenced: bool
+
+
+@dataclass
+class BeliefStabilityResult:
+    score: float | None  # 比較可能なpattern_keyが1件もなければNone
+    comparable_pattern_count: int
+    flips: list[BeliefFlip]
+    unsupported_flip_count: int
+
+
+def compute_belief_stability(
+    *,
+    current_patterns: list[dict[str, Any]],
+    previous_snapshot: dict[str, dict[str, Any]] | None,
+    min_evidence_growth_for_evidenced_change: int = _MIN_EVIDENCE_GROWTH_FOR_EVIDENCED_CHANGE,
+) -> BeliefStabilityResult:
+    """current_patterns: decision_log.get_active_preference_patterns()の
+    戻り値(pattern_key/pattern_statement/evidence_countを含む)。
+
+    previous_snapshot: 前回のRC計測実行が保存したbelief_snapshot
+    ({pattern_key: {"pattern_statement": str, "evidence_count": int}})。
+    Noneの場合(初回実行、またはstore読み込み失敗)は score=Noneで返す
+    ——「信念は安定している(1.0)」ではなく「まだ判定できない」ことを
+    明示するため(R-2から一貫する設計判断)。
+
+    score = 1 - (unsupported_flip_count / comparable_pattern_count)。
+    分母をflip_countではなくcomparable_pattern_count(比較可能な全
+    pattern_key数)にしている判断根拠: 「変化しなかった信念」も安定性の
+    証拠として母数に含めるべきであり、flip_countのみを分母にすると
+    「1件だけ裏付けありで反転、他は全部安定」というケースと「1件だけ
+    裏付けなしで反転、他は全部安定」というケースが、flip_countベースでは
+    それぞれ1.0/0.0という極端な差になり、大多数が安定していたという
+    事実を反映できない。
+    """
+    if previous_snapshot is None:
+        return BeliefStabilityResult(score=None, comparable_pattern_count=0, flips=[], unsupported_flip_count=0)
+
+    flips: list[BeliefFlip] = []
+    comparable = 0
+    for pattern in current_patterns:
+        key = pattern.get("pattern_key")
+        if not isinstance(key, str) or key not in previous_snapshot:
+            continue  # 新規pattern_key、または前回スナップショットに含まれない -> 比較不能
+        comparable += 1
+
+        prev = previous_snapshot[key]
+        prev_statement = prev.get("pattern_statement")
+        cur_statement = pattern.get("pattern_statement")
+        if prev_statement == cur_statement:
+            continue  # 変化なし(=安定)
+
+        prev_evidence = prev.get("evidence_count")
+        prev_evidence = prev_evidence if isinstance(prev_evidence, int) else 0
+        cur_evidence = pattern.get("evidence_count")
+        cur_evidence = cur_evidence if isinstance(cur_evidence, int) else 0
+        growth = cur_evidence - prev_evidence
+        evidenced = growth >= min_evidence_growth_for_evidenced_change
+
+        flips.append(BeliefFlip(
+            pattern_key=key,
+            previous_statement=prev_statement,
+            current_statement=cur_statement,
+            evidence_growth=growth,
+            evidenced=evidenced,
+        ))
+
+    unsupported = sum(1 for f in flips if not f.evidenced)
+    score = 1.0 - (unsupported / comparable) if comparable else None
+
+    return BeliefStabilityResult(
+        score=score,
+        comparable_pattern_count=comparable,
+        flips=flips,
+        unsupported_flip_count=unsupported,
+    )
+
+
+def build_belief_snapshot(patterns: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
+    """今回の実行のpattern_key別スナップショットを構築する
+    (cycle_health_runs_store.pyがdetails.belief_snapshotとして保存し、
+    次回実行のcompute_belief_stability()のprevious_snapshotになる)。"""
+    snapshot: dict[str, dict[str, Any]] = {}
+    for pattern in patterns:
+        key = pattern.get("pattern_key")
+        if not isinstance(key, str):
+            continue
+        snapshot[key] = {
+            "pattern_statement": pattern.get("pattern_statement"),
+            "evidence_count": pattern.get("evidence_count"),
+        }
+    return snapshot
+
+
+# ─── RC-4: Policy-Belief Alignment ─────────────────────────────────────────
+#
+# B16(sigmaris_goal_alignment_flags)の乖離フラグが、B14(sigmaris_user_
+# preference_patterns)が既に確立した判断傾向と同じ決定群を根拠にしている
+# かを測る。R-1のcycle_trace.trace_policy_to_evidence()が返す
+# evidence_decisions(フラグのevidence_refsのうちdecision_log由来のもの)
+# と、B14各patternのsupporting_decision_idsの重なりを見る。
+
+@dataclass
+class PolicyBeliefAlignment:
+    flag_id: str
+    goal_reference: str
+    evidence_decision_count: int
+    overlapping_decision_count: int
+    best_matching_pattern_key: str | None
+    alignment_ratio: float | None  # evidence_decision_count=0ならNone
+
+
+@dataclass
+class PolicyBeliefAlignmentResult:
+    score: float | None  # 評価可能なフラグが1件もなければNone
+    flags_evaluated: int
+    alignments: list[PolicyBeliefAlignment]
+
+
+def compute_policy_belief_alignment(
+    *,
+    flags_with_evidence_decision_ids: list[tuple[dict[str, Any], list[str]]],
+    patterns: list[dict[str, Any]],
+) -> PolicyBeliefAlignmentResult:
+    """flags_with_evidence_decision_ids: 各要素は
+    (sigmaris_goal_alignment_flags行, そのフラグのevidence_refsのうち
+    decision_log由来のid一覧) — cycle_trace.trace_policy_to_evidence()の
+    "evidence_decisions"からidを取り出したもの。
+
+    patterns: decision_log.get_active_preference_patterns()の戻り値。
+
+    alignment_ratio: フラグの根拠決定のうち、いずれかのBelief pattern
+    からも根拠として参照されているものの割合。1.0に近いほど、B16の判定が
+    B14の既存の判断傾向と同じ材料に基づいていることを意味する。低い値は
+    「B16がB14未反映の新しい材料から乖離を検出した」可能性と「B16の判定
+    が実際の判断傾向とずれている」可能性の両方がありうる — このスコア
+    単体ではどちらか判別できない(判断根拠、レポート参照)。
+    """
+    decision_to_pattern_keys: dict[str, set[str]] = {}
+    for pattern in patterns:
+        key = pattern.get("pattern_key")
+        supporting_ids = pattern.get("supporting_decision_ids")
+        if not isinstance(key, str) or not isinstance(supporting_ids, list):
+            continue
+        for decision_id in supporting_ids:
+            if isinstance(decision_id, str):
+                decision_to_pattern_keys.setdefault(decision_id, set()).add(key)
+
+    alignments: list[PolicyBeliefAlignment] = []
+    for flag, decision_ids in flags_with_evidence_decision_ids:
+        flag_id = flag.get("id")
+        if not isinstance(flag_id, str):
+            continue
+        decision_ids = [d for d in decision_ids if isinstance(d, str)]
+
+        pattern_hit_counts: dict[str, int] = {}
+        overlapping: set[str] = set()
+        for decision_id in decision_ids:
+            hit_keys = decision_to_pattern_keys.get(decision_id)
+            if not hit_keys:
+                continue
+            overlapping.add(decision_id)
+            for pattern_key in hit_keys:
+                pattern_hit_counts[pattern_key] = pattern_hit_counts.get(pattern_key, 0) + 1
+
+        best_key = max(pattern_hit_counts, key=lambda k: pattern_hit_counts[k]) if pattern_hit_counts else None
+        ratio = len(overlapping) / len(decision_ids) if decision_ids else None
+
+        alignments.append(PolicyBeliefAlignment(
+            flag_id=flag_id,
+            goal_reference=str(flag.get("goal_reference") or ""),
+            evidence_decision_count=len(decision_ids),
+            overlapping_decision_count=len(overlapping),
+            best_matching_pattern_key=best_key,
+            alignment_ratio=ratio,
+        ))
+
+    scoreable_ratios = [a.alignment_ratio for a in alignments if a.alignment_ratio is not None]
+    score = sum(scoreable_ratios) / len(scoreable_ratios) if scoreable_ratios else None
+
+    return PolicyBeliefAlignmentResult(score=score, flags_evaluated=len(alignments), alignments=alignments)
+
+
+# ─── RC-5: Cycle Break Detection ───────────────────────────────────────────
+#
+# RC-1(eligible_completion_rate)・RC-2(score)が、過去の実行群の平均から
+# 大きく落ち込んでいないかを確認する、単純な閾値ベースの検知。方針(要件
+# 3)通り「循環破損の自動検知」の第一歩として、複雑な統計的異常検知
+# (変化点検出等)ではなく、直近の平均との単純な絶対差分比較に留める
+# ——実データが蓄積されLLM再判定などによる高度化が必要になった時点で
+# 拡張すればよい、という判断(判断根拠、レポート参照)。
+
+_CYCLE_BREAK_MIN_HISTORY = 3  # B2/B14と同じ「recurring patternとして信頼するための最低サンプル数」の考え方を踏襲
+_CYCLE_BREAK_DROP_THRESHOLD = 0.2  # 絶対値で20ポイントの低下。未検証の暫定値(レポート参照)
+
+
+@dataclass
+class MetricBreakCheck:
+    metric: str
+    checkable: bool
+    current: float | None
+    baseline: float | None
+    drop: float | None
+    broke_threshold: bool
+
+
+@dataclass
+class CycleBreakResult:
+    status: str  # "insufficient_history" | "healthy" | "break_detected"
+    checks: list[MetricBreakCheck]
+
+
+def _check_metric_drop(
+    *, metric: str, current: float | None, historical: list[float], min_history: int, drop_threshold: float
+) -> MetricBreakCheck:
+    if current is None or len(historical) < min_history:
+        return MetricBreakCheck(
+            metric=metric, checkable=False, current=current, baseline=None, drop=None, broke_threshold=False
+        )
+    baseline = sum(historical) / len(historical)
+    drop = baseline - current
+    return MetricBreakCheck(
+        metric=metric, checkable=True, current=current, baseline=baseline,
+        drop=drop, broke_threshold=drop > drop_threshold,
+    )
+
+
+def detect_cycle_break(
+    *,
+    current_rc1_eligible_rate: float | None,
+    current_rc2_score: float | None,
+    historical_rc1_eligible_rates: list[float],
+    historical_rc2_scores: list[float],
+    min_history: int = _CYCLE_BREAK_MIN_HISTORY,
+    drop_threshold: float = _CYCLE_BREAK_DROP_THRESHOLD,
+) -> CycleBreakResult:
+    """current_*: 今回の実行のRC-1 eligible_completion_rate / RC-2 score
+    (raw_completion_rateではなくeligible_completion_rateを使う —
+    RC-1自身の設計方針(タイミング・母数由来の非到達を除いた方がより
+    "健全性"の実態に近い)をそのまま踏襲)。
+
+    historical_*: cycle_health_runs_store.pyから取得した過去の実行群の
+    同じ指標の値のリスト(Noneを含まない、新しい順・古い順は問わない)。
+
+    各指標は独立に判定する。片方が判定不能(履歴不足 or 今回の値が
+    None)でも、もう片方が判定可能なら判定を続行する。**両方とも判定
+    不能な場合のみ"insufficient_history"とする**(「これまで一度も
+    測定していないので何も言えない」であり、"healthy"と等しく扱っては
+    ならない)。
+    """
+    checks = [
+        _check_metric_drop(
+            metric="rc1_eligible_completion_rate",
+            current=current_rc1_eligible_rate,
+            historical=historical_rc1_eligible_rates,
+            min_history=min_history,
+            drop_threshold=drop_threshold,
+        ),
+        _check_metric_drop(
+            metric="rc2_score",
+            current=current_rc2_score,
+            historical=historical_rc2_scores,
+            min_history=min_history,
+            drop_threshold=drop_threshold,
+        ),
+    ]
+
+    checkable = [c for c in checks if c.checkable]
+    if not checkable:
+        status = "insufficient_history"
+    elif any(c.broke_threshold for c in checkable):
+        status = "break_detected"
+    else:
+        status = "healthy"
+
+    return CycleBreakResult(status=status, checks=checks)
