@@ -52,6 +52,14 @@ _VALID_FACT_CATEGORIES = frozenset({
 # mirrors decision_log.py's _MIN_DECISIONS_FOR_ANALYSIS reasoning (nothing
 # to find a *recurring* pattern across yet).
 _MIN_EXPERIENCES_FOR_CONSOLIDATION = 3
+# How many of the most recent experiences consolidate_episodic_memory()
+# rescans each run (see that function's docstring for why there's no
+# cursor). Named here (Phase R-2, docs/sigmaris/phase_r_report.md) so
+# cycle_health_runner.py's RC-1 "did this experience ever fall outside the
+# scan window before being evaluated" approximation can reference the same
+# number consolidation actually uses, instead of a second hardcoded 100
+# that could silently drift out of sync with this one.
+_CONSOLIDATION_SCAN_WINDOW = 100
 # A candidate fact needs evidence from at least this many *distinct*
 # episodes to be promoted, UNLESS the LLM explicitly flags it as a
 # single_episode_exception (a one-off event that is nonetheless obviously
@@ -298,6 +306,35 @@ async def get_recent_experiences(
         return []
 
 
+async def get_experiences_since(since_iso: str, *, limit: int = 1000) -> list[dict[str, Any]]:
+    """Return sigmaris_experience rows created at or after since_iso, oldest
+    first.
+
+    Phase R-2 (docs/sigmaris/phase_r_report.md, RC-1 Cycle Completion Rate):
+    get_recent_experiences() only supports a row-count limit, not a date
+    filter, and RC-1 needs "every experience created within a fixed window"
+    rather than "the N most recent regardless of age" — a window-based
+    count is what makes an in-progress week's rate comparable across runs.
+    limit=1000 is a generous safety cap (this is a single-tenant system;
+    see get_recent_experiences' own precedent of a 3-digit limit), not an
+    expected steady-state volume.
+    """
+    try:
+        base_url, _ = _require_supabase_config()
+        client = await _get_client()
+        r = await client.get(
+            f"{base_url}/rest/v1/{_TABLE}",
+            headers=_svc_headers(),
+            params={"created_at": f"gte.{since_iso}", "order": "created_at.asc", "limit": str(limit)},
+        )
+        r.raise_for_status()
+        data = r.json()
+        return data if isinstance(data, list) else []
+    except Exception:
+        logger.exception("experience_layer: failed to get_experiences_since")
+        return []
+
+
 async def get_experiences_by_ids(experience_ids: list[str]) -> list[dict[str, Any]]:
     """Return sigmaris_experience rows for a specific set of ids.
 
@@ -529,7 +566,7 @@ async def consolidate_episodic_memory(jwt: str) -> dict[str, Any]:
         "insufficient_data": False,
     }
     try:
-        experiences = await get_recent_experiences(limit=100)
+        experiences = await get_recent_experiences(limit=_CONSOLIDATION_SCAN_WINDOW)
         result["analyzed"] = len(experiences)
         if len(experiences) < _MIN_EXPERIENCES_FOR_CONSOLIDATION:
             result["insufficient_data"] = True
