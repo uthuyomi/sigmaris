@@ -1,10 +1,18 @@
-# 役割: Phase R-2「循環健全性指標(RC)」のオーケストレーション(DB I/O)。
+# 役割: 「循環健全性指標(RC)」のオーケストレーション(DB I/O)。
 #
-# cycle_health_metrics.py(純粋関数)にデータを渡し、RC-1(Cycle
-# Completion Rate)・RC-2(Temporal Consistency Score)を算出する。
+# cycle_health_metrics.py(純粋関数)にデータを渡し、RC-1〜RC-5(Cycle
+# Completion Rate・Temporal Consistency Score・Belief Stability Index・
+# Policy-Belief Alignment・Cycle Break Detection)を算出する。
 # eval_runner.py(C-mini/C-full)と同じ役割分担 — 計算ロジックとI/Oを
 # 分離する。C-mini/C-fullとは別系統の指標であり、sigmaris_eval_runsとは
 # 混在させない(docs/sigmaris/phase_r_report.md参照)。
+#
+# 永続化(sigmaris_cycle_health_runsへの書き込み)はこのモジュールの責務
+# ではない — run_eval.py/eval_runner.pyの役割分担(runnerは計測のみ、
+# 書き込みはCLIスクリプト側)をそのまま踏襲し、scripts/run_cycle_health.py
+# が返り値のdetails_for_persistenceを使って書き込む。ただし、RC-3(前回
+# スナップショットとの比較)・RC-5(過去値との比較)は計測そのものに
+# 過去の実行結果が必要なため、*読み取り*はこのモジュール内で行う。
 
 from __future__ import annotations
 
@@ -18,12 +26,18 @@ from zoneinfo import ZoneInfo
 from app.config import settings
 from app.services.app_chat_data import list_chat_messages, list_chat_threads
 from app.services.cycle_health_metrics import (
+    build_belief_snapshot,
     check_chat_message_order,
     check_event_facts_against_experiences,
     classify_experience_reach,
+    compute_belief_stability,
+    compute_policy_belief_alignment,
     compute_temporal_consistency_score,
+    detect_cycle_break,
 )
-from app.services.cycle_trace import trace_memory_to_experience
+from app.services.cycle_health_runs_store import get_recent_cycle_health_runs
+from app.services.cycle_trace import trace_memory_to_experience, trace_policy_to_evidence
+from app.services.decision_log import get_active_preference_patterns
 from app.services.experience_layer import (
     _CONSOLIDATION_SCAN_WINDOW,
     _MIN_EXPERIENCES_FOR_CONSOLIDATION,
@@ -31,6 +45,17 @@ from app.services.experience_layer import (
     get_recent_experiences,
 )
 from app.services.user_fact_data import get_fact_items
+
+# goal_alignment.py exposes no public "all flags regardless of surface-
+# cooldown" reader — get_active_goal_alignment_flags() intentionally
+# filters by _SURFACE_COOLDOWN_DAYS (a response-injection concern RC-4 has
+# no business inheriting). _get_all_flags_for_context() already does
+# exactly what RC-4 needs (goal_alignment.py's own goal_reference-reuse
+# dedup context uses it for the same reason). Reusing it directly, rather
+# than adding a second near-identical public function, mirrors the same
+# judgment call cycle_health_runner.py already made for experience_layer's
+# _CONSOLIDATION_SCAN_WINDOW in Phase R-2.
+from app.services.goal_alignment import _get_all_flags_for_context
 
 logger = logging.getLogger(__name__)
 
@@ -152,9 +177,68 @@ async def run_cycle_health(
         period_to=now.isoformat(),
     )
 
+    # 過去の実行群(RC-3のスナップショット比較 / RC-5のベースライン算出、
+    # 両方が同じ読み取りを共有する)。書き込みはここでは行わない —
+    # eval_runner.run_eval()がsigmaris_eval_runsへの書き込みをscripts/
+    # run_eval.py側に委ねているのと同じ役割分担(--dry-run対応のため)。
+    previous_runs = await get_recent_cycle_health_runs(limit=20)
+
+    # RC-3: Belief Stability Index。limit=100は決定パターンのプロンプト
+    # 注入用(get_active_preference_patterns(limit=5)、orchestrator/
+    # service.py)とは別の、分析目的の生成的な多めの取得
+    # (decision_log.get_decisions_by_ids等と同じ「内部分析は寛容な上限」
+    # という慣習)。
+    patterns = await get_active_preference_patterns(limit=100)
+    previous_snapshot = None
+    if previous_runs:
+        prev_details = previous_runs[0].get("details")
+        if isinstance(prev_details, dict):
+            snapshot = prev_details.get("belief_snapshot")
+            if isinstance(snapshot, dict):
+                previous_snapshot = snapshot
+    rc3 = compute_belief_stability(current_patterns=patterns, previous_snapshot=previous_snapshot)
+    belief_snapshot_now = build_belief_snapshot(patterns)
+
+    # RC-4: Policy-Belief Alignment。R-1のtrace_policy_to_evidence()を
+    # そのまま再利用してevidence_refsをdecision_log由来のものに解決する
+    # (要件2の直接対応)。
+    flags = await _get_all_flags_for_context(limit=100)
+    flag_traces = await asyncio.gather(
+        *(trace_policy_to_evidence(f["id"]) for f in flags if isinstance(f.get("id"), str))
+    )
+    flags_with_evidence_decision_ids = [
+        (flag, [d.get("id") for d in trace.get("evidence_decisions", []) if isinstance(d.get("id"), str)])
+        for flag, trace in zip(
+            (f for f in flags if isinstance(f.get("id"), str)), flag_traces, strict=True
+        )
+    ]
+    rc4 = compute_policy_belief_alignment(
+        flags_with_evidence_decision_ids=flags_with_evidence_decision_ids, patterns=patterns
+    )
+
+    # RC-5: Cycle Break Detection。RC-1/RC-2それぞれの過去値のみを見る
+    # (要件3の通り、RC-3/RC-4は対象外 — 単一実行あたりのサンプル数が
+    # 少なく、閾値ベースの単純比較では時期尚早と判断、レポート参照)。
+    historical_rc1_rates = [
+        row["rc1_eligible_completion_rate"]
+        for row in previous_runs
+        if isinstance(row.get("rc1_eligible_completion_rate"), (int, float))
+    ]
+    historical_rc2_scores = [
+        row["rc2_score"] for row in previous_runs if isinstance(row.get("rc2_score"), (int, float))
+    ]
+    rc5 = detect_cycle_break(
+        current_rc1_eligible_rate=rc1.eligible_completion_rate,
+        current_rc2_score=rc2.score,
+        historical_rc1_eligible_rates=historical_rc1_rates,
+        historical_rc2_scores=historical_rc2_scores,
+    )
+
     return {
         "run_at": now.isoformat(),
         "window_days": window_days,
+        "period_from": since_iso,
+        "period_to": now.isoformat(),
         "rc1_cycle_completion": {
             "total_experiences": rc1.total_experiences,
             "reached_count": rc1.reached_count,
@@ -170,9 +254,39 @@ async def run_cycle_health(
             "period_to": rc2.period_to,
             "chat_threads_checked": chat_order_result.threads_checked,
             "chat_pairs_checked": chat_order_result.pairs_checked,
+            "chat_order_violation_count": len(chat_order_result.violations),
             "chat_order_violations": [asdict(v) for v in chat_order_result.violations],
             "chat_collapsed_timestamp_ratio": chat_order_result.collapsed_timestamp_ratio,
             "event_experience_checked": rc2.event_experience_checked,
+            "event_experience_violation_count": len(rc2.event_experience_violations),
             "event_experience_violations": [asdict(v) for v in rc2.event_experience_violations],
+        },
+        "rc3_belief_stability": {
+            "score": rc3.score,
+            "comparable_pattern_count": rc3.comparable_pattern_count,
+            "flip_count": len(rc3.flips),
+            "unsupported_flip_count": rc3.unsupported_flip_count,
+            "flips": [asdict(f) for f in rc3.flips],
+            "has_previous_snapshot": previous_snapshot is not None,
+        },
+        "rc4_policy_belief_alignment": {
+            "score": rc4.score,
+            "flags_evaluated": rc4.flags_evaluated,
+            "alignments": [asdict(a) for a in rc4.alignments],
+        },
+        "rc5_cycle_break": {
+            "status": rc5.status,
+            "broke_metrics": [c.metric for c in rc5.checks if c.broke_threshold],
+            "checks": [asdict(c) for c in rc5.checks],
+        },
+        # cycle_health_runs_store.record_cycle_health_run()のdetails引数に
+        # そのまま渡すためのペイロード。belief_snapshotは次回実行のRC-3
+        # previous_snapshotになる(7章参照)。
+        "details_for_persistence": {
+            "belief_snapshot": belief_snapshot_now,
+            "rc1_reason_counts": rc1.reason_counts,
+            "rc3_flips": [asdict(f) for f in rc3.flips],
+            "rc4_alignments": [asdict(a) for a in rc4.alignments],
+            "rc5_checks": [asdict(c) for c in rc5.checks],
         },
     }
