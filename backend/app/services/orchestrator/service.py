@@ -29,6 +29,13 @@ from app.services.orchestrator.response_guard import (
 from app.services.orchestrator.schedule_agent_client import call_schedule_agent, call_schedule_agent_stream
 from app.services.supabase_rest import get_current_user
 from app.services.abstention_feedback import get_threshold_adjustment, record_pending_hedge
+from app.services.dissent import (
+    _BOLDNESS_PUSHBACK_THRESHOLD,
+    get_dissent_boldness_adjustment,
+    record_pending_dissent,
+    reflect_dissent_reaction,
+    select_dissent_candidate,
+)
 from app.services.goal_alignment import mark_pending_surfaced
 from app.services.knowledge_graph import build_entity_hint
 from app.services.memory_confidence import classify_confidence_tier, confidence_guidance_note
@@ -215,6 +222,21 @@ async def _cached_threshold_adjustment() -> float:
         get_threshold_adjustment(), timeout=3.0, default=0.0, label="abstention_threshold_adjustment"
     )
     _cache_set("abstention_threshold_adjustment", result)
+    return result if result is not None else 0.0
+
+
+async def _cached_dissent_boldness_adjustment() -> float:
+    """Phase S-3: same TTL-cache shape as _cached_threshold_adjustment()
+    above (dissent.get_dissent_boldness_adjustment() hits sigmaris_
+    abstention_feedback, the same table B15's own cached wrapper reads —
+    see dissent.py's module docstring for why the table is shared)."""
+    hit, val = _cache_get("dissent_boldness_adjustment")
+    if hit:
+        return val
+    result = await _timed(
+        get_dissent_boldness_adjustment(), timeout=3.0, default=0.0, label="dissent_boldness_adjustment"
+    )
+    _cache_set("dissent_boldness_adjustment", result)
     return result if result is not None else 0.0
 
 
@@ -407,6 +429,62 @@ def _build_goal_alignment_context(flags: list[dict[str, Any]] | None) -> str | N
         "ます」のような、確認・提案の形でのみ触れてよいものです。「却下」という"
         "言い方や、断定的に「目標からズレています」と指摘することは絶対にしない"
         "でください。会話の流れに合わない場合は、無理に触れる必要はありません。",
+        f"- {statement}",
+    ]
+    return "\n".join(lines)
+
+
+# Phase S-3: reuses B14's preference_patterns as "material for dissent" for
+# the first time (docs/sigmaris/phase_s_report.md). No new pattern-
+# extraction logic here — dissent.select_dissent_candidate() only picks
+# among patterns B14 already produced, requiring evidence_count above the
+# same 傾向層 threshold this file's _PREFERENCE_PATTERN_HYPOTHESIS_MAX_
+# EVIDENCE already defines. This function makes no I/O call itself (the
+# candidate-selection and cooldown bookkeeping in dissent.py are pure
+# Python), so it adds no response-path latency; the only LLM call involved
+# is the single existing schedule-agent generation this context gets
+# concatenated into (see call site below), matching how _build_goal_
+# alignment_context/_build_preference_patterns_context already work.
+def _build_dissent_context(
+    patterns: list[dict[str, Any]] | None,
+    latest_user_text: str,
+    thread_id: str | None,
+    boldness_adjustment: float,
+) -> str | None:
+    candidate = select_dissent_candidate(patterns, latest_user_text)
+    if not candidate:
+        return None
+    statement = str(candidate.get("pattern_statement") or "").strip()
+    if not statement:
+        return None
+
+    record_pending_dissent(
+        thread_id, pattern_key=candidate["pattern_key"], pattern_statement=statement
+    )
+
+    # dissent.select_dissent_candidate() already guarantees evidence_count
+    # above the 傾向層 threshold, so the natural phrasing tier is always
+    # 傾向層 (persona.md 5章). boldness_adjustment can only pull this
+    # *more* cautious (toward 仮説層 phrasing) when recent reactions have
+    # been pushback-dominant — it never pushes phrasing bolder than
+    # persona.md's own ceiling (判断根拠、レポート参照: 異論は常により
+    # 慎重な方向にのみ調整可能という非対称設計)。
+    caution_note = (
+        "ただし、海星さんが以前この種の指摘に反発する傾向が見られたため、今回は"
+        "特に慎重に、仮説層(「もしかしたら〜かもしれません」)の言い回しに留めて"
+        "ください。"
+        if boldness_adjustment < _BOLDNESS_PUSHBACK_THRESHOLD
+        else ""
+    )
+
+    lines = [
+        "[判断傾向との食い違いについて(参考情報)]",
+        "直前の発言が、過去の判断傾向と食い違っている可能性があります。persona.md "
+        "9章(制止する時のルール)・5章(確信度の伝え方)に厳密に従い、「それは以前"
+        "の傾向と少し違うかもしれませんね」のような、控えめな確認の形でのみ触れて"
+        "よいものです。「それは間違っています」のような断定的な否定は絶対にしない"
+        "でください。会話の流れに合わない場合は、無理に触れる必要はありません。"
+        + caution_note,
         f"- {statement}",
     ]
     return "\n".join(lines)
@@ -1061,6 +1139,11 @@ async def _cognitive_layer_bg(
                 turn_messages=turn_messages,
                 invocation_id=invocation_id,
             ),
+            reflect_dissent_reaction(
+                thread_id=thread_id,
+                turn_messages=turn_messages,
+                invocation_id=invocation_id,
+            ),
             flush_pending_surfaced_flags(),
         )
 
@@ -1079,6 +1162,7 @@ async def _cognitive_layer_bg(
         # _extract_facts_bg above uses for the facts cache.
         _cache_pop_prefix("memory_snapshot:")
         _cache.pop("abstention_threshold_adjustment", None)
+        _cache.pop("dissent_boldness_adjustment", None)
 
 
 # ─── Main entry point ─────────────────────────────────────────────────────────
@@ -1101,11 +1185,12 @@ async def run_orchestrator_chat(
 
     # Auth + stable context in one parallel gather, then user-scoped facts
     # and the BA3 memory snapshot after user_id is known.
-    user, fact_profile, self_model, threshold_adjustment, active_trends, session = await asyncio.gather(
+    user, fact_profile, self_model, threshold_adjustment, dissent_boldness_adjustment, active_trends, session = await asyncio.gather(
         _timed(get_current_user(jwt), timeout=8.0),
         _cached_user_profile(jwt),
         _cached_self_model(),
         _cached_threshold_adjustment(),
+        _cached_dissent_boldness_adjustment(),
         _cached_active_trends(jwt),
         _prepare_session_messages(jwt=jwt, thread_id=thread_id, messages=messages),
         return_exceptions=False,
@@ -1194,6 +1279,19 @@ async def run_orchestrator_chat(
     call_name = extract_call_name(fact_profile) or _user_display_name(user)
     self_model_context = _build_self_model_context(self_model)
     preference_patterns_context = _build_preference_patterns_context(preference_patterns)
+    # Phase S-3: appended onto the existing preference_patterns_context
+    # channel rather than threaded through as a new schedule_agent_client
+    # parameter — see _build_dissent_context's module comment. Reuses the
+    # same "concatenate a second context block onto an existing string"
+    # splicing already used elsewhere in this function (e.g. trends_ctx
+    # onto profile_context).
+    dissent_context = _build_dissent_context(
+        preference_patterns, _latest_user_content(messages), effective_thread_id, dissent_boldness_adjustment
+    )
+    if dissent_context and preference_patterns_context:
+        preference_patterns_context = preference_patterns_context + "\n\n" + dissent_context
+    elif dissent_context:
+        preference_patterns_context = dissent_context
     topic_context = _build_topic_context(current_topic, previous_topic)
     goal_alignment_context = _build_goal_alignment_context(goal_alignment_flags)
     persona_context = _build_unified_persona_context(persona, call_name)
@@ -1368,11 +1466,12 @@ async def run_orchestrator_chat_stream(
 
     # Auth + stable context in one parallel gather, then user-scoped facts
     # and the BA3 memory snapshot after user_id is known.
-    user, fact_profile, self_model, threshold_adjustment, active_trends, session = await asyncio.gather(
+    user, fact_profile, self_model, threshold_adjustment, dissent_boldness_adjustment, active_trends, session = await asyncio.gather(
         _timed(get_current_user(jwt), timeout=8.0),
         _cached_user_profile(jwt),
         _cached_self_model(),
         _cached_threshold_adjustment(),
+        _cached_dissent_boldness_adjustment(),
         _cached_active_trends(jwt),
         _prepare_session_messages(jwt=jwt, thread_id=thread_id, messages=messages),
         return_exceptions=False,
@@ -1454,6 +1553,19 @@ async def run_orchestrator_chat_stream(
     call_name = extract_call_name(fact_profile) or _user_display_name(user)
     self_model_context = _build_self_model_context(self_model)
     preference_patterns_context = _build_preference_patterns_context(preference_patterns)
+    # Phase S-3: appended onto the existing preference_patterns_context
+    # channel rather than threaded through as a new schedule_agent_client
+    # parameter — see _build_dissent_context's module comment. Reuses the
+    # same "concatenate a second context block onto an existing string"
+    # splicing already used elsewhere in this function (e.g. trends_ctx
+    # onto profile_context).
+    dissent_context = _build_dissent_context(
+        preference_patterns, _latest_user_content(messages), effective_thread_id, dissent_boldness_adjustment
+    )
+    if dissent_context and preference_patterns_context:
+        preference_patterns_context = preference_patterns_context + "\n\n" + dissent_context
+    elif dissent_context:
+        preference_patterns_context = dissent_context
     topic_context = _build_topic_context(current_topic, previous_topic)
     goal_alignment_context = _build_goal_alignment_context(goal_alignment_flags)
     persona_context = _build_unified_persona_context(persona, call_name)
