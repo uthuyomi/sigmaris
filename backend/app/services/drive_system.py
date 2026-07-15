@@ -36,7 +36,8 @@
 from __future__ import annotations
 
 from collections import Counter
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from typing import Any
 
 from app.services.cycle_health_runs_store import get_recent_cycle_health_runs
 from app.services.goal_alignment import _get_all_flags_for_context
@@ -82,6 +83,15 @@ class KnowledgeGapDrive:
     confirmation_candidate_count: int
     average_confidence_of_confirmation_candidates: float | None
     reason_counts: dict[str, int]  # confirm_reason別内訳(low_confidence/flagged_stale/long_unupdated)
+    # Phase S-2(goal_proposal.py): get_confirmation_candidates()の生の
+    #候補リスト(category/key/value/confirm_reason等)。S-0時点では件数・
+    # 平均confidenceへの集約のみで捨てていたが、S-2がcuriosity_engine.
+    # generate_curiosity_queries()の"stale_facts"入力を組み立てるために
+    # 個々の候補内容を必要とするため追加した(docs/sigmaris/
+    # glossary_curiosity.md 11.2節が事前に示唆していた拡張)。デフォルト
+    # 空リストの後方互換フィールド——既存の呼び出し元・テストの
+    # コンストラクタ呼び出しを壊さないための判断。
+    confirm_candidates: list[dict[str, Any]] = field(default_factory=list)
 
 
 @dataclass
@@ -167,6 +177,7 @@ async def _compute_knowledge_gap_drive(jwt: str) -> KnowledgeGapDrive:
         confirmation_candidate_count=len(confirm_candidates),
         average_confidence_of_confirmation_candidates=_mean(confidences),
         reason_counts=reason_counts,
+        confirm_candidates=confirm_candidates,
     )
 
 
