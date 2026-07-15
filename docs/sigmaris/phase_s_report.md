@@ -163,3 +163,154 @@ GetCurrentDriveStateIntegrationTests (1件)
 4. **`level`の意味論はDriveごとに異なる**: MasteryとCoherenceの`level`は「理想からどれだけ乖離しているか(gap)」の平均として設計されている一方、Curiosityの`level`は「未解決の候補がどれだけ溜まっているか(count)」であり、両者は同じ0.0〜1.0スケールでも意味が異なる合成のされ方をしている。3つのDriveを比較・重み付けする際は、この非対称性を踏まえる必要がある(要件通り1つの数値に統合していないため実害は無いが、S-1が3つを比較する設計にする場合は要注意)。
 5. **Coherence Driveのフラグ取得(`_get_all_flags_for_context`)はモジュール内プライベート関数の直接importである**——R-1・R-3が既に同じ判断(`experience_layer._CONSOLIDATION_SCAN_WINDOW`等の直接import)を行っており、本タスクもその前例を踏襲したが、こうした「プライベート関数の他モジュールからの再利用」が3回目になった。もし今後さらに増える場合、`goal_alignment.py`側で正式に公開関数として昇格させることを検討する価値がある。
 6. **B3の`get_null_fields`は`user_fact_profile`が未作成の場合、固定のプロフィールフィールド全件(氏名・生年月日等)を返す設計になっている**(`user_fact_data.py`)。新規ユーザーの初回利用時、Curiosity Driveの`candidate_count`が初手から高い値になりうる——これは「シグマリスがまだ何も知らない」という状況として自然だが、S-1が「Curiosityが高い=積極的に質問すべき」という単純な変換をする場合、初回利用時に質問攻めになるリスクがある点は留意が必要。
+
+---
+
+# Phase S-1 実施報告: Executive Gate + curiosity名前衝突の整理
+
+**作業ブランチ:** `phase-s1-executive-gate`(mainから新規作成)
+**範囲:** curiosity名前衝突の整理、およびExecutive Gate(いつ話しかけていいかの判定ロジック)の実装。実際の発話生成(S-2: Goal Proposal)は次タスク。
+
+---
+
+## 6. curiosity名前衝突の整理
+
+### 6.1 実際の用途・参照箇所の確認結果
+
+着手前に、`curiosity`という語を持つ既存箇所を全文検索し、**S-0報告書が想定していた「2つの衝突」ではなく、実際には3つの独立した`curiosity`概念が存在すること**を確認した。
+
+| # | 実体 | 性質 | 主な参照箇所 |
+|---|---|---|---|
+| 1 | `sigmaris_internal_state.curiosity`(既存) | 会話ターンごとに`min(1.0, +0.01)`で単調増加するムード的float値。B3の実データとは一切連動しない | `internal_state.py`(`_DEFAULTS`・`update_internal_state`・`snapshot`)、`orchestrator/service.py::_cognitive_layer_bg()`(唯一の書き込み元) |
+| 2 | `curiosity_engine.py` / `sigmaris_curiosity_queue`(既存、S-0調査時には未発見) | 好奇心駆動の**研究クエリのキュー**(Web検索対象の管理)。人格・自己認識の柱として設計された、全く別の機能領域 | `routes/agent.py`(`GET /curiosity/queue`)、`proactive/scheduler.py`(`_curiosity_search`ジョブ、日次6:15)、`research_agent.py` |
+| 3 | `drive_system.CuriosityDrive`(S-0で新設) | B3の未入力プロフィール項目・低確信度事実の件数から算出する、Drive System独自の値 | `drive_system.py`のみ |
+
+**3の存在は、1・2いずれとも無関係かつ独立している。** S-0報告書は1のみを名前衝突として指摘していたが、実際には2も同じ語を含んでおり、「curiosity」という語だけでは3つのうちどれを指しているか文脈なしには判別できない状態だったことが、本タスクの調査で新たに判明した。
+
+### 6.2 選択した対応方針とその根拠
+
+**S-0側の`CuriosityDrive`を`KnowledgeGapDrive`に、`DriveState.curiosity`フィールドを`DriveState.knowledge_gap`に改称した。** `sigmaris_internal_state.curiosity`の列名・変数名、および`curiosity_engine.py`の関数名・テーブル名はいずれも変更していない。
+
+判断根拠:
+
+1. **依頼書の明示的な指示**により、`sigmaris_internal_state.curiosity`の列名・変数名は変更対象外。
+2. **`curiosity_engine.py`の改名は本タスクのスコープ外と判断した。** 依頼書が名前衝突の整理対象として明示していたのは`sigmaris_internal_state.curiosity`のみであり、6.1節で新たに発見した`curiosity_engine.py`との衝突は、依頼書が想定していなかった追加の発見である。この場を借りて改名まで踏み込むと、依頼書が定めた本タスクの範囲(「curiosity名前衝突の整理」の対象は明示された1件)を超えるため、**発見事実の報告のみに留め、対応は別タスクの判断に委ねる**(依頼書「両者を統合すべきという結論に至った場合は、実装せず分析結果のみ報告」という指示の精神を、"統合"だけでなく"追加の衝突発見"にも適用した)。
+3. **`CuriosityDrive`(S-0で1日前に新設されたばかりで、依頼書の时点で唯一の呼び出し元であるテスト以外に外部消費者が存在しない)を改称する方が、既存の2つ(1・2、いずれもより長く存在し、他モジュールから広く参照されている)を触るより低リスクである。** 特に1は`orchestrator/service.py`の応答経路(fire-and-forgetとはいえ毎ターン実行される`_cognitive_layer_bg()`)から書き込まれており、2はスケジューラジョブ・APIルート・research_agent.pyの3箇所から参照される、この時点で最も改名コストが高い候補だった。
+4. **改称先を"KnowledgeGapDrive"/"knowledge_gap"にした根拠**: このDriveが実際に算出している内容(未入力のプロフィール項目+確信度の低い/古い事実の件数)を最も直接的に表す語であり、かつ"curiosity"という語を一切含まないため、将来同じ語で検索しても1・2とは明確に区別できる。依頼書の例示(「`CuriosityDrive`はそのままクラス名として残しつつ、コメントで違いを明記する」)ではなく実際の改称を選んだ理由は、コメントによる注記だけでは、3つの`curiosity`概念のうち少なくとも2つ(1・3)が今後も同じ語のまま並存し続け、grep等の機械的な発見に頼った際に誤って混同するリスクが残ると判断したため。
+
+### 6.3 実施した変更
+
+`backend/app/services/drive_system.py`内で完結する改称のみ(他ファイルへの影響なし——`get_current_drive_state()`の外部呼び出し元は本タスク時点でまだ存在しないため、破壊的変更の影響範囲はゼロ)。
+
+- クラス`CuriosityDrive` → `KnowledgeGapDrive`
+- `DriveState.curiosity`(フィールド) → `DriveState.knowledge_gap`
+- 内部関数`_compute_curiosity_drive()` → `_compute_knowledge_gap_drive()`
+- 定数`_CURIOSITY_SATURATION_COUNT` → `_KNOWLEDGE_GAP_SATURATION_COUNT`
+- モジュール冒頭のコメント、および`KnowledgeGapDrive`のdocstringに、6.1・6.2節の経緯(何から改称したか、既存の2つの`curiosity`概念との関係)を明記した——将来のコード読者がgitログを遡らなくても経緯を追えるようにするため。
+
+`mastery`/`coherence`の命名はそのまま維持した(衝突が無いため変更の必要がない)。この結果、`DriveState`の3フィールド名が`knowledge_gap`/`mastery`/`coherence`という非対称な形(1つだけ2語)になったが、6.2節の理由により意図的な選択であることを明記する。
+
+---
+
+## 7. Executive Gateの判定ロジック詳細
+
+`backend/app/services/executive_gate.py`(新規)に`evaluate_executive_gate(jwt, *, is_urgent=False, now=None) -> ExecutiveGateResult`を実装した。
+
+### 7.1 判定の全体フロー
+
+```
+1. 深夜早朝(23:00〜07:00、settings.sigmaris_timezone基準)か?
+   → is_urgent=Falseなら、ここで即座に blocked_by="quiet_hours" で却下
+     (Drive Stateは取得しない)
+2. 直近3時間以内に自発的な話しかけを行っていたか?
+   → 行っていれば blocked_by="cooldown" で却下(Drive Stateは取得しない)
+3. drive_system.get_current_drive_state()を取得し、
+   knowledge_gap/mastery/coherenceいずれかのlevelが0.6以上か?
+   → 1件でもあれば may_speak=True、無ければ blocked_by="no_drive_above_threshold"
+```
+
+絶対制約(1・2)のいずれかで却下される場合、**Drive State自体を取得しない**設計にした(`drive_state=None`のまま返す)。判断根拠: 絶対制約は「参照するまでもなく結果が決まっている」ケースであり、そこでDrive Stateを取得するのは無駄なI/O(B3の候補取得・Phase R実行結果取得・B16フラグ取得、計4系統の読み取り)を発生させるだけである。テストで、この短絡が実際に機能していること(絶対制約で却下される場合に`get_current_drive_state`が一切呼ばれないこと)を直接確認した(8章参照)。
+
+### 7.2 絶対的制約1: 深夜早朝(quiet hours)
+
+- **時間帯**: 23時〜7時(またぎ)、依頼書の目安通り。既存の設定に、これに相当する値は見つからなかった(`settings`クラスに`quiet_hour`系の設定は存在しない)ため、依頼書のフォールバック値をそのまま採用した。
+- **判断根拠として明記**: この時間帯は、既存の朝ブリーフィング(8:00開始)・夕方チェックイン(22:00開始)という2つの固定スケジュール(`proactive/scheduler.py`)の外側に、それぞれ1時間の余裕を持って収まっている。既存のスケジュールが暗黙に前提としていた「活動時間帯」(おおよそ7時台〜23時前後)と矛盾しない値であることを確認した。
+- **`is_urgent`引数**: 依頼書の「緊急以外の」という文言に対応するバイパス機構として用意した。ただし、**本タスク時点で`is_urgent=True`を渡す呼び出し元は存在しない**(「何が緊急か」の判定自体はS-1のスコープ外、S-2以降の課題)。`is_urgent=True`は深夜早朝の制約のみをバイパスし、次節のクールダウンはバイパスしない——「緊急なら深夜でも起こしてよい」と「緊急なら何度でも連投してよい」は別の性質の判断であり、後者まで緩めることは依頼書が要求していないため、安全側に倒した判断根拠を明記する。
+
+### 7.3 絶対的制約2: 連続話しかけ防止(クールダウン)
+
+- **参照データ**: `agent_invocation_audit_logs`から、`caller_agent_id`が`"proactive-scheduler:"`で始まる直近1件の`created_at`を取得する。この判定基準は新規のものではなく、`orchestrator/service.py::_is_proactive_call()`が既に使っている、Temporal Layer Step2で確立済みのプレフィックス規約をそのまま踏襲した(依頼書の「Temporal Layerの`last_mentioned_at`の仕組みを参考にすること」に対応する形として、**新しい記録テーブル・記録経路を追加せず、既存の監査ログを読むだけ**という設計を選んだ——`last_mentioned_at`自体は個々の事実単位の粒度であり、会話全体の頻度を見る本用途にはそのまま転用できないため、"仕組みの考え方"を踏襲しつつ、実際のデータソースは既存の監査ログにした、という判断根拠)。
+- **クールダウン期間**: 3時間。B3の48時間(フィールド単位の再確認クールダウン)・B16の14日間(同一乖離フラグの再提示クールダウン)のいずれとも異なる、「同日内での連投を避ける」ことを主眼とした値。**未検証の暫定値であることを明記する**(9章参照)。
+- 直近の自発的接触が1件も無い場合(新規稼働直後等)は、クールダウン非該当として扱う(`cooldown_active=False`)。
+
+### 7.4 Drive State参照の閾値
+
+各Driveの`level`が**0.6以上**であれば、そのDriveが「話しかけてよい」根拠として基準を満たしたとみなす。3つのDriveのうち1つでも基準を満たせば`may_speak=True`（`triggering_drives`に該当するDrive名を全て列挙する——複数のDriveが同時に閾値を超えることもありうる)。
+
+0.6という値の判断根拠: 中間点(0.5)よりやや高く、`MasteryDrive`の`break_detected`フロア(0.7、S-0で導入済み)よりは低い水準を意図した。「明確に高まっている」が「緊急事態ではない」という中間的な強度を表す値として選んだが、**これも未検証の暫定値**である(9章参照)。
+
+`level=None`(Mastery Driveが未計測の場合)は、`None >= 0.6`という比較を行わずに除外している(Pythonでは`None >= 0.6`は`TypeError`になるため、`level is not None`を先に確認する実装にした——テストで直接確認済み、8章参照)。
+
+---
+
+## 8. テスト結果
+
+いずれもモック(実DB未接続、`unittest`)。scratchディレクトリに作成(`backend/tests/`には追加していない、既定の方針通り)。
+
+```
+QuietHoursPureFunctionTests (1件)
+  PASS: _is_quiet_hours()の境界値(22時=false, 23時=true, 0時=true,
+        6時=true, 7時=false, 14時=false)が全て正しいこと
+
+ExecutiveGateQuietHoursTests (2件)
+  PASS: 深夜早朝(JST 02:00)はDrive Stateを一切取得せずに却下されること
+        (_get_last_proactive_contact_at・get_current_drive_stateの
+        いずれも呼ばれないことを直接確認——7.1節の短絡設計の検証)
+  PASS: is_urgent=Trueの場合、深夜早朝でもblocked_by≠"quiet_hours"となり、
+        Drive State次第でmay_speak=Trueになりうること
+
+ExecutiveGateCooldownTests (3件)
+  PASS: 直近1時間以内に自発的接触があった場合、クールダウンで却下され
+        Drive Stateが取得されないこと
+  PASS: クールダウン期間(3時間)を過ぎていれば却下されないこと
+  PASS: 直近の接触記録が1件も無い場合はクールダウン非該当として扱われること
+
+ExecutiveGateDriveThresholdTests (4件)
+  PASS: いずれかのDriveが閾値(0.6)を超えている場合にmay_speak=True、
+        triggering_drivesに正しく列挙されること
+  PASS: 全てのDriveが閾値未満のときmay_speak=False、
+        blocked_by="no_drive_above_threshold"になること
+  PASS: MasteryDriveのlevel=None(未計測)が、閾値判定でエラーにも
+        誤ったTrue判定にもならないこと
+  PASS: 複数のDriveが同時に閾値を超えた場合、両方がtriggering_drivesに
+        列挙されること
+
+10 passed
+```
+
+S-0のscratchテスト(12件、`KnowledgeGapDrive`への改称を反映して更新した上で)を再実行し、**改称後も算出ロジック自体には変化がないこと**を確認した。
+
+```
+12 passed(S-0、改称後の名前で再実行)
+```
+
+既存の`backend/tests/`(16件)を変更前後で再実行し、リグレッションがないことを確認した。
+
+```
+16 passed(変更前)
+16 passed(変更後)
+16 + 12 + 10 = 38 passed(backend/tests/ + S-0 scratch + S-1 scratch、合算実行)
+```
+
+**実モデルAPI・実DBでの検証は行っていない。** 注意事項の通り、追加のサーバーアクセス・APIキー取得は試みていない。本タスクは新規マイグレーションを必要としない(既存テーブルの読み取りのみのため)。
+
+---
+
+## 9. 気づいた懸念点・S-2(Goal Proposal)に向けた申し送り
+
+1. **`curiosity_engine.py`(研究クエリキュー)との3つ目の名前衝突が残っている(6.1節)。** 本タスクでは対応範囲外としたが、`sigmaris_internal_state.curiosity`・`curiosity_engine.py`・(改称後の)`KnowledgeGapDrive`という3つの独立した概念が同じプロジェクト内に存在する状態は、依然として将来の混乱リスクを抱えている。特に`curiosity_engine.py`はPhase Sの「人格・自己認識」という設計思想と概念的に近く、将来Phase Sの一部として再統合・再設計される可能性もゼロではない——S-2以降でこの3者の関係を一度整理することを推奨する。
+2. **Executive Gateの3つの定数(クールダウン3時間・閾値0.6・quiet hours 23-7時)は、いずれも実データに基づかない暫定値である。** 特にクールダウンと閾値は相互に影響し合う(閾値を下げれば発火しやすくなるが、クールダウンがある限り連投は防がれる、等)ため、片方だけを個別にチューニングすると意図しない挙動になりうる。実運用開始後、両方をセットで見直すことを推奨する。
+3. **`is_urgent`引数は用意したが、呼び出し元(何が緊急かを判定するロジック)が存在しない。** S-2(Goal Proposal)が実際に発話内容を生成する段階で、生成された提案内容自体の緊急性を判定し、この引数に渡す設計になると想定されるが、その判定ロジックの設計は本タスクの範囲外であり、着手していない。
+4. **クールダウンの起点は「直近の自発的接触」であり、朝ブリーフィング・夕方チェックインという既存の固定スケジュール発話も対象に含まれる。** つまり、朝8:00のブリーフィング直後の3時間(〜11:00)は、たとえDrive Stateが閾値を超えていても、Executive Gate単体では新たな自発的な話しかけが却下される。これは意図した設計(「固定スケジュールの発話も"接触"の一種としてカウントすべき」という解釈)だが、S-2が「既存の3つの固定ブリーフィングとは別枠で、Drive由来の提案には別のクールダウンを設けたい」という設計にしたい場合は、`caller_agent_id`のプレフィックスをさらに細分化する(例: `"proactive-scheduler:drive-triggered:"`のような専用プレフィックス)必要が生じる可能性がある。
+5. **Executive Gateは判定結果を返すのみで、実際にどう「話しかける」か(通知・次回チャット冒頭への差し込み等)には一切関与しない。** S-2がこの`ExecutiveGateResult`をどう消費するか(例えば`may_speak=True`をPushover通知のトリガーにする、次回チャット開始時のプロアクティブな一言に使う等)は、本タスクでは一切設計していない。
+6. **`evaluate_executive_gate()`は呼び出しのたびに動的計算する設計(Drive Systemと同じ方針)であり、スケジューラからの定期呼び出しは本タスクでは配線していない。** S-2が実際にこれを「いつ呼ぶか」(例えば`proactive/scheduler.py`に新規ジョブとして追加するのか、既存のどこかのジョブに相乗りするのか)を設計する必要がある。
