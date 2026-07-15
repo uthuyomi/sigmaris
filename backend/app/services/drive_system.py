@@ -5,20 +5,31 @@
 # 【最重要】本モジュールは新しいデータを一切生成しない。既存の3系統の
 # 資産を「読み取るだけ」で、書き込み・新規テーブルは持たない
 # (docs/sigmaris/phase_s_report.md参照)。
-#   - Curiosity Drive: B3(active_inquiry.py/memory_validator.py)が既に
-#     持っている、未知のプロフィール項目・確信度の低い/古い事実
+#   - Knowledge-Gap Drive(旧称 Curiosity Drive): B3(active_inquiry.py/
+#     memory_validator.py)が既に持っている、未知のプロフィール項目・
+#     確信度の低い/古い事実
 #   - Mastery Drive: Phase R(cycle_health_runs_store.py)に既に記録されて
 #     いる、直近のRC-1(循環完了率)・RC-2(時間的一貫性)・RC-5(循環破損
 #     検知)の結果
 #   - Coherence Drive: B16(goal_alignment.py)の目標整合性フラグ、および
 #     Phase RのRC-4(方策と信念の一致度)
 #
+# Phase S-1追記: 当初「Curiosity Drive」という名称だったが、既存の
+# sigmaris_internal_state.curiosity(会話ターンごとに単調増加するムード
+# 値、internal_state.py)、およびcuriosity_engine.py(sigmaris_curiosity_
+# queue、研究クエリのキュー)という、無関係な2つの既存概念と名前が衝突
+# することがS-0完了報告で発覚した。Phase S-1でKnowledgeGapDrive/
+# knowledge_gapへ改称した——判断根拠はdocs/sigmaris/phase_s_report.md
+# のS-1セクションを参照。sigmaris_internal_state.curiosity列・
+# curiosity_engine.pyの命名はいずれも変更していない(前者は依頼書の
+# 明示的な指示、後者は本タスクのスコープ外と判断)。
+#
 # 3つのDriveは意図的に1つの数値へ統合しない(要件の通り)。それぞれの
 # levelは0.0〜1.0で「現在どれだけ高まっているか」を表す独立した値であり、
 # 直接比較可能な同一スケールの指標ではないことに注意——例えば
-# curiosity.level=0.5とmastery.level=0.5が「同じ強さの動機」であることを
-# 意味しない。後続タスク(S-1: Executive Gate)がどう重み付け・比較するかは
-# 本タスクの範囲外。
+# knowledge_gap.level=0.5とmastery.level=0.5が「同じ強さの動機」である
+# ことを意味しない。S-1(Executive Gate)がどう重み付け・比較するかは
+# S-1セクション参照。
 
 from __future__ import annotations
 
@@ -30,17 +41,17 @@ from app.services.goal_alignment import _get_all_flags_for_context
 from app.services.memory_validator import get_confirmation_candidates
 from app.services.user_fact_data import get_null_fields
 
-# Curiosity: B3自身の1ターン1問・フィールド単位48時間クールダウンという
-# 運用ペースを踏まえた、経験的な飽和点(判断根拠: この件数を超えても
+# Knowledge-Gap: B3自身の1ターン1問・フィールド単位48時間クールダウンと
+# いう運用ペースを踏まえた、経験的な飽和点(判断根拠: この件数を超えても
 # 「もっと気になる」が際限なく伸び続けるのは直感に反するため、8件で
 # level=1.0に達するようキャップする——未検証の暫定値であることを明記する。
 # 他の多くのB群暫定チューニング定数(B1のmatch_threshold等)と同じ性質)。
-_CURIOSITY_SATURATION_COUNT = 8
+_KNOWLEDGE_GAP_SATURATION_COUNT = 8
 
 # Coherence: B16の乖離フラグは最低2件以上の裏付け証拠を経て初めて1件
 # 生成される(_MIN_SUPPORTING_EVIDENCE、goal_alignment.py)ため、B3の
 # 「知らないことリスト」ほど気軽には増えない。少数の存在でも十分な
-# シグナルとみなし、curiosityより低い飽和点を設定した(同じく未検証の
+# シグナルとみなし、knowledge_gapより低い飽和点を設定した(同じく未検証の
 # 暫定値)。
 _COHERENCE_SATURATION_COUNT = 5
 
@@ -54,10 +65,14 @@ _MASTERY_BREAK_FLOOR = 0.7
 
 
 @dataclass
-class CuriosityDrive:
+class KnowledgeGapDrive:
     """B3(active_inquiry.py)が既に持つ「まだ知らない/確認が必要な」情報
     の量から算出する。新規データは一切生成しない——get_null_fields()・
-    get_confirmation_candidates()をそのまま呼び出すのみ。"""
+    get_confirmation_candidates()をそのまま呼び出すのみ。
+
+    Phase S-1で"CuriosityDrive"から改称した(sigmaris_internal_state.
+    curiosity・curiosity_engine.pyとの名前衝突を避けるため、判断根拠は
+    docs/sigmaris/phase_s_report.md参照)。"""
 
     level: float
     candidate_count: int
@@ -112,7 +127,7 @@ class CoherenceDrive:
 
 @dataclass
 class DriveState:
-    curiosity: CuriosityDrive
+    knowledge_gap: KnowledgeGapDrive
     mastery: MasteryDrive
     coherence: CoherenceDrive
 
@@ -121,7 +136,7 @@ def _mean(values: list[float]) -> float | None:
     return sum(values) / len(values) if values else None
 
 
-async def _compute_curiosity_drive(jwt: str) -> CuriosityDrive:
+async def _compute_knowledge_gap_drive(jwt: str) -> KnowledgeGapDrive:
     try:
         null_fields = await get_null_fields(jwt)
     except Exception:
@@ -141,9 +156,9 @@ async def _compute_curiosity_drive(jwt: str) -> CuriosityDrive:
         c["confirm_reason"] for c in confirm_candidates if isinstance(c.get("confirm_reason"), str)
     ))
 
-    level = min(1.0, candidate_count / _CURIOSITY_SATURATION_COUNT)
+    level = min(1.0, candidate_count / _KNOWLEDGE_GAP_SATURATION_COUNT)
 
-    return CuriosityDrive(
+    return KnowledgeGapDrive(
         level=level,
         candidate_count=candidate_count,
         null_field_count=len(null_fields),
@@ -223,21 +238,21 @@ async def get_current_drive_state(jwt: str) -> DriveState:
     """S-1(Executive Gate)・S-2(Goal Proposal)向けの参照インターフェース。
 
     jwt引数にした判断根拠: 依頼書の例示シグネチャは
-    `get_current_drive_state(user_id)` だったが、Curiosity Driveの材料
-    (get_null_fields/get_confirmation_candidates)はいずれもJWTスコープの
-    RLS経由でしかuser_fact_items/user_fact_profileを読めない(このコード
-    ベースの既存関数のシグネチャそのもの)。run_eval.py/run_cycle_health.py
-    が一貫してjwtを主引数にしているのと同じ理由で、user_idではなくjwtを
-    受け取る形にした。
+    `get_current_drive_state(user_id)` だったが、Knowledge-Gap Driveの
+    材料(get_null_fields/get_confirmation_candidates)はいずれもJWT
+    スコープのRLS経由でしかuser_fact_items/user_fact_profileを読めない
+    (このコードベースの既存関数のシグネチャそのもの)。run_eval.py/
+    run_cycle_health.pyが一貫してjwtを主引数にしているのと同じ理由で、
+    user_idではなくjwtを受け取る形にした。
 
-    3回のI/O(Curiosity・Mastery・Coherence)は互いに独立しているが、
+    3回のI/O(Knowledge-Gap・Mastery・Coherence)は互いに独立しているが、
     Mastery/Coherenceの両方がget_recent_cycle_health_runs(limit=1)を
     個別に呼んでいる点はやや冗長——ただし1回あたりのコストは単一行の
     SELECTのみで無視できる規模のため、共有・キャッシュ機構を導入するほど
     ではないと判断した(要件2「新規ロジックの追加は必要最小限に」に
     対応する判断)。永続化・TTLキャッシュは導入していない(2章参照)。
     """
-    curiosity = await _compute_curiosity_drive(jwt)
+    knowledge_gap = await _compute_knowledge_gap_drive(jwt)
     mastery = await _compute_mastery_drive()
     coherence = await _compute_coherence_drive()
-    return DriveState(curiosity=curiosity, mastery=mastery, coherence=coherence)
+    return DriveState(knowledge_gap=knowledge_gap, mastery=mastery, coherence=coherence)
