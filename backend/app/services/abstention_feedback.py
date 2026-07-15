@@ -99,9 +99,18 @@ def _latest_user_text(messages: list[dict[str, str]]) -> str:
     return ""
 
 
-async def _record_reaction(
+async def record_reaction(
     reaction: str, *, thread_id: str | None, invocation_id: str | None
 ) -> None:
+    """Insert one classified-reaction row into sigmaris_abstention_feedback.
+
+    Public (Phase S-3, docs/sigmaris/phase_s_report.md): dissent.py reuses
+    this writer as-is to record dissent_accepted/dissent_pushed_back
+    reactions into the same table, rather than duplicating this insert
+    logic or creating a parallel table — see the
+    202607220049_dissent_feedback.sql migration's comment for why the
+    table itself is shared across both B15 (hedging) and S-3 (dissent).
+    """
     payload: dict[str, Any] = {"reaction": reaction}
     if thread_id is not None:
         payload["thread_id"] = thread_id
@@ -159,7 +168,7 @@ async def reflect_abstention_reaction(
             # instruction, an ambiguous reply must not skew the count.
             return
 
-        await _record_reaction(reaction, thread_id=thread_id, invocation_id=invocation_id)
+        await record_reaction(reaction, thread_id=thread_id, invocation_id=invocation_id)
     except Exception:
         logger.exception(
             "abstention_feedback: failed to reflect_abstention_reaction thread_id=%s", thread_id
