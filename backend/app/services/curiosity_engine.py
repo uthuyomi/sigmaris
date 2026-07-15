@@ -1,3 +1,19 @@
+# 用語注記(docs/sigmaris/glossary_curiosity.md「curiosity research
+# queue」): このモジュールはシグマリスが外部Web情報源(HackerNews・
+# arXiv等)を能動的に調べるべき検索クエリのキューを扱う。internal_
+# state.pyの`curiosity`列(単調増加するムード値)ともdrive_system.
+# KnowledgeGapDrive(旧CuriosityDrive、B3由来のユーザー知識ギャップ)
+# とも無関係な、第3の独立した概念。3つの詳細な違いは上記グロッサリ参照。
+#
+# 補足: generate_curiosity_queries()は、このファイル内の他の呼び出し元
+# (research_agent.py/proactive/scheduler.pyの2ジョブ/routes/agent.py)
+# のいずれからも呼ばれていないデッドコードである(2026-07-15時点、
+# 上記グロッサリ2章で確認済み)。プロンプトが要求する入力(「直近の
+# 未解決経験」「古くなった可能性がある事実」)は、B3/KnowledgeGapDrive
+# が既に持つデータと概念的に近く、将来KnowledgeGapDriveの候補データを
+# ここに配線する統合の候補になりうる——ただし本モジュールの機能・
+# 呼び出し関係は本タスクの時点で一切変更していない。
+
 from __future__ import annotations
 
 import json

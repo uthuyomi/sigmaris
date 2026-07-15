@@ -1,3 +1,10 @@
+# 用語注記(docs/sigmaris/glossary_curiosity.md「curiosity mood」):
+# このモジュールの`curiosity`列は、curiosity_engine.py(好奇心リサーチ
+# キュー、外部Web情報源の検索クエリ管理)ともdrive_system.KnowledgeGapDrive
+# (旧CuriosityDrive、B3由来のユーザー知識ギャップ)とも無関係な、第3の
+# 独立した概念——会話ターンごとに機械的に+0.01される、シグマリスの
+# "雰囲気"を表すfloat値である。3つの詳細な違いは上記グロッサリ参照。
+
 from __future__ import annotations
 
 import logging

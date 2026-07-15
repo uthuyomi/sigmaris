@@ -22,7 +22,9 @@
 # knowledge_gapへ改称した——判断根拠はdocs/sigmaris/phase_s_report.md
 # のS-1セクションを参照。sigmaris_internal_state.curiosity列・
 # curiosity_engine.pyの命名はいずれも変更していない(前者は依頼書の
-# 明示的な指示、後者は本タスクのスコープ外と判断)。
+# 明示的な指示、後者は本タスクのスコープ外と判断)。3つの概念全体の
+# 詳細な用語整理はdocs/sigmaris/glossary_curiosity.md参照(別タスクで
+# 作成、curiosity_engine.pyとの統合可能性の検討結果を含む)。
 #
 # 3つのDriveは意図的に1つの数値へ統合しない(要件の通り)。それぞれの
 # levelは0.0〜1.0で「現在どれだけ高まっているか」を表す独立した値であり、
