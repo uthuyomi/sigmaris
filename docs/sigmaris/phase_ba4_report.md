@@ -564,3 +564,65 @@ OrchestratorPassesNewUserMessageTests (1件、created_atの実在検証を追加
 3. **既に本番DBに保存されてしまっている、過去の順序崩れは遡って修正されない。** 今回の修正は新規の保存からのみ効果を持つ。運用者側で、既存スレッドの表示順序に明らかな崩れが残っていないか確認することを推奨する。
 4. **UIの日時表示コンポーネント(`MessageTimestamp`)は、Reactのレンダー時に1度だけ相対時間を計算する(tick更新なし)ため、同じ画面を長時間開いたままにすると、表示上の相対時間(「3分前」等)が実際の経過時間より古いまま静止する。** 13〜15章の教訓(streaming描画とタイマー更新の競合)を踏まえた意図的なトレードオフだが、運用上気になる場合は、ページ遷移やスレッド切り替え時の再マウントで自然に更新される、という程度の対応に留まっている。
 5. **実ブラウザでの、実際に2つの端末/タブから同一スレッドへほぼ同時に送信するシナリオでの動作確認はできていない。** 本タスクのテストは、あくまでバックエンド関数レベルでのレース後の状態を模したものであり、実際のネットワーク遅延・ブラウザの挙動を含めた end-to-end の確認は運用者側での実地検証に委ねる。
+
+---
+
+## 19. 2026-07-16 追補: 日時表示が実際には表示されない不具合の修正、+ ペア単位表示への変更
+
+### 19.1 背景
+
+18章の対応をVercel・サーバー双方へ反映後、海星さんから「メッセージ表示順序は正しく直っているが、日時表示自体が画面に一切出てこない」との確認依頼を受けた。指示に従い、(1) `format-time.ts`の呼び出し元、(2) `thread.tsx`の表示条件・CSS、(3) 実DOM上の要素有無、の3点を調査した。
+
+### 19.2 原因調査の結果 → **`@assistant-ui/core`のメッセージ変換処理が、`metadata`のトップレベルキーを問答無用で捨てていた**
+
+`format-time.ts`(`formatRelativeTime()`・`formatAbsoluteDateTime()`)自体は`thread.tsx`の`MessageTimestamp`コンポーネントから正しく呼ばれており、CSSにも`display: none`や背景色との同化は無かった(`text-xs text-[#8e8ea0]`、既存の他の補助テキストと同じ色)。**問題はその手前、`metadata.createdAt`という値そのものが、`useAuiState`経由で読み取れる`s.message.metadata`まで一度も届いていなかったこと**だった。
+
+`node_modules/@assistant-ui/core/dist/runtime/utils/thread-message-like.js`の`fromThreadMessageLike()`(外部メッセージを最終的な`ThreadMessage`へ変換する、`@assistant-ui/react-ai-sdk`経由で全メッセージが必ず通る処理)を確認したところ、**`metadata`を丸ごと引き継ぐのではなく、`{ custom: metadata?.custom ?? {}, ...(assistantの場合はunstable_state/unstable_annotations/unstable_data/steps/timing/submittedFeedbackも) }`という固定の形へ毎回新規に組み立て直しており、それ以外のトップレベルキー(今回の`createdAt`を含む)は問答無用で破棄される**設計だった。これはuser・assistant・systemの全ロールに共通する処理であり、18章の実装時に「userメッセージは合流処理を通らないので大丈夫だろう」という想定で`metadata.createdAt`を直接トップレベルに置いていたが、実際にはuser・assistant両方で消えていたことを、`convertExternalMessages()`を直接呼び出す検証スクリプトで確認した。
+
+```
+--- 修正前(metadata.createdAtを直接トップレベルに置いた場合)---
+user {"custom":{}}
+assistant {"unstable_state":null,"unstable_annotations":[],"unstable_data":[],"custom":{},"steps":[]}
+
+--- 修正後(metadata.custom.createdAtに置いた場合)---
+user {"custom":{"createdAt":"2026-07-16T10:00:00Z"}}
+assistant {"unstable_state":null,"unstable_annotations":[],"unstable_data":[],"custom":{"createdAt":"2026-07-16T10:00:05Z"},"steps":[]}
+```
+
+**つまりブラウザの要素検査で確認しても、`MessageTimestamp`コンポーネントが返すべきHTML要素自体が、そもそもDOMに存在しない状態だった**と判断できる——`formatRelativeTime(createdAt)`が`createdAt`(常に`null`)に対して`null`を返し、`MessageTimestamp`の`if (!relative) return null;`により、コンポーネントが常に何もレンダリングしていなかった。CSS(display/色)の問題ではなく、データがコンポーネントに到達する前に失われていた、というのが結論である。
+
+### 19.3 選択した修正方針とその根拠
+
+`metadata.custom`は、`fromThreadMessageLike()`が唯一無条件に引き継ぐフィールドであり、`@assistant-ui/core`が「アプリケーション独自の任意メタデータ」を通すために公式に用意している差し込み口だと判断した。そのため、3箇所の書き込み経路すべてを`metadata.createdAt`から`metadata.custom.createdAt`へ変更し、読み取り側(`thread.tsx::readCreatedAt()`)も`metadata?.custom?.createdAt`を見るよう修正した。
+
+- `chat-threads.ts`(DB再読み込み時): `metadata: { ...(message.metadata ?? {}), custom: { ...(message.metadata?.custom), createdAt: message.created_at } }`(既存の`metadata.custom`があれば保持したままマージ)
+- `assistant.tsx`(ユーザー発言のライブ送信): `metadata: { ...message.metadata, custom: { createdAt: new Date().toISOString() } }`
+- `stream-translator.ts`(AI応答のライブ受信): `start`イベントの`messageMetadata`を`{ custom: { createdAt: ... } }`の形へ変更
+
+**判断根拠(なぜ他の代替案を採らなかったか)**: 代替案として、独自の`data-*`パート(AI SDKのカスタムデータパート機構)で日時を運ぶ方法も検討したが、`metadata.custom`は既にライブラリ側が「合流処理を無傷で通過する」ことを保証している唯一のフィールドであり、`fromThreadMessageLike()`のソースコードで直接裏付けが取れたため、最も確実で変更範囲が小さい方法と判断した。
+
+修正が正しく機能することは、`@assistant-ui/core`の実際の変換関数(`convertExternalMessages()`)をNode.jsから直接呼び出す検証スクリプトで、user・assistant両ロールについて`custom.createdAt`が生存することを確認した(19.2節のログ参照)。テスト用の一時スクリプトはリポジトリには含めていない(依頼書の既定方針通り、検証用の使い捨てコードはスクラッチ領域のみで完結させた)。
+
+### 19.4 「ユーザーメッセージとAI応答をペアとしてまとめて表示したい」という追加要望への対応
+
+海星さんからの追加要望を反映し、**日時表示をユーザー発言側から取り除き、AI応答側(やり取りの終わり)にのみ1回表示する**形に変更した(`thread.tsx`の`UserMessage`から`<MessageTimestamp>`を削除、`AssistantMessage`側のみ残した)。
+
+**判断根拠(表示位置をAI応答側に置いた理由)**: ユーザー発言とAI応答は、バックエンド側で既に同じ`created_at`(そのターンの`turn_started_at`)を共有する設計になっている(18章)ため、どちらの吹き出しに付けても値自体は同じである。位置の選択はUXの好みの問題だが、以下の理由でAI応答側を選んだ。
+
+1. 既存のUIレイアウトでは、AI応答(左寄せ)の方が縦方向に長くなりやすく、やり取りの「終わり」を視覚的に示す位置として自然である。
+2. プロアクティブ通知等、ユーザー発言を伴わないAI発話(将来的な拡張を含む)でも、AI応答側に付けておけば表示ロジックを分岐させずに済む——ユーザー発言側に依存する設計だと、ユーザー発言が存在しない吹き出しでは日時が一切表示されなくなってしまう。
+
+もしユーザー発言側(やり取りの始まり)に表示する方が好ましい場合、`UserMessage`内に`<MessageTimestamp align="right" />`を戻すだけで切り替えられる(`MessageTimestamp`自体の実装・データ経路には変更不要)。
+
+### 19.5 テスト結果
+
+- フロントエンド: `npx eslint`(変更した4ファイル対象)・`npx tsc --noEmit`(プロジェクト全体)・`npm run build`(本番ビルド)のいずれも成功。
+- `@assistant-ui/core`の実変換関数を直接呼び出す検証スクリプトで、`metadata.custom.createdAt`がuser・assistant両ロールで合流処理後も生存することを確認(19.2節)。修正前の`metadata.createdAt`(トップレベル)は両ロールとも`custom: {}`に収束し、値が失われることも同じスクリプトで再確認した。
+- バックエンド側の変更は無い(本タスクはフロントエンドのメタデータ配線のみ)ため、18章のバックエンドテスト(188件)は再実行の必要はないが、念のため無変更であることを`git status`で確認した。
+
+**実ブラウザでの目視確認は行っていない**(ログイン状態が必要な運用者専用の本番環境のため)。`@assistant-ui/core`の実装コードとその単体的な入出力検証により、表示されるはずという結論に至っている。実際の画面での見え方は、デプロイ後に運用者側での確認をお願いしたい。
+
+### 19.6 気づいた懸念点
+
+1. **`@assistant-ui/core`の`metadata.custom`という仕様は、ライブラリの内部実装(`fromThreadMessageLike()`)への依存であり、将来のバージョンアップでこの挙動が変わる可能性はゼロではない。** 現時点(`@assistant-ui/react-ai-sdk ^1.3.16`)のソースコードで直接確認した事実であり、公式ドキュメントで明文化された契約かどうかまでは確認できていない——将来のライブラリ更新時に、日時表示が再び出なくなっていないか確認する価値がある。
+2. **18章の実装時点で、この不具合を実ブラウザまたはより深いライブラリ内部の追跡で検出できていなかった。** 18章のテスト(バックエンドの`_merge_messages_chronologically()`等)はいずれもバックエンドの純粋関数の検証にとどまり、フロントエンドの「値が実際に画面へ表示されるか」を検証するテストが存在しなかったことが、今回の見落としの直接的な原因である。フロントエンドにテストランナーが導入されていないという既存の制約(`timeline/transform.ts`のコメント参照)の下では、今回行ったような「ライブラリの変換関数を直接Node.jsから呼び出す」検証が、実ブラウザなしでも確認できる現実的な手段だと考える。

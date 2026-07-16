@@ -57,9 +57,16 @@ export const translateOrchestratorStream = (
       // messageMetadataとして付与する(docs/sigmaris/phase_ba4_report.md)。
       // 表示専用の値であり、永続化される真のcreated_at(バックエンドの
       // turn_started_at、chat.pyでの並び替えに使われる値)とは別物 —
-      // このNext.jsルートのクロックで捕捉した近似値に過ぎない。
+      // このNext.jsルートのクロックで捕捉した近似値に過ぎない。custom配下
+      // に置く理由はthread.tsx::readCreatedAt()のコメントを参照
+      // (assistant-uiのメッセージ合流処理がmetadataのトップレベルキーを
+      // ホワイトリスト式にしか通さないため)。
       controller.enqueue(
-        sseLine({ type: "start", messageId, messageMetadata: { createdAt: new Date().toISOString() } }),
+        sseLine({
+          type: "start",
+          messageId,
+          messageMetadata: { custom: { createdAt: new Date().toISOString() } },
+        }),
       );
       const reader = upstream.getReader();
       try {

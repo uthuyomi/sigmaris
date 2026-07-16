@@ -251,14 +251,30 @@ const ThreadWelcome: FC<Pick<ThreadProps, "locale">> = () => {
 };
 
 // メッセージ日時表示機能(docs/sigmaris/phase_ba4_report.md): metadata.
-// createdAtの読み取り元は3経路ある(DB再読み込み時はchat-threads.tsが
-// backendの真のcreated_atを、ライブ送信中はassistant.tsx/stream-
+// custom.createdAtの読み取り元は3経路ある(DB再読み込み時はchat-threads.ts
+// がbackendの真のcreated_atを、ライブ送信中はassistant.tsx/stream-
 // translator.tsがクライアント側の捕捉時刻を、それぞれ設定する)。
+//
+// 2026-07-XX 追補(表示されない不具合の修正): 初版はmetadata.createdAtに
+// 直接置いていたが、@assistant-ui/coreのjoinExternalMessages()が、
+// assistantメッセージのmetadataを組み立てる際、unstable_state/
+// unstable_annotations/unstable_data/steps/custom/timing/
+// submittedFeedbackという既知キーのみをホワイトリスト式にコピーし、
+// それ以外のキー(createdAtを含む)を無条件に読み捨てることが判明した
+// (node_modules/@assistant-ui/core/dist/react/runtimes/
+// external-message-converter.js)。userメッセージはこの合流処理を通らず
+// metadataがそのまま素通りするため気づきにくかったが、assistant応答側は
+// 常にこの経路を通るため、metadataのトップレベルに置いた値は確実に消えて
+// いた。ホワイトリストに含まれるmetadata.customの下へ置くことで、
+// assistant-uiの合流処理を無傷で通過させる。
+//
 // 相対表示は他ページと違い秒単位で自動更新しない(15章「チャットUI上の
 // 秒数表示を撤去」の教訓通り、tick更新はstreaming描画と競合するため)。
 function readCreatedAt(metadata: unknown): string | null {
   if (!metadata || typeof metadata !== "object") return null;
-  const value = (metadata as Record<string, unknown>).createdAt;
+  const custom = (metadata as Record<string, unknown>).custom;
+  if (!custom || typeof custom !== "object") return null;
+  const value = (custom as Record<string, unknown>).createdAt;
   return typeof value === "string" ? value : null;
 }
 
@@ -409,6 +425,10 @@ const getPendingStatusLabel = (step: number) => {
 };
 
 const UserMessage: FC = () => {
+  // メッセージ日時表示機能: ユーザー発言側には表示しない。海星さんからの
+  // 要望(docs/sigmaris/phase_ba4_report.md)により、ユーザー発言とAI応答
+  // は1つのやり取り(ペア)として扱い、日時はAssistantMessage側(やり取り
+  // の終わり)にのみ1回表示する。
   return (
     <div className="ml-auto flex max-w-[70%] min-w-0 flex-col gap-2">
       <MessagePrimitive.Attachments
@@ -417,7 +437,6 @@ const UserMessage: FC = () => {
       <div className="ml-auto min-w-0 overflow-hidden break-words rounded-[1.2rem] bg-[#2f2f2f] px-4 py-3 text-[15px] leading-7 text-[#ececec] [overflow-wrap:anywhere]">
         <MessagePrimitive.Parts />
       </div>
-      <MessageTimestamp align="right" />
     </div>
   );
 };

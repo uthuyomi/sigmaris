@@ -60,8 +60,12 @@ const toCreateMessage = <UI_MESSAGE extends UIMessage = UIMessage>(
     // メッセージ日時表示機能(docs/sigmaris/phase_ba4_report.md): 送信の
     // 瞬間にクライアント側で捕捉した時刻。DB再読み込み後はbackendの真の
     // created_at(chat-threads.ts経由)に置き換わる — この値はライブ表示
-    // 専用の近似値。
-    metadata: { ...message.metadata, createdAt: new Date().toISOString() },
+    // 専用の近似値。custom配下に置く理由はthread.tsx::readCreatedAt()の
+    // コメントを参照。
+    metadata: {
+      ...message.metadata,
+      custom: { createdAt: new Date().toISOString() },
+    },
   } as CreateUIMessage<UI_MESSAGE>;
 };
 
