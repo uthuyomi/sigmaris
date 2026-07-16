@@ -21,6 +21,7 @@ type ChatMessageRecord = {
   role: UIMessage["role"];
   parts: UIMessage["parts"];
   metadata?: UIMessage["metadata"];
+  created_at?: string;
 };
 
 export const listChatThreads = async (userId: string) => {
@@ -90,7 +91,12 @@ export const listChatMessages = async (userId: string, threadId: string): Promis
     id: message.id,
     role: message.role,
     parts: message.parts,
-    metadata: message.metadata ?? {},
+    // メッセージ日時表示機能(docs/sigmaris/phase_ba4_report.md): DB保存
+    // 済みメッセージは、backendの真のcreated_at(chat.pyの並び替えにも
+    // 使われる値)をそのままmetadata.createdAtとして持たせる。ライブ配信
+    // 中の新規メッセージは、この値をまだ持たない(assistant.tsx / stream-
+    // translator.tsがそれぞれ送信・受信開始時にクライアント側で付与する)。
+    metadata: { ...(message.metadata ?? {}), createdAt: message.created_at },
   })) as UIMessage[];
 };
 

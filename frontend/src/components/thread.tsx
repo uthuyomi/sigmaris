@@ -12,6 +12,7 @@ import {
   removeConfirmationMarkers,
   type ChatConfirmationAction,
 } from "@/lib/chat-confirmation";
+import { formatAbsoluteDateTime, formatRelativeTime } from "@/lib/format-time";
 import type { AppLocale } from "@/lib/i18n";
 import {
   ComposerPrimitive,
@@ -249,6 +250,34 @@ const ThreadWelcome: FC<Pick<ThreadProps, "locale">> = () => {
   );
 };
 
+// メッセージ日時表示機能(docs/sigmaris/phase_ba4_report.md): metadata.
+// createdAtの読み取り元は3経路ある(DB再読み込み時はchat-threads.tsが
+// backendの真のcreated_atを、ライブ送信中はassistant.tsx/stream-
+// translator.tsがクライアント側の捕捉時刻を、それぞれ設定する)。
+// 相対表示は他ページと違い秒単位で自動更新しない(15章「チャットUI上の
+// 秒数表示を撤去」の教訓通り、tick更新はstreaming描画と競合するため)。
+function readCreatedAt(metadata: unknown): string | null {
+  if (!metadata || typeof metadata !== "object") return null;
+  const value = (metadata as Record<string, unknown>).createdAt;
+  return typeof value === "string" ? value : null;
+}
+
+const MessageTimestamp: FC<{ align: "left" | "right" }> = ({ align }) => {
+  const createdAt = useAuiState((s) => readCreatedAt(s.message.metadata));
+  const relative = formatRelativeTime(createdAt);
+  if (!relative) return null;
+  const absolute = formatAbsoluteDateTime(createdAt);
+
+  return (
+    <div
+      className={`mt-1 text-xs text-[#8e8ea0] ${align === "right" ? "text-right" : "text-left"}`}
+      title={absolute ?? undefined}
+    >
+      {relative}
+    </div>
+  );
+};
+
 const ThreadMessage: FC = () => {
   const role = useAuiState((s) => s.message.role);
 
@@ -330,6 +359,7 @@ const AssistantMessage: FC = () => {
             onCancel={() => sendConfirmation("no", confirmationAction)}
           />
         ) : null}
+        <MessageTimestamp align="left" />
       </div>
     </div>
   );
@@ -387,6 +417,7 @@ const UserMessage: FC = () => {
       <div className="ml-auto min-w-0 overflow-hidden break-words rounded-[1.2rem] bg-[#2f2f2f] px-4 py-3 text-[15px] leading-7 text-[#ececec] [overflow-wrap:anywhere]">
         <MessagePrimitive.Parts />
       </div>
+      <MessageTimestamp align="right" />
     </div>
   );
 };

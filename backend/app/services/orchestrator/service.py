@@ -952,17 +952,31 @@ def _latest_user_message(messages: list[dict[str, str]]) -> dict[str, str] | Non
     return None
 
 
-def _to_storable_new_user_message(latest_user: dict[str, str] | None) -> dict[str, Any] | None:
+def _to_storable_new_user_message(
+    latest_user: dict[str, str] | None, *, turn_started_at: str
+) -> dict[str, Any] | None:
     """Converts _latest_user_message()'s {role, content} shape into the
     {role, parts, metadata}-ish shape chat_messages storage expects (see
     schedule_agent_client.py's new_user_message payload field and
     docs/sigmaris/phase_ba4_report.md). None in, None out — chat.py's
     persistence falls back to its pre-fix behavior when there's no new
     turn to scope persistence around (e.g. a cold-start call with no user
-    message at all)."""
+    message at all).
+
+    turn_started_at (message-order-reversal fix, docs/sigmaris/
+    phase_ba4_report.md) is stamped as this message's created_at so
+    chat.py's chronological merge can place this turn by when it was
+    actually *sent* (captured at the very top of run_orchestrator_chat[_
+    stream](), before any context-building or LLM latency), not by
+    whenever this turn's background generation happens to finish writing —
+    see _merge_messages_chronologically()'s docstring in chat.py."""
     if latest_user is None:
         return None
-    return {"role": "user", "parts": [{"type": "text", "text": latest_user["content"]}]}
+    return {
+        "role": "user",
+        "parts": [{"type": "text", "text": latest_user["content"]}],
+        "created_at": turn_started_at,
+    }
 
 
 async def _ensure_chat_thread(jwt: str, thread_id: str) -> None:
@@ -1178,6 +1192,11 @@ async def run_orchestrator_chat(
     request_context: dict[str, Any] | None,
 ) -> dict[str, Any]:
     started_at = time.monotonic()
+    # Message-order-reversal fix (docs/sigmaris/phase_ba4_report.md):
+    # captured here, before any context-building/LLM work, so it reflects
+    # when this turn actually arrived rather than when its (possibly slow,
+    # possibly backgrounded) generation happens to finish.
+    turn_started_at = datetime.now(UTC).isoformat()
     invocation_id = str(uuid.uuid4())
 
     persona = load_persona()
@@ -1306,7 +1325,9 @@ async def run_orchestrator_chat(
     # supplied turn, not session_messages' cross-thread window — exactly
     # the "genuinely new" content chat.py needs to scope persistence to
     # this thread's own history instead of overwriting it with the window.
-    new_user_message = _to_storable_new_user_message(_latest_user_message(messages))
+    new_user_message = _to_storable_new_user_message(
+        _latest_user_message(messages), turn_started_at=turn_started_at
+    )
 
     try:
         schedule_result = await call_schedule_agent(
@@ -1459,6 +1480,9 @@ async def run_orchestrator_chat_stream(
     request_context: dict[str, Any] | None,
 ) -> AsyncGenerator[OrchestratorStreamEvent, None]:
     started_at = time.monotonic()
+    # Message-order-reversal fix (docs/sigmaris/phase_ba4_report.md): see
+    # run_orchestrator_chat's identical block for the full rationale.
+    turn_started_at = datetime.now(UTC).isoformat()
     invocation_id = str(uuid.uuid4())
 
     persona = load_persona()
@@ -1575,7 +1599,9 @@ async def run_orchestrator_chat_stream(
     )
     # Context-fabrication / message-order fix: see run_orchestrator_chat's
     # identical block for the full rationale.
-    new_user_message = _to_storable_new_user_message(_latest_user_message(messages))
+    new_user_message = _to_storable_new_user_message(
+        _latest_user_message(messages), turn_started_at=turn_started_at
+    )
     schedule_text = ""
     tool_events: list[dict[str, Any]] = []
     returned_thread_id = effective_thread_id
