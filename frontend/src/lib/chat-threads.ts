@@ -93,10 +93,20 @@ export const listChatMessages = async (userId: string, threadId: string): Promis
     parts: message.parts,
     // メッセージ日時表示機能(docs/sigmaris/phase_ba4_report.md): DB保存
     // 済みメッセージは、backendの真のcreated_at(chat.pyの並び替えにも
-    // 使われる値)をそのままmetadata.createdAtとして持たせる。ライブ配信
-    // 中の新規メッセージは、この値をまだ持たない(assistant.tsx / stream-
-    // translator.tsがそれぞれ送信・受信開始時にクライアント側で付与する)。
-    metadata: { ...(message.metadata ?? {}), createdAt: message.created_at },
+    // 使われる値)をmetadata.custom.createdAtとして持たせる。custom配下に
+    // 置く理由はthread.tsx::readCreatedAt()のコメントを参照(assistant-ui
+    // のメッセージ合流処理がmetadataのトップレベルキーをホワイトリスト式に
+    // しか通さないため)。既存のmetadata.custom(あれば)は保持したまま
+    // マージする。ライブ配信中の新規メッセージは、この値をまだ持たない
+    // (assistant.tsx / stream-translator.tsがそれぞれ送信・受信開始時に
+    // クライアント側で付与する)。
+    metadata: {
+      ...(message.metadata ?? {}),
+      custom: {
+        ...(message.metadata as { custom?: Record<string, unknown> } | undefined)?.custom,
+        createdAt: message.created_at,
+      },
+    },
   })) as UIMessage[];
 };
 
