@@ -1,19 +1,25 @@
 // 役割: チャットメッセージの日時表示用フォーマッタ。
 //
-// 絶対日時の書式は lib/timeline/transform.ts の formatDate() と意図的に
-// 揃えている(年/月/日/時/分、ja-JP)が、あちらは"/timelineページが表示
-// するevent/state/traitデータの整形ロジック"と明記されたページ専用モジュー
-// ルのため、直接importせずこのファイルへ同じ書式を複製した。
+// 絶対日時は「2026年7月10日 21:00」のような漢字区切りで表示する
+// (docs/sigmaris/phase_ba4_report.md 19章追補: 「証拠として残せる」という
+// 当初の目的を踏まえ、常時表示・曖昧さのない書式を優先する要望に対応)。
+// lib/timeline/transform.ts の formatDate()(年/月/日、スラッシュ区切り)
+// とは書式を揃えていない — あちらは"/timelineページが表示するevent/
+// state/traitデータの整形ロジック"と明記されたページ専用モジュールであり、
+// 元々このファイルへ複製していたものを、今回の要望に合わせて変更した。
 
 const ABSOLUTE_FORMATTER = new Intl.DateTimeFormat("ja-JP", {
   year: "numeric",
-  month: "2-digit",
-  day: "2-digit",
+  month: "long",
+  day: "numeric",
   hour: "2-digit",
   minute: "2-digit",
 });
 
-const RELATIVE_FORMATTER = new Intl.RelativeTimeFormat("ja-JP", { numeric: "auto" });
+// style: "narrow" — "long"/"short"はja-JPで数値と単位の間に半角スペースを
+// 挿入する("3 日前")。絶対日時に括弧書きで併記する用途では、日本語として
+// 自然な詰めた表記("3日前")の方が適切と判断した。
+const RELATIVE_FORMATTER = new Intl.RelativeTimeFormat("ja-JP", { numeric: "auto", style: "narrow" });
 
 const RELATIVE_UNITS: readonly [Intl.RelativeTimeFormatUnit, number][] = [
   ["year", 365 * 86_400_000],
