@@ -28,6 +28,7 @@ import logging
 from dataclasses import dataclass
 from typing import Any
 
+from app.services.constitution_guard import requires_approval
 from app.services.curiosity_engine import generate_curiosity_queries
 from app.services.drive_system import DriveState
 from app.services.executive_gate import ExecutiveGateResult
@@ -69,6 +70,14 @@ class _ActionOutcome:
     category: str  # sigmaris_experience.category
     experience_type: str  # sigmaris_experience.experience_type
     context: dict[str, Any]
+    # Phase S-4(docs/sigmaris/constitution.md Article 6、phase_s_report.md):
+    # constitution_guard.CAPABILITY_APPROVAL_REQUIRED_CATEGORIESのいずれかを
+    # 設定した場合のみ、実行前にpropose_and_act()がブロックする。3つの
+    # _act_on_*はいずれもNone(デフォルト)のまま——読み取り・言語化・
+    # 内部Experienceログ記録のみで、データ削除・外部送信・コード変更・
+    # 認証情報アクセスのいずれにも該当しないため(判断根拠、レポート参照)。
+    # 将来Phase D〜Hでコード変更等の行動を追加する際に使うフィールド。
+    capability_category: str | None = None
 
 
 async def _act_on_coherence(jwt: str, drive_state: DriveState) -> _ActionOutcome | None:
@@ -282,6 +291,25 @@ async def propose_and_act(jwt: str, gate_result: ExecutiveGateResult) -> GoalPro
             logger.exception("goal_proposal: action failed for drive=%s", drive_name)
             continue
         if outcome is None:
+            continue
+
+        # Phase S-4: Constitution Article 6の承認必須カテゴリに該当する
+        # 行動は、ユーザーの承認なしに実行(record_experienceによる確定)
+        # しない。現状の3つの_act_on_*はcapability_category=None(デフォ
+        # ルト)のままなので、このガードは常に素通りする——将来Phase D以降
+        # で承認必須の行動が追加された時に働く、先回りの実装(判断根拠、
+        # docs/sigmaris/phase_s_report.md参照)。ブロックされた場合も
+        # 例外にはせず、他の行動と同様に次点のDriveへフォールバックする
+        # (「優先度が高いのに何も提案できない」を「今回は何もしない」に
+        # 短絡させる既存の設計をそのまま踏襲)。
+        if requires_approval(outcome.capability_category):
+            logger.warning(
+                "goal_proposal: action blocked by constitution capability line "
+                "drive=%s category=%s title=%s",
+                drive_name,
+                outcome.capability_category,
+                outcome.title,
+            )
             continue
 
         experience_id = await record_experience(
