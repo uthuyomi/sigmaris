@@ -8,6 +8,7 @@ import logging
 import re
 import uuid
 from collections.abc import AsyncGenerator, AsyncIterator
+from datetime import UTC, datetime
 from typing import Any
 from google.auth.exceptions import RefreshError
 from openai import AsyncOpenAI
@@ -394,6 +395,68 @@ def _require_openai_client() -> AsyncOpenAI:
     return _openai_client
 
 
+def _parse_message_timestamp(message: dict[str, Any]) -> datetime | None:
+    """Best-effort parse of a message dict's created_at for the
+    chronological merge below (docs/sigmaris/phase_ba4_report.md,
+    "メッセージ表示順序の崩れ" fix). Rows from list_chat_messages() always
+    have one (chat_messages.created_at is NOT NULL), so None only matters
+    defensively here for a value this function doesn't recognize."""
+    value = message.get("created_at")
+    if not isinstance(value, str):
+        return None
+    try:
+        return datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+
+
+def _chronological_sort_key(message: dict[str, Any]) -> tuple[bool, datetime]:
+    parsed = _parse_message_timestamp(message)
+    return (parsed is None, parsed or datetime.min.replace(tzinfo=UTC))
+
+
+def _merge_messages_chronologically(
+    existing: list[dict[str, Any]],
+    new_user_message: dict[str, Any],
+    assistant_message: dict[str, Any],
+) -> list[dict[str, Any]]:
+    """Places this turn's [new_user_message, assistant_message] pair into
+    correct chronological order relative to `existing`, instead of always
+    appending them at the tail.
+
+    docs/sigmaris/phase_ba4_report.md ("メッセージ表示順序の崩れ" fix):
+    16.5節で予告した通り、フロントエンド切断からの独立実行(バックグラウンド
+    生成、16章)により、同一スレッドへの複数ターンがほぼ同時に進行しうる
+    ようになった。従来の実装は常に新しいペアを配列の末尾へ追記していたため、
+    「後から送られたが先に生成が完了したターン」が、常に「先に送られたが
+    生成が長引いたターン」より前に永続化される——結果としてchat_messages
+    自体に、実際の送信順とは異なる並びが恒久的に記録されていた
+    (message_orderは配列の並びをそのまま採番するだけなので、この並び順の
+    誤りをそれ自体では検知・修正できない)。
+
+    orchestrator/service.pyがnew_user_messageに付与するcreated_at
+    (`turn_started_at`、そのターンの処理が始まった時点の壁時計時刻)を
+    根拠に、新しいペアをexistingの中の正しい位置へ挿入する形にした。
+    assistant_messageには通常created_atが付かない(chat.py内で新規生成
+    される)ため、new_user_messageと同じcreated_atを共有させる——同じ
+    ターンのペアは常に隣接して並ぶべきで、かつ「実際に応答生成が完了した
+    時刻」ではなく「そのターンが送信された時刻」で他ターンとの前後を
+    比べるのが、ユーザーの体感する時系列と一致するため。
+    """
+    if not assistant_message.get("created_at"):
+        turn_created_at = new_user_message.get("created_at")
+        if turn_created_at:
+            assistant_message = {**assistant_message, "created_at": turn_created_at}
+
+    combined = [*existing, new_user_message, assistant_message]
+    # sorted() is stable, so this turn's own pair (sharing one created_at)
+    # keeps its [user, assistant] relative order, and any two existing rows
+    # that happen to tie also keep their prior (message_order-derived)
+    # relative order.
+    combined.sort(key=_chronological_sort_key)
+    return combined
+
+
 async def _persist_chat_messages_safely(
     *,
     jwt: str,
@@ -428,11 +491,14 @@ async def _persist_chat_messages_safely(
     does, on every call — see run_orchestrator_chat[_stream]()), this
     function instead re-reads *this thread's own* current messages via
     list_chat_messages() — fresh, right before writing, not a stale
-    snapshot from whenever generation started — and persists exactly
-    [existing thread history, this turn's new user message, this turn's
-    new assistant reply]. `fallback_messages` (the old, unscoped
-    behavior) is kept only for a caller that doesn't pass
-    new_user_message, so nothing breaks silently if one exists.
+    snapshot from whenever generation started — and merges this turn's new
+    user/assistant pair into that history in chronological order
+    (_merge_messages_chronologically(), keyed on new_user_message's
+    created_at, not on when this write happens to run — see that
+    function's docstring for why a blind tail-append reordered turns whose
+    background generations finished out of send order). `fallback_messages`
+    (the old, unscoped behavior) is kept only for a caller that doesn't
+    pass new_user_message, so nothing breaks silently if one exists.
 
     A ThreadVersionConflictError means another writer replaced this
     thread's messages first (Phase A4). When new_user_message is
@@ -449,7 +515,7 @@ async def _persist_chat_messages_safely(
     async def _build_messages_to_store() -> list[dict[str, Any]]:
         if new_user_message is not None:
             existing = await list_chat_messages(jwt, thread_id=thread_id)
-            return [*existing, new_user_message, assistant_message]
+            return _merge_messages_chronologically(existing, new_user_message, assistant_message)
         return [*fallback_messages, assistant_message]
 
     messages_to_store = await _build_messages_to_store()

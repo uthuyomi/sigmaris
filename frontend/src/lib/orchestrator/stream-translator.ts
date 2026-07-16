@@ -52,7 +52,15 @@ export const translateOrchestratorStream = (
 
   return new ReadableStream<Uint8Array>({
     async start(controller) {
-      controller.enqueue(sseLine({ type: "start", messageId }));
+      // メッセージ日時表示機能: このターンの応答が実際に届き始めた時点の
+      // 時刻を、AI SDKのUI Message Streamプロトコルが標準でサポートする
+      // messageMetadataとして付与する(docs/sigmaris/phase_ba4_report.md)。
+      // 表示専用の値であり、永続化される真のcreated_at(バックエンドの
+      // turn_started_at、chat.pyでの並び替えに使われる値)とは別物 —
+      // このNext.jsルートのクロックで捕捉した近似値に過ぎない。
+      controller.enqueue(
+        sseLine({ type: "start", messageId, messageMetadata: { createdAt: new Date().toISOString() } }),
+      );
       const reader = upstream.getReader();
       try {
         for (;;) {
