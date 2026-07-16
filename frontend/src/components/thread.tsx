@@ -255,18 +255,18 @@ const ThreadWelcome: FC<Pick<ThreadProps, "locale">> = () => {
 // がbackendの真のcreated_atを、ライブ送信中はassistant.tsx/stream-
 // translator.tsがクライアント側の捕捉時刻を、それぞれ設定する)。
 //
-// 2026-07-XX 追補(表示されない不具合の修正): 初版はmetadata.createdAtに
-// 直接置いていたが、@assistant-ui/coreのjoinExternalMessages()が、
-// assistantメッセージのmetadataを組み立てる際、unstable_state/
-// unstable_annotations/unstable_data/steps/custom/timing/
-// submittedFeedbackという既知キーのみをホワイトリスト式にコピーし、
-// それ以外のキー(createdAtを含む)を無条件に読み捨てることが判明した
-// (node_modules/@assistant-ui/core/dist/react/runtimes/
-// external-message-converter.js)。userメッセージはこの合流処理を通らず
-// metadataがそのまま素通りするため気づきにくかったが、assistant応答側は
-// 常にこの経路を通るため、metadataのトップレベルに置いた値は確実に消えて
-// いた。ホワイトリストに含まれるmetadata.customの下へ置くことで、
-// assistant-uiの合流処理を無傷で通過させる。
+// 2026-07-16 追補(表示されない不具合の修正): 初版はmetadata.createdAtに
+// 直接置いていたが、@assistant-ui/coreのfromThreadMessageLike()が、
+// 全ロール(user/assistant/system)共通で、metadataを
+// `{ custom: metadata?.custom ?? {}, ... }`という固定形へ毎回組み立て
+// 直しており、custom以外のトップレベルキー(createdAtを含む)は無条件に
+// 読み捨てられることが判明した(node_modules/@assistant-ui/core/dist/
+// runtime/utils/thread-message-like.js)。ホワイトリストに含まれる
+// metadata.customの下へ置くことで、この処理を無傷で通過させる。
+//
+// 2026-07-16 追補2(常時表示への変更): 「証拠として残せる」という当初の
+// 目的を踏まえ、海星さんの要望により、ホバー時のみだった絶対日時を常時
+// 表示へ変更した。相対表示(「3日前」等)は補足として絶対日時に併記する。
 //
 // 相対表示は他ページと違い秒単位で自動更新しない(15章「チャットUI上の
 // 秒数表示を撤去」の教訓通り、tick更新はstreaming描画と競合するため)。
@@ -280,16 +280,14 @@ function readCreatedAt(metadata: unknown): string | null {
 
 const MessageTimestamp: FC<{ align: "left" | "right" }> = ({ align }) => {
   const createdAt = useAuiState((s) => readCreatedAt(s.message.metadata));
-  const relative = formatRelativeTime(createdAt);
-  if (!relative) return null;
   const absolute = formatAbsoluteDateTime(createdAt);
+  if (!absolute) return null;
+  const relative = formatRelativeTime(createdAt);
 
   return (
-    <div
-      className={`mt-1 text-xs text-[#8e8ea0] ${align === "right" ? "text-right" : "text-left"}`}
-      title={absolute ?? undefined}
-    >
-      {relative}
+    <div className={`mt-1 text-xs text-[#8e8ea0] ${align === "right" ? "text-right" : "text-left"}`}>
+      {absolute}
+      {relative ? `(${relative})` : null}
     </div>
   );
 };
