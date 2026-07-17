@@ -59,9 +59,7 @@ class Settings(BaseSettings):
     x_access_token_secret: str | None = None
     x_enabled: bool = False
     sigmaris_launch_date: str | None = None
-    github_token: str | None = None
-    github_repo: str | None = None
-    self_improvement_enabled: bool = False
+    github_token: str | None = None  # research_agent.py's GitHub trending-repo search (rate-limit headers only)
     health_sync_enabled: bool = False
     news_api_key: str | None = None
     research_enabled: bool = False

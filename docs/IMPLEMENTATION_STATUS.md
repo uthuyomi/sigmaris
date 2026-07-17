@@ -60,7 +60,6 @@
 | 自己モデル | `services/self_model.py` (273行) | シグマリス自身の自己認識（identity/goals/patterns）をDB管理。反省処理でOpenAI分析→自己更新→乖離記録まで行う。 | デプロイ待ち | `SUPABASE_SERVICE_ROLE_KEY`, `OPENAI_API_KEY`, `SIGMARIS_REFLECT_MODEL` |
 | 自律プロアクティブ通知 | `services/proactive/` (4ファイル, 310行) | APSchedulerで朝8時・夜22時・日曜20時に自動実行。オーケストレーターを呼び出してPushoverで通知。 | 未確認 | `PROACTIVE_ENABLED`, `PUSHOVER_APP_TOKEN`, `PUSHOVER_USER_KEY` |
 | JWTオートリフレッシュ | `services/proactive/jwt_manager.py` (146行) | Supabaseリフレッシュトークンを使いアクセストークンを期限切れ5分前に自動更新。ローテーション対応。asyncio.Lock使用。 | 未確認 | `SIGMARIS_USER_JWT`, `SIGMARIS_REFRESH_TOKEN` |
-| 自己改良エージェント | `services/self_improvement.py` (354行) | 監査ログを分析して改善提案を生成。persona.mdは直接更新、コード変更はGitHub PRとして作成（直接pushなし）。.env等の認証ファイルへの変更は拒否。 | 未確認 | `SELF_IMPROVEMENT_ENABLED`, `GITHUB_TOKEN`, `GITHUB_REPO` |
 | ローカルLLM統合 | `services/local_llm.py` (165行) | OllamaとOpenAI APIを切り替えるルーター。ROUTING/MEMORY_EXTRACTION/SELF_REFLECT/SUMMARIZEをローカルへ、COMPLEX_REASONINGをOpenAIへ。起動失敗時は自動フォールバック。 | 未確認 | `LOCAL_LLM_ENABLED`, `OLLAMA_BASE_URL`, `OLLAMA_MODEL` |
 
 ### X (Twitter)連携
@@ -139,8 +138,6 @@
 | `POST` | `/api/agent/self/model` | エージェント | 自己モデル更新 |
 | `POST` | `/api/agent/self/discrepancy` | エージェント | 行動乖離の記録 |
 | `POST` | `/api/agent/self/reflect` | エージェント | 自己反省実行（監査ログ分析→自己モデル更新） |
-| `POST` | `/api/agent/self/improve` | エージェント | 自己改良提案の生成 |
-| `POST` | `/api/agent/self/apply` | エージェント | 自己改良提案の適用（persona更新 or GitHub PR作成） |
 | `POST` | `/api/agent/x/classify` | エージェント | X返信のHIGH/MEDIUM/LOW分類 |
 | `POST` | `/api/agent/x/respond` | エージェント | X返信文の生成 |
 | `POST` | `/api/agent/health/sync` | エージェント＋JWT | 今日のGoogle Fitデータ取得→事実記憶保存 |
@@ -189,9 +186,7 @@
 | `X_ACCESS_TOKEN` | 任意 | — | Twitter OAuth 1.0a アクセストークン |
 | `X_ACCESS_TOKEN_SECRET` | 任意 | — | Twitter OAuth 1.0a アクセストークンシークレット |
 | `X_ENABLED` | 任意 | `false` | X投稿機能の有効/無効 |
-| `SELF_IMPROVEMENT_ENABLED` | 任意 | `false` | 自己改良エージェントの有効/無効 |
-| `GITHUB_TOKEN` | 任意 | — | GitHub PR作成用パーソナルアクセストークン |
-| `GITHUB_REPO` | 任意 | — | GitHub リポジトリ（`owner/repo` 形式） |
+| `GITHUB_TOKEN` | 任意 | — | GitHub API トークン（research_agent.pyのトレンド検索、レート制限緩和用） |
 | `HEALTH_SYNC_ENABLED` | 任意 | `false` | Google Fitヘルスデータ同期の有効/無効 |
 
 ---
@@ -243,7 +238,6 @@
 |---|---|
 | `chat.py` | 887 |
 | `chat_routing.py` | 371 |
-| `self_improvement.py` | 354 |
 | `chat_tools.py` | 499 |
 | `chat_tool_definitions.py` | 214 |
 | `app_event_data.py` | 321 |
@@ -273,7 +267,6 @@
 ### Phase 2（中期）
 
 - **定期自己反省のcronスケジュール化**: `reflect()` は手動トリガー（`/api/agent/self/reflect`）のみ。週次で自動実行するAPSchedulerジョブの追加。
-- **自己改良の自動サイクル**: `self/improve` → 人間レビュー → `self/apply` のワークフローUI。
 - **LLMRouter本番稼働**: `LOCAL_LLM_ENABLED=true` でのOllama実運用検証。Ollama未起動時のフォールバック動作確認。
 - **事実記憶の自動抽出**: 会話ログからuser_fact_itemsを自動更新するパイプライン（`MEMORY_EXTRACTION`タスクタイプ定義済み）。
 
@@ -300,7 +293,6 @@
 ### 動作確認が必要な箇所
 
 - **プロアクティブスケジューラ**: `SIGMARIS_USER_JWT` と `SIGMARIS_REFRESH_TOKEN` の両方を設定しないとJWT取得で失敗する。`PROACTIVE_ENABLED=true` でも実際の通知はPushoverキー設定が必要。
-- **自己改良エージェント**: `SELF_IMPROVEMENT_ENABLED=false` がデフォルト。PR作成機能は `GITHUB_TOKEN` と `GITHUB_REPO` が未設定の場合スキップ（エラーにならず `skipped` を返す）。
 - **X投稿の朝ブリーフィング統合**: `run_morning_briefing()` 成功後にX投稿を試みるが、`X_ENABLED=false` の場合はLogPublisherがログ出力のみ行う。本番でX投稿を有効にする前に必ずテスト投稿で確認すること。
 - **ヘルスデータ同期**: `X-Google-Access-Token` ヘッダーにFitness APIスコープを持つトークンが必要。現在のOAuthフロー（`google_api.py`）がFitnessスコープを含むか確認すること。
 
@@ -311,6 +303,5 @@
 | `SUPABASE_SERVICE_ROLE_KEY` | 自己モデル・ファクトメモリのサービスロール操作に必須 |
 | `SIGMARIS_USER_JWT` + `SIGMARIS_REFRESH_TOKEN` | プロアクティブアクション実行に必須 |
 | `PUSHOVER_APP_TOKEN` + `PUSHOVER_USER_KEY` | プロアクティブ通知の実送信に必須 |
-| `GITHUB_TOKEN` + `GITHUB_REPO` | 自己改良のコードPR作成に必須 |
 | `X_API_KEY` 他4変数 | X投稿・返信機能の実運用に必須 |
 | `SIGMARIS_LAUNCH_DATE` | X投稿の「起動N日目」カウンターに必要 |

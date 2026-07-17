@@ -84,6 +84,26 @@ class TaskType(str, enum.Enum):
     # than SELF_CRITIQUE's "tightly-coupled steps share one type" precedent.
     # Still nano-tier -- no new model hierarchy, per the task's constraint.
     CITATION_AUDIT = "citation_audit"
+    # Phase D-2(docs/sigmaris/phase_d_report.md): generates one concrete
+    # improvement hypothesis (what/why/how-direction + expected metric
+    # impact) from a single prioritized Phase D-1 EvidenceItem. Deliberately
+    # advanced tier, NOT nano like G-1~G-4's classification-shaped calls --
+    # this is genuine architectural reasoning about the Sigmaris codebase
+    # itself (what change, and why it would help), matching openai_advanced_
+    # model's existing "自己反省・設計・週次レビュー" role (config.py) rather
+    # than the nano tier's "記憶抽出・要約・分類" role. Also deliberately NOT
+    # reusing COMPLEX_REASONING/SELF_REFLECT: this call's output shape
+    # (structured JSON with a self-declared safety-mechanism flag feeding
+    # Constitution review) and its cost profile (offline CLI, not a hot
+    # conversational path) are distinct enough to warrant its own type, per
+    # the "one TaskType per distinct classification concern" precedent.
+    HYPOTHESIS_GENERATION = "hypothesis_generation"
+    # Phase D-2: an independent "critic" check (same shape as G-3's
+    # SELF_CRITIQUE) of whether a single generated hypothesis's stated
+    # problem/reasoning actually follows from the EvidenceItem it claims to
+    # be based on -- not a full re-derivation of the hypothesis, so nano-tier
+    # like G-3's own critique step.
+    HYPOTHESIS_CRITIQUE = "hypothesis_critique"
 
 
 _LOCAL_TASK_TYPES = {
@@ -102,6 +122,7 @@ _LOCAL_TASK_TYPES = {
     TaskType.EVIDENCE_STRUCTURING,
     TaskType.SELF_CRITIQUE,
     TaskType.CITATION_AUDIT,
+    TaskType.HYPOTHESIS_CRITIQUE,
 }
 
 
@@ -178,7 +199,7 @@ class LocalLLMClient:
 
 def _openai_model_for_task(task: TaskType) -> str:
     """Map TaskType to the appropriate OpenAI model tier."""
-    if task in {TaskType.SELF_REFLECT, TaskType.COMPLEX_REASONING}:
+    if task in {TaskType.SELF_REFLECT, TaskType.COMPLEX_REASONING, TaskType.HYPOTHESIS_GENERATION}:
         return settings.sigmaris_reflect_model or settings.openai_advanced_model
     if task is TaskType.EVAL_JUDGE:
         # Same "sigmaris_reflect_model or openai_advanced_model" pattern as
@@ -208,6 +229,7 @@ def _openai_model_for_task(task: TaskType) -> str:
         TaskType.EVIDENCE_STRUCTURING,
         TaskType.SELF_CRITIQUE,
         TaskType.CITATION_AUDIT,
+        TaskType.HYPOTHESIS_CRITIQUE,
     }:
         return settings.openai_nano_model
     return settings.openai_model

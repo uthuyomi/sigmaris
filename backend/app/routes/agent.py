@@ -16,7 +16,6 @@ from app.config import settings
 from app.services.chat import run_chat_completion, stream_chat_completion_ui
 from app.services.chat_tools import execute_tool, headers_to_google_tokens
 from app.services.self_model import get_self_model, record_discrepancy, reflect, update_self_model
-from app.services.self_improvement import ImprovementProposal, SelfImprovementAgent
 from app.services.x_publisher import get_publisher
 from app.services.x_reply_classifier import XReplyClassifier
 from app.services.health_data import HealthDataCollector, _summarize_health_items
@@ -672,78 +671,6 @@ async def self_reflect(
         logger.exception("self_reflect failed")
         raise HTTPException(status_code=500, detail={"error": str(exc)}) from exc
     return result
-
-
-# ─── /api/agent/self/improve + apply ─────────────────────────────────────────
-
-
-class ApplyProposalRequest(BaseModel):
-    proposal_type: str = Field(description="'persona' or 'code'")
-    target_file: str = Field(min_length=1, max_length=300)
-    description: str = Field(min_length=1, max_length=500)
-    proposed_change: str = Field(min_length=1, max_length=8000)
-    reasoning: str = Field(default="", max_length=2000)
-
-
-@router.post("/self/improve")
-async def self_improve(
-    x_agent_id: str | None = Header(default=None),
-    x_agent_secret: str | None = Header(default=None),
-) -> dict[str, Any]:
-    _verify_agent(x_agent_id, x_agent_secret)
-    agent = SelfImprovementAgent()
-    try:
-        proposals = await agent.analyze()
-    except Exception as exc:
-        logger.exception("self_improve.analyze failed")
-        raise HTTPException(status_code=500, detail={"error": str(exc)}) from exc
-    return {
-        "ok": True,
-        "proposals": [
-            {
-                "proposal_type": p.proposal_type,
-                "target_file": p.target_file,
-                "description": p.description,
-                "proposed_change": p.proposed_change,
-                "reasoning": p.reasoning,
-                "safe": p.safe,
-                "blocked_reason": p.blocked_reason,
-            }
-            for p in proposals
-        ],
-        "count": len(proposals),
-    }
-
-
-@router.post("/self/apply")
-async def self_apply(
-    payload: ApplyProposalRequest,
-    x_agent_id: str | None = Header(default=None),
-    x_agent_secret: str | None = Header(default=None),
-) -> dict[str, Any]:
-    _verify_agent(x_agent_id, x_agent_secret)
-    proposal = ImprovementProposal(
-        proposal_type=payload.proposal_type,  # type: ignore[arg-type]
-        target_file=payload.target_file,
-        description=payload.description,
-        proposed_change=payload.proposed_change,
-        reasoning=payload.reasoning,
-    )
-    agent = SelfImprovementAgent()
-    try:
-        result = await agent.apply_improvement(proposal)
-    except Exception as exc:
-        logger.exception("self_apply failed")
-        raise HTTPException(status_code=500, detail={"error": str(exc)}) from exc
-    if not result.ok and result.action == "blocked":
-        raise HTTPException(status_code=403, detail={"error": result.error})
-    return {
-        "ok": result.ok,
-        "action": result.action,
-        "proposal_type": result.proposal_type,
-        "detail": result.detail,
-        "error": result.error,
-    }
 
 
 # ─── /api/agent/x/ ───────────────────────────────────────────────────────────
