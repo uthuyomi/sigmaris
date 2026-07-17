@@ -8,6 +8,11 @@
   RC-4 Policy-Belief Alignment    方策(B16)が信念(B14)と同じ材料に基づくか
   RC-5 Cycle Break Detection      RC-1/RC-2の急激な悪化の検知
 
+  Safety Governance                安全上重要なファイルの追加登録漏れ検知
+                                    (Safety-3、RC指標とは別系統だが同じ
+                                    測定基盤に統合。docs/sigmaris/
+                                    safety_governance_report.md参照)
+
 【重要】これはC-mini/C-full(run_eval.py、memory_precision等)とは
 別系統の指標である。C-mini/C-fullが「記憶検索の精度」を測るのに対し、
 RC指標はExperience→Memory→...→Policyという循環そのものが機能している
@@ -79,6 +84,7 @@ async def _main(args: argparse.Namespace) -> None:
     rc3 = result["rc3_belief_stability"]
     rc4 = result["rc4_policy_belief_alignment"]
     rc5 = result["rc5_cycle_break"]
+    safety_gov = result["safety_governance"]
 
     print("\n" + "=" * 60)
     print("循環健全性指標 (RC指標。C-mini/C-fullとは別系統)")
@@ -125,6 +131,17 @@ async def _main(args: argparse.Namespace) -> None:
           f"  (insufficient_historyは「異常なし」ではなく「履歴不足で未判定」)")
     if rc5["broke_metrics"]:
         print(f"  悪化を検知した指標 : {', '.join(rc5['broke_metrics'])}")
+    print()
+    print("--- Safety Governance: 安全上重要なファイルの追加登録漏れ検知(Safety-3) ---")
+    print(f"status              : {safety_gov['status']}"
+          f"  (RC-5とは別系統、履歴不要の瞬間的な構造チェック)")
+    print(f"スキャン対象ファイル数: {safety_gov['scanned_file_count']}"
+          f" / ゲートらしいパターン一致: {safety_gov['gate_pattern_file_count']}"
+          f" / 未登録候補: {safety_gov['unregistered_count']}")
+    if safety_gov["unregistered_files"]:
+        print("  未登録候補ファイル(自動追加はしません、人間が判断してください):")
+        for path in safety_gov["unregistered_files"]:
+            print(f"    - {path}")
     print("=" * 60)
 
     if rc2["chat_order_violations"]:
@@ -138,6 +155,16 @@ async def _main(args: argparse.Namespace) -> None:
         for v in rc2["event_experience_violations"][:5]:
             print(f"  fact={v['fact_id']}(created={v['fact_created_at']}) "
                   f"< experience={v['experience_id']}(created={v['experience_created_at']})")
+
+    if safety_gov["status"] == "gap_detected":
+        # RC-5と同じ判断根拠(通知の実装自体は見送り、既存のnotifier経由の
+        # 統合はいつでも可能な状態にしておく)を踏襲。
+        print(
+            "\n⚠ Safety Governanceが、未登録の可能性がある安全上重要なファイルを検知しました。"
+            "通知は未実装のため、この標準出力とsigmaris_cycle_health_runs."
+            "safety_governance_statusが現時点での唯一の検知手段です。"
+            "\n  scripts/scan_safety_critical_files.py で詳細を確認してください。"
+        )
 
     if rc5["status"] == "break_detected":
         # 判断根拠(docs/sigmaris/phase_r_report.md参照): 通知の実装自体は
@@ -181,6 +208,10 @@ async def _main(args: argparse.Namespace) -> None:
         },
         rc4={"score": rc4["score"], "flags_evaluated": rc4["flags_evaluated"]},
         rc5={"status": rc5["status"], "broke_metrics": rc5["broke_metrics"]},
+        safety_governance={
+            "status": safety_gov["status"],
+            "unregistered_count": safety_gov["unregistered_count"],
+        },
         notes=args.notes,
         details=result["details_for_persistence"],
     )

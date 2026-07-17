@@ -13,6 +13,13 @@
 # が返り値のdetails_for_persistenceを使って書き込む。ただし、RC-3(前回
 # スナップショットとの比較)・RC-5(過去値との比較)は計測そのものに
 # 過去の実行結果が必要なため、*読み取り*はこのモジュール内で行う。
+#
+# 【Safety-3追記(docs/sigmaris/safety_governance_report.md)】RC-1〜5とは
+# 別系統の観点として、safety_critical_files.pyへの登録漏れスキャン
+# (safety_critical_files_scan.py)を、同じ測定基盤(定期実行・記録
+# テーブル)に統合した。安全機構の追加登録漏れという「コード統治」の
+# 懸念を、RC指標(循環そのものの健全性)と同じ枠組みで扱うことで、
+# 新しい定期実行の仕組みをゼロから作らずに済ませている。
 
 from __future__ import annotations
 
@@ -20,6 +27,7 @@ import asyncio
 import logging
 from dataclasses import asdict
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 from typing import Any
 from zoneinfo import ZoneInfo
 
@@ -44,7 +52,14 @@ from app.services.experience_layer import (
     get_experiences_since,
     get_recent_experiences,
 )
+from app.services.safety_critical_files_scan import find_unregistered_gate_files
 from app.services.user_fact_data import get_fact_items
+
+# Safety-3(docs/sigmaris/safety_governance_report.md): cycle_health_
+# runner.py -> app/services/ -> app/ -> backend/。find_unregistered_gate_
+# files()は、backend/app/services・backend/scriptsを走査する(safety_
+# critical_files_scan.pyのdocstring参照)。
+_BACKEND_ROOT = Path(__file__).resolve().parents[2]
 
 # goal_alignment.py exposes no public "all flags regardless of surface-
 # cooldown" reader — get_active_goal_alignment_flags() intentionally
@@ -234,6 +249,16 @@ async def run_cycle_health(
         historical_rc2_scores=historical_rc2_scores,
     )
 
+    # Safety-3: 安全上重要なファイルの追加漏れスキャン(要件2、RC-5との
+    # 統合)。RC-1〜5と違い、履歴データを必要としない瞬間的な構造チェック
+    # のため、"insufficient_history"に相当する状態は存在しない
+    # (判断根拠、docs/sigmaris/safety_governance_report.md参照——RC-5の
+    # 「過去平均との比較」をそのまま流用すると、レジストリが大きくなる
+    # ほど1件の未登録漏れが比率上希釈され検知しづらくなるため、瞬間的な
+    # 現在値チェックを直接採用した)。
+    safety_scan = find_unregistered_gate_files(_BACKEND_ROOT)
+    safety_governance_status = "healthy" if safety_scan.coverage_complete else "gap_detected"
+
     return {
         "run_at": now.isoformat(),
         "window_days": window_days,
@@ -279,6 +304,18 @@ async def run_cycle_health(
             "broke_metrics": [c.metric for c in rc5.checks if c.broke_threshold],
             "checks": [asdict(c) for c in rc5.checks],
         },
+        # Safety-3: RC指標(循環そのものの健全性)とは別系統の観点だが、
+        # 同じ測定基盤(定期実行・記録テーブル)を共有する形で統合した
+        # (要件3)。「安全上重要なファイルが、safety_critical_files.pyに
+        # 追加登録されないまま放置されていないか」を、RC-1〜5と同じ
+        # cadenceで確認できるようにする。
+        "safety_governance": {
+            "status": safety_governance_status,
+            "scanned_file_count": safety_scan.scanned_file_count,
+            "gate_pattern_file_count": safety_scan.gate_pattern_file_count,
+            "unregistered_count": safety_scan.unregistered_count,
+            "unregistered_files": [c.relative_path for c in safety_scan.unregistered_candidates],
+        },
         # cycle_health_runs_store.record_cycle_health_run()のdetails引数に
         # そのまま渡すためのペイロード。belief_snapshotは次回実行のRC-3
         # previous_snapshotになる(7章参照)。
@@ -288,5 +325,8 @@ async def run_cycle_health(
             "rc3_flips": [asdict(f) for f in rc3.flips],
             "rc4_alignments": [asdict(a) for a in rc4.alignments],
             "rc5_checks": [asdict(c) for c in rc5.checks],
+            "safety_governance_unregistered_files": [
+                {"path": c.relative_path, "reasons": c.reasons} for c in safety_scan.unregistered_candidates
+            ],
         },
     }

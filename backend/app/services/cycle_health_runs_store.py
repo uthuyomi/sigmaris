@@ -42,6 +42,7 @@ async def record_cycle_health_run(
     rc3: dict[str, Any],
     rc4: dict[str, Any],
     rc5: dict[str, Any],
+    safety_governance: dict[str, Any] | None = None,
     notes: str | None = None,
     details: dict[str, Any] | None = None,
 ) -> str | None:
@@ -51,8 +52,13 @@ async def record_cycle_health_run(
 
     rc1〜rc5は各cycle_health_metrics.py結果の必要フィールドのみを含む
     素のdictを渡す想定(cycle_health_runner.py側で組み立てる)。
+
+    safety_governance(Safety-3): {"status", "unregistered_count"}のみを
+    列として残し、詳細(unregistered_filesの一覧)はdetails jsonb側に
+    含める想定(rc3_flips等と同じ「ヘッドラインは列、詳細はjsonb」の分割)。
     """
     try:
+        safety_governance = safety_governance or {}
         payload: dict[str, Any] = {
             "window_days": window_days,
             "period_from": period_from,
@@ -75,6 +81,8 @@ async def record_cycle_health_run(
             "rc4_flags_evaluated": rc4.get("flags_evaluated"),
             "rc5_status": rc5.get("status"),
             "rc5_broke_metrics": rc5.get("broke_metrics", []),
+            "safety_governance_status": safety_governance.get("status"),
+            "safety_governance_unregistered_count": safety_governance.get("unregistered_count"),
             "notes": notes,
             "details": details or {},
         }
