@@ -539,14 +539,13 @@ _GENERATION_SYSTEM = """あなたはシグマリス（家庭支援AI）として
 投稿文のみを返してください。説明・前置き不要。"""
 
 
-async def _generate_candidate(post_type: str, ctx: dict[str, Any]) -> str | None:
+async def _generate_candidate(system_prompt: str, prompt: str) -> str | None:
     router = get_llm_router()
-    prompt = _build_prompt(post_type, ctx)
     try:
         result = await router.chat(
             TaskType.ROUTING,
             [
-                {"role": "system", "content": _GENERATION_SYSTEM},
+                {"role": "system", "content": system_prompt},
                 {"role": "user", "content": prompt},
             ],
             max_tokens=300,
@@ -558,29 +557,25 @@ async def _generate_candidate(post_type: str, ctx: dict[str, Any]) -> str | None
         return None
 
 
-# ─── Main generation entry point ──────────────────────────────────────────────
+# ─── 共有フィルタ・リトライパイプライン ──────────────────────────────────────
+#
+# 【Phase H-1追記(docs/sigmaris/phase_h_report.md)】generate_post()
+# (旧5投稿タイプ)・generate_categorized_post()(新7カテゴリ)の両方が、
+# この同一の関数を呼ぶ。品質・プライバシーチェック(x_content_filter::
+# audit_tweet()・x_privacy_filter::filter_private_facts()/filter_
+# private_info())・文字数トリム・名前変換・類似度チェックのロジックは、
+# 元々generate_post()に直書きされていたものを、そのまま抜き出しただけ
+# であり、**一切変更していない**——依頼書「既存のx_filterを、そのまま、
+# 通過させること」への対応を、実際のコード共有によって保証する(新しい
+# フィルタの再実装ではなく、同じ関数呼び出しを両経路が通る)。
 
 
-async def generate_post(post_type: str, *, max_tries: int = 3) -> GeneratedPost | None:
-    """Generate a tweet for post_type, with quality and similarity checks.
-
-    Returns GeneratedPost or None if all attempts fail.
-    """
-    try:
-        jwt = await get_sigmaris_jwt()
-    except Exception:
-        logger.exception("x_post_generator: JWT fetch failed")
-        return None
-
-    ctx = await _gather_context(post_type, jwt)
-    recent_data = await _get_recent_posts(days=14)
-    recent_texts = [p["text"] for p in recent_data if isinstance(p.get("text"), str)]
-
-    logger.info(
-        "x_post_generator: task=ROUTING post_type=%s max_tries=%d", post_type, max_tries
-    )
+async def _generate_with_filters(
+    *, system_prompt: str, prompt: str, post_type: str, recent_texts: list[str], jwt: str, max_tries: int = 3,
+) -> GeneratedPost | None:
+    logger.info("x_post_generator: task=ROUTING post_type=%s max_tries=%d", post_type, max_tries)
     for attempt in range(1, max_tries + 1):
-        candidate = await _generate_candidate(post_type, ctx)
+        candidate = await _generate_candidate(system_prompt, prompt)
         if not candidate:
             logger.debug("x_post_generator: attempt %d returned empty", attempt)
             continue
@@ -652,3 +647,66 @@ async def generate_post(post_type: str, *, max_tries: int = 3) -> GeneratedPost 
         max_tries, post_type,
     )
     return None
+
+
+# ─── Main generation entry point(旧5投稿タイプ、変更なし) ──────────────────
+
+
+async def generate_post(post_type: str, *, max_tries: int = 3) -> GeneratedPost | None:
+    """Generate a tweet for post_type, with quality and similarity checks.
+
+    Returns GeneratedPost or None if all attempts fail.
+    """
+    try:
+        jwt = await get_sigmaris_jwt()
+    except Exception:
+        logger.exception("x_post_generator: JWT fetch failed")
+        return None
+
+    ctx = await _gather_context(post_type, jwt)
+    recent_data = await _get_recent_posts(days=14)
+    recent_texts = [p["text"] for p in recent_data if isinstance(p.get("text"), str)]
+
+    prompt = _build_prompt(post_type, ctx)
+    return await _generate_with_filters(
+        system_prompt=_GENERATION_SYSTEM, prompt=prompt, post_type=post_type,
+        recent_texts=recent_texts, jwt=jwt, max_tries=max_tries,
+    )
+
+
+# ─── Phase H-1: 新7カテゴリ(A〜G)の生成エントリポイント ─────────────────────
+#
+# 【絶対原則、依頼書「本タスクの範囲は、投稿の生成までとする」】
+# 本関数は、GeneratedPostを返すのみで、実際にXへ投稿する処理
+# (x_publisher.post_tweet()の呼び出し・record_post()の呼び出し)は
+# 一切行わない。呼び出し元(将来のタスク)が、生成結果を見た上で、投稿を
+# 実行するかどうかを判断する——proactive/actions.py::_try_smart_x_post()
+# (旧5投稿タイプ用、実際に投稿まで行う)には、本関数を一切配線していない。
+
+
+async def generate_categorized_post(*, max_tries: int = 3) -> GeneratedPost | None:
+    """x_post_category_selector.select_post_category()で選ばれたカテゴリ
+    について、投稿文を生成する。カテゴリが選ばれなかった場合(材料不足・
+    Executive Gate不可・1日の上限到達等)はNoneを返す。"""
+    from app.services.x_post_categories import CATEGORY_GENERATION_SYSTEM, build_category_prompt  # noqa: PLC0415
+    from app.services.x_post_category_selector import select_post_category  # noqa: PLC0415
+
+    try:
+        jwt = await get_sigmaris_jwt()
+    except Exception:
+        logger.exception("x_post_generator: JWT fetch failed (categorized)")
+        return None
+
+    category, reason, ctx = await select_post_category(jwt=jwt)
+    if category is None or ctx is None:
+        logger.info("x_post_generator: categorized post skipped — %s", reason)
+        return None
+
+    recent_data = await _get_recent_posts(days=14)
+    recent_texts = [p["text"] for p in recent_data if isinstance(p.get("text"), str)]
+
+    prompt = build_category_prompt(ctx)
+    return await _generate_with_filters(
+        system_prompt=CATEGORY_GENERATION_SYSTEM, prompt=prompt, post_type=category,
+        recent_texts=recent_texts, jwt=jwt, max_tries=max_tries,
+    )
