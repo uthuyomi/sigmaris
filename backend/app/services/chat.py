@@ -40,6 +40,7 @@ from app.services.chat_routing import (
     classify_chat_intent,
     tool_names_for_intent,
 )
+from app.services.evidence_search import build_evidence_context, gather_search_evidence
 
 logger = logging.getLogger(__name__)
 TOOL_EXECUTION_TIMEOUT_SECONDS = 45
@@ -69,6 +70,41 @@ def _latest_user_text(messages: list[dict[str, Any]]) -> str:
         if message.get("role") == "user":
             return _extract_message_text(message)
     return ""
+
+
+async def _append_evidence_context(
+    route: dict[str, Any], router_instruction: str, messages: list[dict[str, Any]]
+) -> str:
+    """Phase G-2(docs/sigmaris/phase_g_report.md): if G-1's classify_
+    chat_intent() flagged this turn as needing a web search, runs the
+    search+structuring pipeline and appends the resulting evidence onto
+    router_instruction -- the same "concatenate a second context block
+    onto an existing volatile string" pattern this codebase already uses
+    elsewhere (e.g. Phase S-3's dissent_context appended onto preference_
+    patterns_context in orchestrator/service.py) -- rather than adding a
+    new parameter to build_system_prompt()/chat_prompts.py.
+
+    Placement rationale (Phase A2 cache safety): router_instruction is
+    already the second-least-stable block in build_system_prompt()'s
+    ordering (chat_prompts.py's own comment: it's re-classified by an LLM
+    call on every turn), so appending Evidence there — rather than
+    anywhere in the fixed "rules"/"ai_tone"/"base_system" prefix — cannot
+    invalidate more of OpenAI's prefix-based prompt cache than router_
+    instruction's own per-turn volatility was already going to.
+
+    A no-op (returns router_instruction unchanged) whenever needs_search
+    is false — the common case — so no extra latency or LLM calls happen
+    on ordinary turns."""
+    search_signal = route.get("search") or {}
+    if not search_signal.get("needs_search"):
+        return router_instruction
+
+    user_question = _latest_user_text(messages)
+    evidence = await gather_search_evidence(user_question=user_question, search_signal=search_signal)
+    evidence_context = build_evidence_context(evidence)
+    if not evidence_context:
+        return router_instruction
+    return f"{router_instruction}\n\n{evidence_context}" if router_instruction else evidence_context
 
 
 def _confirmation_choice(text: str) -> bool | None:
@@ -636,6 +672,7 @@ async def run_chat_completion(
         route_reason=route["reason"],
         route_source=route["source"],
     )
+    router_instruction = await _append_evidence_context(route, router_instruction, messages)
     system_prompt = build_system_prompt(
         system,
         build_ai_tone_instruction(profile_context["aiTone"]),
@@ -914,6 +951,7 @@ async def stream_chat_completion_ui(
         route_reason=route["reason"],
         route_source=route["source"],
     )
+    router_instruction = await _append_evidence_context(route, router_instruction, messages)
     system_prompt = build_system_prompt(
         system,
         build_ai_tone_instruction(profile_context["aiTone"]),

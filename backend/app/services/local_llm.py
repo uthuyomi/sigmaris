@@ -48,6 +48,17 @@ class TaskType(str, enum.Enum):
     # decision-vs-goal comparison used to justify TaskType.SELF_REFLECT
     # (the advanced tier) over a cheaper classifier tier.
     EVAL_JUDGE = "eval_judge"
+    # Phase G-2(docs/sigmaris/phase_g_report.md): condenses a web-search
+    # result (already fetched via a direct client.responses.create() call
+    # with the web_search tool — see evidence_search.py) into structured
+    # claim/source_url/source_title entries. A dedicated TaskType rather
+    # than reusing SUMMARIZE: SUMMARIZE condenses a single known-good text
+    # into prose, while this task must also preserve a strict per-claim
+    # mapping back to the citation it came from and enforce a JSON output
+    # shape — a distinct enough contract to warrant its own type, per the
+    # "one TaskType per distinct classification concern" precedent
+    # CHAT_INTENT_CLASSIFICATION already established above.
+    EVIDENCE_STRUCTURING = "evidence_structuring"
 
 
 _LOCAL_TASK_TYPES = {
@@ -63,6 +74,7 @@ _LOCAL_TASK_TYPES = {
     TaskType.ABSTENTION_REACTION_DETECTION,
     TaskType.EVAL_GENERATION,
     TaskType.CHAT_INTENT_CLASSIFICATION,
+    TaskType.EVIDENCE_STRUCTURING,
 }
 
 
@@ -166,6 +178,7 @@ def _openai_model_for_task(task: TaskType) -> str:
         TaskType.MEMORY_RERANK,
         TaskType.ABSTENTION_REACTION_DETECTION,
         TaskType.CHAT_INTENT_CLASSIFICATION,
+        TaskType.EVIDENCE_STRUCTURING,
     }:
         return settings.openai_nano_model
     return settings.openai_model
