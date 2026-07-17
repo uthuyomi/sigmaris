@@ -6,6 +6,7 @@ import json
 from typing import Any, Literal
 
 from app.services.local_llm import TaskType, get_llm_router
+from app.services.search_trigger import detect_search_need, merge_llm_search_judgment
 
 ChatIntent = Literal[
     "general_chat",
@@ -180,7 +181,7 @@ async def classify_chat_intent(
     *,
     messages: list[dict[str, Any]],
     attachment_facts: str,
-) -> dict[str, str]:
+) -> dict[str, Any]:
     latest_text = latest_user_text(messages)
     has_file_attachment = has_attachment(messages)
     has_image_context = bool(attachment_facts)
@@ -193,6 +194,12 @@ async def classify_chat_intent(
         for message in messages[-8:]
     )
 
+    # Phase G-1(docs/sigmaris/phase_g_report.md): 「検索が必要か」のルール
+    # ベース判定は、LLMを一切呼ばずに常に行える(I/Oなし、O(1)級の文字列
+    # 検索のみ)。ヒューリスティックがintentを即断してLLM呼び出し自体を
+    # スキップするターンでも、この判定だけは必ず得られる。
+    search_signal = detect_search_need(latest_text=latest_text)
+
     guessed_intent, guessed_reason = heuristic_intent(
         latest_text=latest_text,
         context_text=context_text,
@@ -204,6 +211,7 @@ async def classify_chat_intent(
             "intent": guessed_intent,
             "reason": guessed_reason or "heuristic",
             "source": "heuristic",
+            "search": search_signal,
         }
 
     transcript_lines: list[str] = []
@@ -221,7 +229,7 @@ async def classify_chat_intent(
     prompt = "\n".join(
         [
             "Classify the user request for Sigmaris.",
-            'Return JSON only like {"intent":"...","reason":"..."}.',
+            'Return JSON only like {"intent":"...","reason":"...","needs_search":true,"search_reason":"..."}.',
             "Valid intents: general_chat, event_lookup, mobility_plan, schedule_import, calendar_write, sync_control.",
             "Use mobility_plan for route, departure, public-transit questions, walking, driving, bicycle, or home-to-destination guidance. Public-transit auto planning is unavailable; answer with that limitation and offer car, walking, or bicycle route planning.",
             "Use schedule_import for images, spreadsheets, work schedules, shift tables, or extracting events from files.",
@@ -231,6 +239,9 @@ async def classify_chat_intent(
             "Use event_lookup for identifying which app event/day the user refers to.",
             "Use sync_control for integration or sync mode settings.",
             "Use general_chat only if no specialized intent is dominant.",
+            # Phase G-1(docs/sigmaris/phase_g_report.md): 検索要否も同じ
+            # JSON応答へ相乗りさせる(新規LLM呼び出しを追加しない)。
+            "Also decide needs_search: true if answering well requires current prices, specs, availability, versions, rankings, release dates, or other facts that change over time and might be stale in memory; also true if the request names a specific product, company, or model whose current details may not be known. False for general chat, personal schedule questions, or anything answerable from stable general knowledge or the assistant's existing memory of the user. Briefly explain in search_reason.",
             f"has_attachment={has_file_attachment}",
             f"has_image_context={has_image_context}",
             transcript,
@@ -278,16 +289,25 @@ async def classify_chat_intent(
         intent = payload.get("intent")
         if intent not in VALID_INTENTS:
             intent = "general_chat"
+        llm_needs_search = payload.get("needs_search")
+        if not isinstance(llm_needs_search, bool):
+            llm_needs_search = None
         return {
             "intent": intent,
             "reason": str(payload.get("reason") or "llm-router"),
             "source": "llm",
+            "search": merge_llm_search_judgment(
+                search_signal,
+                llm_needs_search=llm_needs_search,
+                llm_search_reason=payload.get("search_reason"),
+            ),
         }
     except Exception:
         return {
             "intent": "general_chat",
             "reason": "llm-router-fallback",
             "source": "fallback",
+            "search": search_signal,
         }
 
 
