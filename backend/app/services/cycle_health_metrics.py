@@ -644,9 +644,22 @@ class CycleBreakResult:
     checks: list[MetricBreakCheck]
 
 
-def _check_metric_drop(
+def check_metric_drop(
     *, metric: str, current: float | None, historical: list[float], min_history: int, drop_threshold: float
 ) -> MetricBreakCheck:
+    """単一指標の「過去平均からの落ち込み」を判定する、方向非依存の汎用
+    ヘルパー(higher-is-better前提、drop = baseline - current)。
+
+    Phase D-1(docs/sigmaris/phase_d_report.md、evidence_aggregation.py):
+    RC-5専用の内部関数だったものを、根拠収集層が複数指標(RC・Grounding)
+    へ横断的に同じ閾値ロジックを適用できるよう、公開関数へ格上げした
+    (実装・挙動は変更していない、名前の`_`を外しdocstringを追加した
+    のみ——「新しい閾値ロジックを作るより既存を再利用する」というPhase
+    R/G/Sを通じて一貫した設計哲学をそのまま踏襲)。lower-is-better指標
+    (例: Grounding指標のcontradiction_rate)を評価したい場合は、呼び出し
+    側で`1 - x`のように反転してから渡すこと(この関数自体は反転を行わ
+    ない)。
+    """
     if current is None or len(historical) < min_history:
         return MetricBreakCheck(
             metric=metric, checkable=False, current=current, baseline=None, drop=None, broke_threshold=False
@@ -683,14 +696,14 @@ def detect_cycle_break(
     ならない)。
     """
     checks = [
-        _check_metric_drop(
+        check_metric_drop(
             metric="rc1_eligible_completion_rate",
             current=current_rc1_eligible_rate,
             historical=historical_rc1_eligible_rates,
             min_history=min_history,
             drop_threshold=drop_threshold,
         ),
-        _check_metric_drop(
+        check_metric_drop(
             metric="rc2_score",
             current=current_rc2_score,
             historical=historical_rc2_scores,
