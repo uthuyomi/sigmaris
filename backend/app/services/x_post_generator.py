@@ -98,14 +98,51 @@ async def _get_recent_posts(days: int = 7) -> list[dict[str, Any]]:
     return r.json()
 
 
-async def record_post(text: str, post_type: str, *, score: float = 0.0) -> None:
-    """Save a posted tweet to x_post_history (including quality score)."""
+async def get_recent_tracked_posts(*, days: int = 7) -> list[dict[str, Any]]:
+    """Phase H-2(docs/sigmaris/phase_h_report.md): tweet_idを持つ(=実際に
+    Xへ投稿できたことが確認できている)投稿のみを、新しい順に返す。
+    返信検知が「この返信は、シグマリスのどの投稿への返信か」を突き合わ
+    せるための、唯一の読み取り口。失敗時は空リスト(既存store関数と
+    同じベストエフォート方針)。"""
+    try:
+        base_url, _ = _require_supabase_config()
+        client = await _get_client()
+        since = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
+        r = await client.get(
+            f"{base_url}/rest/v1/x_post_history",
+            headers=_svc_headers(),
+            params={
+                "select": "id,text,post_type,tweet_id,posted_at",
+                "posted_at": f"gte.{since}",
+                "tweet_id": "not.is.null",
+                "order": "posted_at.desc",
+            },
+        )
+        if r.is_error:
+            logger.warning("x_post_generator: get_recent_tracked_posts HTTP %s", r.status_code)
+            return []
+        data = r.json()
+        return data if isinstance(data, list) else []
+    except Exception:
+        logger.exception("x_post_generator: get_recent_tracked_posts failed")
+        return []
+
+
+async def record_post(text: str, post_type: str, *, score: float = 0.0, tweet_id: str | None = None) -> None:
+    """Save a posted tweet to x_post_history (including quality score).
+
+    tweet_id(Phase H-2で追加): 実際に投稿できた場合のX側のtweet_id。
+    LogPublisher使用時(ログのみ)は、疑似ID("log-...")が入る——実際の
+    Xの投稿ではないため、返信検知(get_recent_tracked_posts()の対象)は
+    これを実データとして扱うが、実際にmentions APIから該当の返信が
+    見つかることはない(LogPublisher環境ではXへの接続自体が発生しない
+    ため、実害はない)。"""
     base_url, _ = _require_supabase_config()
     client = await _get_client()
     r = await client.post(
         f"{base_url}/rest/v1/x_post_history",
         headers={**_svc_headers(), "Prefer": "return=minimal"},
-        json={"text": text, "post_type": post_type, "post_score": score},
+        json={"text": text, "post_type": post_type, "post_score": score, "tweet_id": tweet_id},
     )
     if r.is_error:
         logger.warning("x_post_generator: record_post HTTP %s", r.status_code)

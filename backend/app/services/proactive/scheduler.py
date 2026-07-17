@@ -421,16 +421,46 @@ async def _categorized_x_post_check() -> None:
             return
 
         publisher = get_publisher()
-        posted = await publisher.post_tweet(gp.text)
-        if posted:
-            await record_post(gp.text, gp.post_type, score=gp.score)
+        tweet_id = await publisher.post_tweet(gp.text)
+        if tweet_id:
+            # tweet_id(Phase H-2): 返信検知が「どの投稿への返信か」を
+            # 突き合わせるために必要なため、記録する(x_post_generator.py
+            # ::record_post()のdocstring参照)。
+            await record_post(gp.text, gp.post_type, score=gp.score, tweet_id=tweet_id)
             logger.info(
-                "Categorized X post: posted category=%s len=%d score=%.1f", gp.post_type, len(gp.text), gp.score,
+                "Categorized X post: posted category=%s len=%d score=%.1f tweet_id=%s",
+                gp.post_type, len(gp.text), gp.score, tweet_id,
             )
         else:
-            logger.warning("Categorized X post: publisher returned False for category=%s", gp.post_type)
+            logger.warning("Categorized X post: publisher returned None for category=%s", gp.post_type)
     except Exception:
         logger.exception("Categorized X post check raised unexpectedly")
+
+
+# ── Phase H-2「返信の検知、及び、フィルタリング」(docs/sigmaris/
+# phase_h_report.md)。依頼書1章「既存の定期実行の仕組み(scheduler.py)
+# に相乗りすること」への対応——新しい定期実行基盤は作らず、既存の
+# AsyncIOScheduler/CronTriggerのパターンをそのまま使う。
+#
+# 【本ジョブが行わないこと】x_reply_detector.run_reply_detection()の
+# 戻り値(検知・フィルタリング結果)を、ログに残すのみ。実際の返信文の
+# 生成・投稿は、次のタスクの範囲であり、本ジョブには一切実装しない
+# (x_reply_detector.pyのモジュールdocstring参照)。
+async def _x_reply_detection_check() -> None:
+    from app.services.x_reply_detector import run_reply_detection  # noqa: PLC0415
+    try:
+        result = await run_reply_detection()
+        logger.info(
+            "X reply detection check done: scanned=%d matched=%d new=%d",
+            result["scanned_mentions"], result["matched_replies"], result["new_replies_processed"],
+        )
+        ignored = [r for r in result["results"] if r["filter_outcome"] == "ignored"]
+        if ignored:
+            logger.info(
+                "X reply detection check: %d replies ignored (reasons in x_reply_log)", len(ignored),
+            )
+    except Exception:
+        logger.exception("X reply detection check raised unexpectedly")
 
 
 def startup_scheduler() -> None:
@@ -486,6 +516,15 @@ def startup_scheduler() -> None:
     _scheduler.add_job(_categorized_x_post_check, CronTrigger(hour=13, minute=30, timezone=tz), id="categorized_x_post_check_2", replace_existing=True)
     _scheduler.add_job(_categorized_x_post_check, CronTrigger(hour=17, minute=30, timezone=tz), id="categorized_x_post_check_3", replace_existing=True)
     _scheduler.add_job(_categorized_x_post_check, CronTrigger(hour=21, minute=30, timezone=tz), id="categorized_x_post_check_4", replace_existing=True)
+
+    # Phase H-2「返信の検知、及び、フィルタリング」(docs/sigmaris/
+    # phase_h_report.md)。categorized_x_post_check(9:30/13:30/17:30/
+    # 21:30)と30分ずらし、既存の全ジョブと重ならない4時刻に配置した
+    # (22:15は22:00のevening_checkinと15分の余裕を持たせた)。
+    _scheduler.add_job(_x_reply_detection_check, CronTrigger(hour=10, minute=0,  timezone=tz), id="x_reply_detection_check_1", replace_existing=True)
+    _scheduler.add_job(_x_reply_detection_check, CronTrigger(hour=14, minute=0,  timezone=tz), id="x_reply_detection_check_2", replace_existing=True)
+    _scheduler.add_job(_x_reply_detection_check, CronTrigger(hour=18, minute=0,  timezone=tz), id="x_reply_detection_check_3", replace_existing=True)
+    _scheduler.add_job(_x_reply_detection_check, CronTrigger(hour=22, minute=15, timezone=tz), id="x_reply_detection_check_4", replace_existing=True)
 
     _scheduler.start()
     logger.info("Proactive scheduler started (tz=%s)", tz)

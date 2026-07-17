@@ -118,6 +118,19 @@ class TaskType(str, enum.Enum):
     # as HYPOTHESIS_GENERATION -- an offline CLI step where correctness
     # matters far more than latency.
     CODE_DIFF_GENERATION = "code_diff_generation"
+    # Phase H-2(docs/sigmaris/phase_h_report.md): 開発者(@Oyasu1999)以外
+    # からの、シグマリスの投稿への返信1件について、「対話意図があるか」
+    # 「システムプロンプト等を探ろうとする、指示上書きの試みでないか」
+    # 「スパム・荒らし・攻撃的な内容でないか」の3点を、1回のLLM呼び出しで
+    # まとめて判定する。CHAT_INTENT_CLASSIFICATION・CITATION_AUDIT等と
+    # 同じ、nano-tierの「分類・軽量判定」の性質を持つ、独立した判定対象
+    # (入力=X返信テキスト、出力=3種のbool+理由のJSON)であるため、
+    # 「one TaskType per distinct classification concern」の前例に従い、
+    # 専用のTaskTypeとした。既存のCHAT_INTENT_CLASSIFICATION等を転用
+    # しなかった判断根拠: 入力(ユーザーの発話ではなく、外部の第三者の
+    # X投稿テキスト)・出力形状(3種の判定を同時に返す)のいずれも異なる、
+    # 別の契約であるため。
+    X_REPLY_FILTER = "x_reply_filter"
 
 
 _LOCAL_TASK_TYPES = {
@@ -137,6 +150,7 @@ _LOCAL_TASK_TYPES = {
     TaskType.SELF_CRITIQUE,
     TaskType.CITATION_AUDIT,
     TaskType.HYPOTHESIS_CRITIQUE,
+    TaskType.X_REPLY_FILTER,
 }
 
 
@@ -249,6 +263,7 @@ def _openai_model_for_task(task: TaskType) -> str:
         TaskType.SELF_CRITIQUE,
         TaskType.CITATION_AUDIT,
         TaskType.HYPOTHESIS_CRITIQUE,
+        TaskType.X_REPLY_FILTER,
     }:
         return settings.openai_nano_model
     return settings.openai_model

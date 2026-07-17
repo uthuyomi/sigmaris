@@ -925,8 +925,8 @@ async def x_test_post(
 ) -> dict[str, Any]:
     _require_jwt(authorization)
     publisher = get_publisher()
-    posted = await publisher.post_tweet(_X_TEST_POST_TEXT)
-    return {"ok": posted, "text": _X_TEST_POST_TEXT}
+    tweet_id = await publisher.post_tweet(_X_TEST_POST_TEXT)
+    return {"ok": tweet_id is not None, "tweet_id": tweet_id, "text": _X_TEST_POST_TEXT}
 
 
 # ─── /api/agent/x/privacy-test ──────────────────────────────────────────────
