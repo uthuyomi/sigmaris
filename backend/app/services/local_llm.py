@@ -59,6 +59,17 @@ class TaskType(str, enum.Enum):
     # "one TaskType per distinct classification concern" precedent
     # CHAT_INTENT_CLASSIFICATION already established above.
     EVIDENCE_STRUCTURING = "evidence_structuring"
+    # Phase G-3(docs/sigmaris/phase_g_report.md): verifies whether an
+    # already-generated response contradicts G-2's structured Evidence, and
+    # — if so — rewrites only the affected portion into hedged phrasing.
+    # One TaskType covers both the critique (verdict classification) and
+    # the conditional rewrite step, rather than splitting into two types:
+    # unlike CHAT_INTENT_CLASSIFICATION/EVIDENCE_STRUCTURING (each a
+    # standalone call with its own independent callers), critique and
+    # rewrite here are two tightly-coupled steps of one feature that only
+    # ever fire together — see self_critique.py's module docstring for the
+    # full rationale.
+    SELF_CRITIQUE = "self_critique"
 
 
 _LOCAL_TASK_TYPES = {
@@ -75,6 +86,7 @@ _LOCAL_TASK_TYPES = {
     TaskType.EVAL_GENERATION,
     TaskType.CHAT_INTENT_CLASSIFICATION,
     TaskType.EVIDENCE_STRUCTURING,
+    TaskType.SELF_CRITIQUE,
 }
 
 
@@ -179,6 +191,7 @@ def _openai_model_for_task(task: TaskType) -> str:
         TaskType.ABSTENTION_REACTION_DETECTION,
         TaskType.CHAT_INTENT_CLASSIFICATION,
         TaskType.EVIDENCE_STRUCTURING,
+        TaskType.SELF_CRITIQUE,
     }:
         return settings.openai_nano_model
     return settings.openai_model
