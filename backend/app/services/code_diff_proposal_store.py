@@ -118,6 +118,31 @@ async def get_pending_diff_proposals(*, limit: int = 50) -> list[dict[str, Any]]
         return []
 
 
+async def get_recent_diff_proposals(*, limit: int = 20) -> list[dict[str, Any]]:
+    """Phase H-1(docs/sigmaris/phase_h_report.md): review_statusを問わず
+    (pending/approved/rejected、pr_creation_status問わず)、直近の提案を
+    新しい順に返す。X投稿カテゴリD・E(自己改善パイプラインの実況・技術
+    記録)の材料収集用——「今日、パイプラインで何が起きたか」を一覧する
+    ための、新規の読み取り専用アクセサ。get_pending_diff_proposals()と
+    同じベストエフォート方針(失敗時は例外を投げず空リスト)。**新しい
+    データ収集は行わない**——既存のsigmaris_code_diff_proposalsテーブル
+    (F-1〜F-3が既に書き込み済み)を読むだけ。"""
+    try:
+        base_url, _ = _require_supabase_config()
+        client = await _get_client()
+        response = await client.get(
+            f"{base_url}/rest/v1/{_TABLE}",
+            headers=_svc_headers(),
+            params={"order": "created_at.desc", "limit": str(limit)},
+        )
+        response.raise_for_status()
+        data = response.json()
+        return data if isinstance(data, list) else []
+    except Exception:
+        logger.exception("code_diff_proposal_store: failed to get_recent_diff_proposals")
+        return []
+
+
 async def record_review_decision(
     proposal_id: str, *, status: str, notes: str = "", reviewed_by: str = ""
 ) -> bool:
