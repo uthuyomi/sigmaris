@@ -104,6 +104,20 @@ class TaskType(str, enum.Enum):
     # be based on -- not a full re-derivation of the hypothesis, so nano-tier
     # like G-3's own critique step.
     HYPOTHESIS_CRITIQUE = "hypothesis_critique"
+    # Phase F-1(docs/sigmaris/phase_f_report.md): generates a unified-diff
+    # code proposal for a single target file, from one D-3-prioritized/
+    # E-1-verified hypothesis. Deliberately reuses D-2's HYPOTHESIS_
+    # GENERATION model TIER (advanced) rather than introducing a new tier --
+    # the task's explicit constraint ("D-2の仮説生成に使ったモデル階層を、
+    # そのまま踏襲すること。新しいモデル階層は、追加しないこと"). Still gets
+    # its own TaskType value (not literally HYPOTHESIS_GENERATION) per the
+    # "one TaskType per distinct classification concern" precedent: this
+    # call's input (hypothesis + actual current file source) and output
+    # shape (a unified diff, not a JSON verdict) are a different contract
+    # from hypothesis generation itself. NOT local-eligible, same reasoning
+    # as HYPOTHESIS_GENERATION -- an offline CLI step where correctness
+    # matters far more than latency.
+    CODE_DIFF_GENERATION = "code_diff_generation"
 
 
 _LOCAL_TASK_TYPES = {
@@ -199,7 +213,12 @@ class LocalLLMClient:
 
 def _openai_model_for_task(task: TaskType) -> str:
     """Map TaskType to the appropriate OpenAI model tier."""
-    if task in {TaskType.SELF_REFLECT, TaskType.COMPLEX_REASONING, TaskType.HYPOTHESIS_GENERATION}:
+    if task in {
+        TaskType.SELF_REFLECT,
+        TaskType.COMPLEX_REASONING,
+        TaskType.HYPOTHESIS_GENERATION,
+        TaskType.CODE_DIFF_GENERATION,
+    }:
         return settings.sigmaris_reflect_model or settings.openai_advanced_model
     if task is TaskType.EVAL_JUDGE:
         # Same "sigmaris_reflect_model or openai_advanced_model" pattern as
