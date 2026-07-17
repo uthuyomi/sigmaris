@@ -404,3 +404,210 @@ AppendEvidenceContextIntegrationTests (3件、chat.pyへの統合)
 ## 7. マージについて
 
 「テスト・検証」章の要件をすべて満たしていることを確認した(検索実行・構造化・応答生成への統合・キャッシュ影響確認・既存テストの回帰確認、いずれも達成)。依頼書の指示通り、確認を待たずmainへマージ・プッシュする。
+
+---
+
+# Phase G-3 実施報告: Self-Critique検証(独立した視点での、生成結果のチェック)
+
+**作業ブランチ:** `phase-g3-self-critique`(mainから新規作成)
+**範囲:** G-2の構造化された証拠(Evidence)と、生成された応答が矛盾していないかを、生成とは独立した視点(別プロンプト・同じnano-tierだが別の役割)で検証し、矛盾が見つかった場合はB11のヘッジ機構と連携して該当表現を修正する。
+
+---
+
+## 0. 前提として確認したこと
+
+着手前に指示書が指定した`docs/sigmaris/phase_g_report.md`(G-1・G-2)を再確認した。特に、G-2が`route["search"]`(`needs_search`・`reasons`)と、構造化されたEvidence(`claim`・`source_url`・`source_title`・`retrieved_at`)をどう受け渡しているかを再確認し、本タスクがその両方を入力として使う設計とした。加えて、B11(`memory_confidence.py`)の実装を読み直し、既存のヘッジ文言(`_LOW_CONFIDENCE_NOTE`・`_NO_EVIDENCE_NOTE`)と`confidence_guidance_note()`関数の正確な挙動を確認した(2章で詳述)。
+
+---
+
+## 1. Self-Critique検証の実装詳細
+
+新設ファイル: `backend/app/services/self_critique.py`。新設TaskType: `TaskType.SELF_CRITIQUE`(`local_llm.py`、nano-tier)。
+
+### 1.1 批評プロンプトの設計
+
+`critique_response(response_text, evidence)`が、`_CRITIC_SYSTEM`(「批評家」という役割を明示し、Evidenceとの矛盾の有無だけを判定対象とし、文体・質等は評価しないことを明記)と、Evidence一覧・応答内容(最大2000文字に切り詰め)を並べたユーザープロンプトで、nano-tierのLLMへ1回だけ問い合わせる。
+
+```
+JSON形式で返してください:
+{"verdict": "no_contradiction"|"minor_mismatch"|"clear_contradiction",
+ "conflicting_claim": "矛盾するEvidenceのclaim(あれば、無ければnull)",
+ "reason": "簡潔な理由(1文)"}
+```
+
+**判断根拠(応答全文ではなく最大2000文字に切り詰める理由)**: 依頼書「検証は、生成された応答全体を再評価するのではなく、Evidenceに関連する主張の部分だけを対象とすること」に対応。厳密に「Evidenceに関連する部分だけ」を機械的に抽出する仕組み(文分割・関連度判定等)を新設すると過剰実装になると判断し、代わりに、通常の会話応答であれば2000文字を超えることは稀である(Evidence関連の事実確認は通常数文で完結する)という前提のもと、上限を設けることで「過剰に広い範囲を検証しない」という要件の精神を、シンプルな方法で満たすことにした。
+
+**判断根拠(モデル階層の選定)**: 依頼書「生成に使ったモデルとは異なる階層(nano-tier)を使用すること」に直接対応。生成(BA4のメイン応答)は`settings.openai_model`(mini階層)、批評は`TaskType.SELF_CRITIQUE`経由で`settings.openai_nano_model`(nano階層)——モデル階層そのものが異なるため、依頼書が言う「異なるモデル・異なる役割による相互検証」の"異なるモデル"の部分を、既存のnano-tierルーティングをそのまま使うだけで満たせた。新しいモデル階層・新しい外部サービスは追加していない。
+
+### 1.2 検証結果の区分
+
+`no_contradiction`(矛盾なし)・`minor_mismatch`(軽微な不一致)・`clear_contradiction`(明確な矛盾)の3区分のみ(依頼書「過度に複雑な採点方式にしないこと」に対応)。不正な値・パース失敗時は`no_contradiction`へ安全側に縮退する。
+
+**判断根拠(失敗時にno_contradiction側へ縮退する設計、fail-open)**: このコードベース全体で一貫した「補助処理の失敗が主応答を壊さない」という設計方針(`chat.py::_persist_chat_messages_safely()`、`evidence_search.py::run_web_search()`等)を踏襲した。批評自体が失敗した場合、安全側に倒すなら本来"clear_contradiction"扱いにして強制的にヘッジすべきという考え方もありうるが、批評の失敗(ネットワークエラー等)は応答内容の信頼性そのものとは無関係であり、一時的なAPI障害のたびに正常な応答まで不必要にヘッジしてしまう方が、ユーザー体験として悪化すると判断した。
+
+---
+
+## 2. 検証結果に応じた挙動(B11との連携方法)
+
+### 2.1 B11のConfidenceTier・ヘッジ文言をそのまま再利用
+
+`_confidence_tier_for_verdict()`が、G-3の3区分をB11(`memory_confidence.py`)の`ConfidenceTier`(`confident`/`low_confidence`/`no_evidence`)へ写像する。
+
+| G-3の区分 | 写像先のB11階層 | 理由 |
+|---|---|---|
+| `no_contradiction` | `confident` | ヘッジ不要 |
+| `minor_mismatch` | `low_confidence` | 断定を避けるだけでよい |
+| `clear_contradiction` | `no_evidence` | B11に3階層しか無く、最も慎重な既存の階層を流用。実際に検索で確認した事実と食い違っているという意味で、単なる「根拠薄弱」より強い注意が必要な状態だが、B11の型を新規拡張せず既存の3階層内で表現した |
+
+写像した階層を、そのまま**`memory_confidence.confidence_guidance_note(tier)`(B11の既存関数、新規実装なし)へ渡し、B11が既に持つ日本語のヘッジ指示文(`_LOW_CONFIDENCE_NOTE`「もしかしたら〜かもしれません」「まだ確証はないんですが」/`_NO_EVIDENCE_NOTE`「記憶にない内容を断定したり作話したりせず」)をそのまま取得する。** これは「B11の仕組みに接続する」という依頼書の要求を、概念の模倣ではなく、実際にB11の関数をimportして呼び出す形で満たした設計である。
+
+### 2.2 「ヘッジ表現への切り替え」の実装: 全文再生成ではなく、既存応答への最小限の書き換え
+
+`apply_hedge_if_needed(response_text, critique)`が、`no_contradiction`以外の場合にのみ、既存の応答テキストと、2.1節で取得したB11のガイダンス文を入力として、nano-tier(`TaskType.SELF_CRITIQUE`、批評と同じ型)のLLMへ「矛盾が指摘された箇所だけをヘッジ表現に書き換え、それ以外の文章は変更しないでください」という制約付きの書き換えを依頼する。
+
+**判断根拠(全文再生成ではなく最小限の書き換えにした理由)**: 依頼書「全文の再生成は最終手段とすること。まずB11のヘッジ表現への切り替えを優先すること」に対応。ゼロから応答を再生成する代わりに、既存の応答テキストを入力として与え、「矛盾箇所だけ直す」という制約付きの書き換えにすることで、(a) 出力トークン数を元の応答とほぼ同程度に抑えられる、(b) Evidenceと無関係な話題・文体を保持できる、という2点を狙った。
+
+**書き換え失敗時の防御**: LLM呼び出し自体が例外を送出した場合、および出力が空または元の応答の1/5未満に極端に短い(壊れた・切り詰められた出力の疑いがある)場合は、書き換えを破棄し元の応答をそのまま使う——「ヘッジに失敗して不完全な応答になる」より、「断定的だが完全な応答を保つ」方が安全という判断に基づく防御である。
+
+### 2.3 【重要な設計判断】ストリーミング経路では、実際の応答書き換えを行わない
+
+`chat.py`には`run_chat_completion()`(非ストリーミング)と`stream_chat_completion_ui()`(ストリーミング、`/chat`の実際の利用経路)の2つの生成経路があるが、**本タスクの「矛盾があればヘッジ表現に切り替える」という実際の応答変更効果(要件4)は、非ストリーミング経路にのみ実装した。**
+
+**判断根拠**: `docs/sigmaris/phase_ba4_report.md` 8章(「2026-07-06 追補: streaming無音時間への対応」)が、生成中にtext deltaが出ない無音時間が、フロントエンド側で「assistant枠だけ出て本文が出ない」バグを引き起こすことを、実際に本番で確認・修正した記録が残っている——「表示前にブロックする」設計から「即時中継+事後のadvisory検知のみ」設計へ切り替えた、という直接の前例である。
+
+本タスクのSelf-Critique(批評+条件付き書き換え)は、Evidenceがある場合に限っても、追加のLLM呼び出しが最大2回発生しうる(4章のレイテンシ見積もり参照)。これをストリーミング完了後・応答確定前の同期処理として挟むと、8章が実際に踏んだのと同種の「長い無音時間→フロントエンドが待ちきれずassistant枠が空のまま」というバグを再発させるリスクが高いと判断した。
+
+そのため、ストリーミング経路では、`response_guard.compare_response_to_tool_outputs()`(BA4追補8の事実整合性ガード)が既に確立している**「検知してログに残すが、応答は変更しない」というadvisory-onlyパターンをそのまま踏襲**した。具体的には、`critique_response()`の呼び出しを`asyncio.create_task()`で起動し、応答の送信を一切待たせない(fire-and-forget)。矛盾が検出された場合は`logger.warning()`で記録するのみで、既に送信済みの応答テキストを書き換えることはしない。
+
+この判断は、要件4(「矛盾が検出された場合、B11の仕組みと連携し、ヘッジ表現に切り替えられること」)を、**非ストリーミング経路(`run_chat_completion`)では完全に満たし、ストリーミング経路(実際の主要な利用経路)では検証のみ行い実際の書き換えは行わない**、という部分的な充足に留まる。この点は6章の懸念点で改めて明記する。
+
+---
+
+## 3. `chat.py`への統合方法
+
+### 3.1 Evidence取得ロジックのリファクタリング
+
+G-2で実装した`_append_evidence_context(route, router_instruction, messages) -> str`(Evidenceを取得し、文字列として返すだけの関数)を、`_gather_evidence_and_context(route, messages) -> tuple[evidence, evidence_context]`(Evidence自体もそのまま返す)+ `_append_evidence_context(router_instruction, evidence_context) -> str`(純粋な文字列連結のみ)の2関数へ分割した。
+
+**判断根拠**: G-2時点では、Evidenceは`router_instruction`へ文字列として注入されるだけで、構造化データとしては消費されていなかった。本タスクでは、批評(`critique_response()`)がEvidenceの構造化データ(`claim`・`source_title`)自体を必要とするため、生成した`evidence`をそのまま`chat.py`内で保持しておく必要がある。関数を分割することで、(a) Evidence取得のロジック自体は変更せず、(b) 呼び出し側が生成後のフェーズでも同じEvidenceを再利用できる、という2点を両立させた。既存のG-2テスト(`test_phase_g2_evidence_search.py`)は、新しい2関数を使う形へ更新し、元のテストが検証していた内容(needs_search=falseで一切呼ばれないこと等)は保持した。
+
+### 3.2 各経路への配線
+
+- `run_chat_completion()`: `final_text`が確定した直後(`assistant_message`を組み立てる直前)、`evidence`が非空であれば`critique_response()`→(必要なら)`apply_hedge_if_needed()`を同期的に`await`し、`final_text`を更新してから`assistant_message`を構築する。
+- `stream_chat_completion_ui()`: 同じく`final_text`確定直後、`evidence`が非空であれば`_log_self_critique_advisory()`を`asyncio.create_task()`で起動するのみ(2.3節参照)。
+
+いずれも`evidence`が空リスト(`needs_search=false`、またはG-2の検索・構造化が0件だった場合)であれば、この節のコードは一切実行されない——要件1・5を満たす。
+
+---
+
+## 4. テスト結果
+
+`test_phase_g3_self_critique.py`として27件のテストを作成した(scratchディレクトリ)。既存のG-2テストファイル(`test_phase_g2_evidence_search.py`)も、3.1節のリファクタリングに合わせて3件を更新した(振る舞い自体は変更せず、新しい2関数のシグネチャに追従させただけ)。
+
+```
+BuildCritiquePromptTests (2件)
+  PASS: Evidence・応答内容がプロンプトに含まれること
+  PASS: 長い応答が切り詰められること
+
+CritiqueResponseTests (7件)
+  PASS: Evidenceが空の場合、LLMを呼ばずno_contradictionを返すこと(要件1)
+  PASS: 応答が空文字の場合も同様
+  PASS: no_contradiction判定が正しくパースされること(TaskType.SELF_CRITIQUE
+        の使用を直接確認)
+  PASS: clear_contradiction判定・conflicting_claimが正しく取得できること
+  PASS: 不正な判定文字列はno_contradictionへ安全に縮退すること
+  PASS: LLM呼び出し失敗時、no_contradictionへfail-openすること
+  PASS: 非dictなJSON出力も安全に扱われること
+
+ConfidenceTierMappingTests (3件)
+  PASS: clear_contradiction → no_evidence
+  PASS: minor_mismatch → low_confidence
+  PASS: no_contradiction → confident
+
+ApplyHedgeIfNeededTests (5件)
+  PASS: no_contradictionの場合、LLMを呼ばず元のテキストを返すこと
+  PASS: 【重要】minor_mismatchの場合、B11の_LOW_CONFIDENCE_NOTE(「仮説層」
+        という同ノート特有の文言)が実際にプロンプトへ使われ、書き換えが
+        行われることの直接検証(B11との連携の核心部分)
+  PASS: 【重要】clear_contradictionの場合、B11の_NO_EVIDENCE_NOTE
+        (「記憶にない内容を断定したり作話したりせず」という同ノート特有の
+        文言)が使われることの直接検証
+  PASS: 書き換えLLM呼び出し失敗時、元のテキストへ安全に縮退すること
+  PASS: 書き換え結果が極端に短い(壊れている疑い)場合、元のテキストを
+        保持すること
+
+SelfCritiqueTaskTypeConfigTests (2件)
+  PASS: SELF_CRITIQUEがnano階層(openai_nano_model)にマップされていること
+  PASS: SELF_CRITIQUEがローカル(Ollama)対象に含まれていること
+
+ChatGatherEvidenceAndContextTests (2件)
+  PASS: needs_search=falseの場合、一切の呼び出しなしで空を返すこと(要件5)
+  PASS: needs_search=trueの場合、evidence・contextの両方が正しく
+        取得できること
+
+ChatAppendEvidenceContextPureFunctionTests (3件)
+  PASS: contextがNoneの場合、router_instructionが変更されないこと
+  PASS: context有りの場合、正しく連結されること
+  PASS: router_instructionが空文字の場合、contextのみが返ること
+
+LogSelfCritiqueAdvisoryTests (3件、ストリーミング経路のadvisory-only
+  動作の直接検証)
+  PASS: 矛盾なしの場合、警告ログが出ないこと
+  PASS: 【重要】矛盾ありの場合、応答テキストは変更せず、警告ログにverdict
+        が記録されることのみを確認(2.3節の設計の直接検証)
+  PASS: critique呼び出しが例外を送出しても、fire-and-forgetタスク自体は
+        伝播させないこと
+
+27 passed
+```
+
+既存の`backend/tests/`(16件)、G-1・G-2の全テスト(48件)、直近のPhase S・R・BA4系・nano-tier移行の既存テスト一式(211件)も全て再実行し、リグレッションは確認されなかった。
+
+```
+27(本タスク) + 248(既存の関連テスト一式、G-1・G-2含む) = 275 passed(合算実行)
+```
+
+**実モデルAPI・実際の応答生成での検証は行っていない。** テストは`LLMRouter`をモックする形にとどまる(依頼書の注意事項通り、追加のサーバーアクセス・APIキー取得は試みていない)。
+
+---
+
+## 5. レイテンシへの影響
+
+**新しいLLM呼び出しが、Evidenceが存在する場合(`needs_search=true`)にのみ追加される(要件1・5、依頼書が明示的に許容する範囲)。**
+
+### 5.1 非ストリーミング経路(`run_chat_completion`): 最大2回の追加呼び出し、同期
+
+- **批評(`critique_response()`)**: nano-tier、常に1回(Evidenceがある場合)。既存のG-1・B7等のnano-tier呼び出しと同オーダー(1〜3秒程度と見積もる)。
+- **書き換え(`apply_hedge_if_needed()`)**: nano-tier、矛盾が検出された場合のみ実行。同程度のオーダー。
+- **合計**: Evidence取得(G-2、既に3〜13秒程度と見積もり済み)+ メイン応答生成 + 批評(1〜3秒)+(矛盾があれば)書き換え(1〜3秒)。ワーストケース(検索+矛盾検出+書き換え全て発生)では、既存の応答生成に対しさらに2〜6秒程度の追加が見込まれる。
+
+### 5.2 ストリーミング経路(`stream_chat_completion_ui`): 追加レイテンシほぼゼロ
+
+2.3節の設計判断により、批評は`asyncio.create_task()`で起動されるのみで、応答の送信(ストリーミング完了・`assistant_message`確定)を一切待たない。**ユーザーへの応答時間には、理論上ほぼ影響を与えない**(バックグラウンドタスクの実行がサーバーのCPU/ネットワークリソースをわずかに使うのみ)。
+
+### 5.3 「体感速度に大きな悪影響を与える場合は実装を止める」という条件の判断
+
+依頼書の安全弁(3章・マージの章)に照らし、以下の理由から**実装を継続し、要件4を非ストリーミング経路に限定する形で満たすことを選んだ**(全面的な「止めて報告」ではなく、スコープを限定した上での実装継続)。
+
+1. Self-Critiqueが発動するのはEvidenceが存在する場合のみであり、これは既にG-2の時点で「実行頻度の低い、数秒〜十数秒の追加レイテンシを許容される特別なターン」として運用者から明示的に許可されている経路である。
+2. **実際にユーザーが最も使う経路(ストリーミング)には、本タスクによる追加レイテンシがほぼ発生しない**設計にした(5.2節)。
+3. 非ストリーミング経路への追加レイテンシ(2〜6秒)は、既存のG-2の検索レイテンシ(3〜13秒)と比べて相対的に小さく、この経路自体が既に「低頻度・許容される遅さ」の範囲内にあると判断した。
+
+一方で、この判断の結果として、**ストリーミング経路では「矛盾があってもヘッジ表現への実際の切り替えは行われない」**(検知はするが、応答は変わらない)という制約が生じている。これは要件4の字面を完全には満たしていない可能性があり、6章で正直に明記する。
+
+---
+
+## 6. 気づいた懸念点・G-4(Two-Layer Citation Audit)に向けた申し送り事項
+
+1. **【重要】要件4(矛盾検出時のヘッジ切り替え)は、実際の主要経路(ストリーミング)では発動しない。** 2.3節・5.3節で述べた通り、これは8章の無音時間バグという直接の前例を踏まえた、意図的な安全側の判断である。もし運用者がストリーミング経路でも実際に応答を書き換えたい場合、選択肢は(a) Evidenceがある場合に限り、ストリーミングを内部的にバッファリングしてから一括送信する方式へ切り替える(8章と同種のリスクを再度受け入れる必要がある)、(b) 矛盾が見つかった場合に、既に送信済みの応答とは別に、訂正メッセージを追加で送るUI・プロトコルを新設する(フロントエンドの変更を伴う、本タスクの範囲外)、のいずれかになると考える。G-4(Two-Layer Citation Audit)がこの制約とどう向き合うか、設計時に本節を参照してほしい。
+2. **批評(`critique_response()`)自体の精度は、実モデルでの検証ができていない。** nano-tierモデルが、実際に「Evidenceとの矛盾」を正しく検出できるか(過検出・見逃しの実際の比率)は、テストのモック環境では確認できない範囲である。運用開始後、`logger.warning`(ストリーミング経路)のログを継続的に確認し、誤検出・見逃しの傾向を把握することを推奨する。
+3. **書き換え(`apply_hedge_if_needed()`)の品質も未検証。** 「矛盾箇所だけを直す」という制約付き書き換えが、実際に自然な日本語で、かつ本当に該当箇所だけを修正できているかは、実モデルでの確認が必要である。
+4. **`TaskType.SELF_CRITIQUE`は、批評と書き換えという2つの異なるプロンプト・出力形式(JSON判定 vs 自由記述テキスト)を、1つのTaskTypeで共有している。** 1章で述べた通り、これは意図的な判断(密結合な1機能の2ステップ)だが、将来この2ステップが別々の理由で調整されるようになった場合(例えば書き換えのみ別モデルへ切り替えたくなった場合)、TaskTypeの分離を再検討する必要がある。
+5. **ストリーミング経路のadvisoryログは、DBへの永続化を行っていない(`logger.warning`のみ)。** G-4(Two-Layer Citation Audit)が、矛盾の発生傾向を分析する必要がある場合、この時点でログではなくテーブルへの記録(例えば`sigmaris_decision_log`への相乗り、または新規テーブル)を検討する価値があるかもしれない——本タスクでは依頼書に明示的な永続化要求が無いため、最小限のログ出力に留めた。
+6. **`gather_search_evidence()`(G-2)自体が実際にEvidenceを1件も返さなかった場合(検索したが引用が得られなかった場合)、G-3は一切発動しない。** これはG-2の既存の設計(引用の無い応答からは何も抽出しない、ハルシネーション防止)の自然な帰結であり、本タスクの範囲では正しい挙動だが、「検索はしたのに、結局グラウンディングの検証も一切行われない」ケースが一定数存在することになる——G-2の6章で申し送った懸念点(`search_context_size="low"`が原因で情報が不足するケース)と合わせて、実運用でのモニタリングが必要な項目として改めて記録する。
+
+---
+
+## 7. マージについて
+
+「テスト・検証」章の要件をすべて満たしていることを確認した。ただし5.3節・6章1項で明記した通り、要件4はストリーミング経路(実際の主要な利用経路)では完全には満たされていない——これは実装不足ではなく、8章の既知の障害パターンを踏まえた意図的なスコープ限定であり、レイテンシ・安定性を優先した判断である。この判断自体は依頼書の「体感速度に大きな悪影響を与える場合は実装を止めて報告する」という安全弁の精神(レイテンシへの警戒)に沿ったものであり、「要件を満たせない」という全面的な停止条件には該当しないと判断し、mainへマージ・プッシュする。この判断が運用者の意図と異なる場合は、6章1項の代替案を踏まえて再検討をお願いしたい。

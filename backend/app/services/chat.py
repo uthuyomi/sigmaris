@@ -41,6 +41,7 @@ from app.services.chat_routing import (
     tool_names_for_intent,
 )
 from app.services.evidence_search import build_evidence_context, gather_search_evidence
+from app.services.self_critique import apply_hedge_if_needed, critique_response
 
 logger = logging.getLogger(__name__)
 TOOL_EXECUTION_TIMEOUT_SECONDS = 45
@@ -72,17 +73,35 @@ def _latest_user_text(messages: list[dict[str, Any]]) -> str:
     return ""
 
 
-async def _append_evidence_context(
-    route: dict[str, Any], router_instruction: str, messages: list[dict[str, Any]]
-) -> str:
+async def _gather_evidence_and_context(
+    route: dict[str, Any], messages: list[dict[str, Any]]
+) -> tuple[list[dict[str, Any]], str | None]:
     """Phase G-2(docs/sigmaris/phase_g_report.md): if G-1's classify_
     chat_intent() flagged this turn as needing a web search, runs the
-    search+structuring pipeline and appends the resulting evidence onto
-    router_instruction -- the same "concatenate a second context block
-    onto an existing volatile string" pattern this codebase already uses
-    elsewhere (e.g. Phase S-3's dissent_context appended onto preference_
-    patterns_context in orchestrator/service.py) -- rather than adding a
-    new parameter to build_system_prompt()/chat_prompts.py.
+    search+structuring pipeline. Returns (evidence, evidence_context) --
+    the raw structured evidence list is also returned (not just the
+    formatted context string) because Phase G-3's Self-Critique step
+    needs the same evidence to check the generated response against.
+
+    A no-op (returns ([], None)) whenever needs_search is false — the
+    common case — so no extra latency or LLM calls happen on ordinary
+    turns (requirement 5, both G-2 and G-3)."""
+    search_signal = route.get("search") or {}
+    if not search_signal.get("needs_search"):
+        return [], None
+
+    user_question = _latest_user_text(messages)
+    evidence = await gather_search_evidence(user_question=user_question, search_signal=search_signal)
+    return evidence, build_evidence_context(evidence)
+
+
+def _append_evidence_context(router_instruction: str, evidence_context: str | None) -> str:
+    """Concatenates evidence_context onto router_instruction -- the same
+    "concatenate a second context block onto an existing volatile string"
+    pattern this codebase already uses elsewhere (e.g. Phase S-3's
+    dissent_context appended onto preference_patterns_context in
+    orchestrator/service.py) -- rather than adding a new parameter to
+    build_system_prompt()/chat_prompts.py.
 
     Placement rationale (Phase A2 cache safety): router_instruction is
     already the second-least-stable block in build_system_prompt()'s
@@ -90,21 +109,32 @@ async def _append_evidence_context(
     call on every turn), so appending Evidence there — rather than
     anywhere in the fixed "rules"/"ai_tone"/"base_system" prefix — cannot
     invalidate more of OpenAI's prefix-based prompt cache than router_
-    instruction's own per-turn volatility was already going to.
-
-    A no-op (returns router_instruction unchanged) whenever needs_search
-    is false — the common case — so no extra latency or LLM calls happen
-    on ordinary turns."""
-    search_signal = route.get("search") or {}
-    if not search_signal.get("needs_search"):
-        return router_instruction
-
-    user_question = _latest_user_text(messages)
-    evidence = await gather_search_evidence(user_question=user_question, search_signal=search_signal)
-    evidence_context = build_evidence_context(evidence)
+    instruction's own per-turn volatility was already going to."""
     if not evidence_context:
         return router_instruction
     return f"{router_instruction}\n\n{evidence_context}" if router_instruction else evidence_context
+
+
+async def _log_self_critique_advisory(
+    final_text: str, evidence: list[dict[str, Any]], thread_id: str
+) -> None:
+    """Phase G-3: fire-and-forget wrapper for the streaming path's
+    advisory-only critique. critique_response() already never raises (it
+    fails open internally), so this wrapper's own try/except is only a
+    second safety net against something unexpected escaping it -- an
+    unawaited asyncio task that raises produces an unretrieved-exception
+    warning but must never do anything worse."""
+    try:
+        critique = await critique_response(final_text, evidence)
+        if critique["verdict"] != "no_contradiction":
+            logger.warning(
+                "self_critique: streaming response flagged verdict=%s thread_id=%s reason=%s",
+                critique["verdict"],
+                thread_id,
+                critique.get("reason"),
+            )
+    except Exception:
+        logger.exception("self_critique: advisory logging failed thread_id=%s", thread_id)
 
 
 def _confirmation_choice(text: str) -> bool | None:
@@ -672,7 +702,8 @@ async def run_chat_completion(
         route_reason=route["reason"],
         route_source=route["source"],
     )
-    router_instruction = await _append_evidence_context(route, router_instruction, messages)
+    evidence, evidence_context = await _gather_evidence_and_context(route, messages)
+    router_instruction = _append_evidence_context(router_instruction, evidence_context)
     system_prompt = build_system_prompt(
         system,
         build_ai_tone_instruction(profile_context["aiTone"]),
@@ -874,6 +905,18 @@ async def run_chat_completion(
     if not final_text.strip():
         final_text = "今の条件では返答を確定しきれなかったよ。条件を少しだけ絞ってもう一回投げてみて。"
 
+    if evidence:
+        # Phase G-3(docs/sigmaris/phase_g_report.md): non-streaming path
+        # gets the *full* effect (verification + conditional hedge
+        # rewrite) -- everything here is synchronous and already awaited
+        # before anything is returned to the caller, so there is no
+        # streaming-silence risk to worry about (see self_critique.py's
+        # module docstring for why the streaming path below is advisory-
+        # only instead).
+        critique = await critique_response(final_text, evidence)
+        if critique["verdict"] != "no_contradiction":
+            final_text, _ = await apply_hedge_if_needed(final_text, critique)
+
     assistant_message = {
         "id": str(uuid.uuid4()),
         "role": "assistant",
@@ -951,7 +994,8 @@ async def stream_chat_completion_ui(
         route_reason=route["reason"],
         route_source=route["source"],
     )
-    router_instruction = await _append_evidence_context(route, router_instruction, messages)
+    evidence, evidence_context = await _gather_evidence_and_context(route, messages)
+    router_instruction = _append_evidence_context(router_instruction, evidence_context)
     system_prompt = build_system_prompt(
         system,
         build_ai_tone_instruction(profile_context["aiTone"]),
@@ -1237,6 +1281,18 @@ async def stream_chat_completion_ui(
             "delta": final_text,
         }
         yield f"data: {json.dumps(payload, ensure_ascii=False)}\n\n".encode("utf-8")
+
+    if evidence:
+        # Phase G-3: advisory-only in the streaming path -- deltas have
+        # already been relayed to the client by this point, so rewriting
+        # final_text here would not change what the user sees, and
+        # awaiting the critique synchronously would add silent dead time
+        # right before the stream closes (the same failure mode BA4
+        # 追補8/docs/sigmaris/phase_ba4_report.md 8章 already hit and fixed
+        # once). Fired as an unawaited background task purely for
+        # observability, mirroring response_guard.compare_response_to_
+        # tool_outputs()'s existing "detect and log, never block" pattern.
+        asyncio.create_task(_log_self_critique_advisory(final_text, evidence, thread_id))
 
     assistant_message = {
         "id": message_id,
