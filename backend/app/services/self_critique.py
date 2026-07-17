@@ -151,60 +151,62 @@ _REWRITE_SYSTEM = (
 )
 
 
-def _build_rewrite_prompt(response_text: str, critique: dict[str, Any], guidance: str) -> str:
-    conflicting = critique.get("conflicting_claim") or "(特定の主張は指摘されていません)"
+def _build_rewrite_prompt(
+    response_text: str, guidance: str, *, reason: str = "", conflicting_claim: str | None = None
+) -> str:
+    conflicting = conflicting_claim or "(特定の主張は指摘されていません)"
     return (
         f"## 元の応答\n{response_text}\n\n"
-        f"## 矛盾の指摘\n{critique.get('reason') or ''}\n"
+        f"## 指摘内容\n{reason}\n"
         f"該当するEvidence: {conflicting}\n\n"
         f"## 確信度の伝え方の指示\n{guidance}\n\n"
-        "上記の指示に従い、矛盾が指摘された箇所だけをヘッジ表現に書き換えた、"
+        "上記の指示に従い、指摘された箇所だけをヘッジ表現に書き換えた、"
         "応答全文を出力してください。"
     )
 
 
-async def apply_hedge_if_needed(
-    response_text: str, critique: dict[str, Any]
+async def rewrite_response_with_guidance(
+    response_text: str, guidance: str, *, reason: str = "", conflicting_claim: str | None = None
 ) -> tuple[str, bool]:
-    """critique_response()の結果に応じて、必要ならB11のヘッジ文言指示を
-    使った書き換えを行う。戻り値は(最終的なテキスト, 書き換えが行われたか)。
+    """指定されたガイダンス文言(B11のconfidence_guidance_note()、または
+    Phase G-4の引用不一致ノート)に従って、応答の該当箇所だけを最小限
+    書き換える、共通の書き換え実行部。戻り値は(最終的なテキスト,
+    書き換えが行われたか)。
 
-    "no_contradiction"の場合は、LLMを呼ばず即座に元のテキストをそのまま
-    返す(要件1: Evidenceが無い/矛盾が無いターンには一切のオーバーヘッド
-    を加えない、という原則をここでも徹底する)。
+    apply_hedge_if_needed()(G-3)・citation_audit.pyの引用監査(G-4)の
+    どちらからも呼ばれる共有部品として切り出した——判定根拠(verdict
+    からguidanceを導出する部分)と、実際の書き換えLLM呼び出しを分離する
+    ことで、G-4が独自のguidance文言(引用不一致ノート)を使う場合も、
+    同じ書き換えロジック・同じ安全装置(短すぎる出力の破棄等)をそのまま
+    再利用できるようにした。
 
     判断根拠(全文再生成ではなく、既存応答の"最小限の書き換え"にした理由):
     依頼書「全文の再生成は最終手段とすること。まずB11のヘッジ表現への
-    切り替えを優先すること」に対応。generate_curiosity_queries()的な
-    ゼロからの再生成ではなく、既存の応答テキストを入力として与え、
-    「矛盾箇所だけ直す」という制約付きの書き換えにすることで、(a) 出力
-    トークン数を元の応答とほぼ同程度に抑えられる(ゼロから考え直すより
-    速い)、(b) 応答の他の部分(Evidenceと無関係な話題)を保持できる、
+    切り替えを優先すること」に対応。ゼロからの再生成ではなく、既存の
+    応答テキストを入力として与え、「該当箇所だけ直す」という制約付きの
+    書き換えにすることで、(a) 出力トークン数を元の応答とほぼ同程度に
+    抑えられる、(b) 応答の他の部分(Evidenceと無関係な話題)を保持できる、
     という2点を狙った設計である。
     """
-    verdict = critique.get("verdict")
-    if verdict == "no_contradiction" or not verdict:
-        return response_text, False
-
-    tier = _confidence_tier_for_verdict(verdict)
-    guidance = confidence_guidance_note(tier)
-    if not guidance:
-        return response_text, False
-
     try:
         router = get_llm_router()
         rewritten = await router.chat(
             TaskType.SELF_CRITIQUE,
             [
                 {"role": "system", "content": _REWRITE_SYSTEM},
-                {"role": "user", "content": _build_rewrite_prompt(response_text, critique, guidance)},
+                {
+                    "role": "user",
+                    "content": _build_rewrite_prompt(
+                        response_text, guidance, reason=reason, conflicting_claim=conflicting_claim
+                    ),
+                },
             ],
             temperature=0.2,
             max_tokens=1000,
         )
         rewritten = (rewritten or "").strip()
     except Exception:
-        logger.exception("self_critique: apply_hedge_if_needed rewrite failed")
+        logger.exception("self_critique: rewrite_response_with_guidance failed")
         return response_text, False
 
     # 書き換え後のテキストが極端に短い(壊れた・切り詰められた出力の疑い)
@@ -217,3 +219,38 @@ async def apply_hedge_if_needed(
         return response_text, False
 
     return rewritten, True
+
+
+async def apply_hedge_if_needed(
+    response_text: str, critique: dict[str, Any]
+) -> tuple[str, bool]:
+    """critique_response()の結果に応じて、必要ならB11のヘッジ文言指示を
+    使った書き換えを行う。戻り値は(最終的なテキスト, 書き換えが行われたか)。
+
+    "no_contradiction"の場合は、LLMを呼ばず即座に元のテキストをそのまま
+    返す(要件1: Evidenceが無い/矛盾が無いターンには一切のオーバーヘッド
+    を加えない、という原則をここでも徹底する)。
+
+    Phase G-4追記: chat.pyの本番経路では、この関数を直接は呼ばなくなった
+    ——citation_audit.finalize_response_with_citation_audit()が、G-3の
+    この判定とG-4のclaim単位監査を統合したうえで、rewrite_response_
+    with_guidance()を最大1回だけ呼ぶ設計に置き換わっている(書き換え
+    呼び出しの重複を避けるため)。本関数自体は、G-3単体の振る舞いを直接
+    検証できる、テスト済みの独立した部品として残してある(G-4への依存が
+    無い、より単純な入口が今後も必要になった場合のために)。
+    """
+    verdict = critique.get("verdict")
+    if verdict == "no_contradiction" or not verdict:
+        return response_text, False
+
+    tier = _confidence_tier_for_verdict(verdict)
+    guidance = confidence_guidance_note(tier)
+    if not guidance:
+        return response_text, False
+
+    return await rewrite_response_with_guidance(
+        response_text,
+        guidance,
+        reason=str(critique.get("reason") or ""),
+        conflicting_claim=critique.get("conflicting_claim"),
+    )

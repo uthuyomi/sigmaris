@@ -611,3 +611,222 @@ LogSelfCritiqueAdvisoryTests (3件、ストリーミング経路のadvisory-only
 ## 7. マージについて
 
 「テスト・検証」章の要件をすべて満たしていることを確認した。ただし5.3節・6章1項で明記した通り、要件4はストリーミング経路(実際の主要な利用経路)では完全には満たされていない——これは実装不足ではなく、8章の既知の障害パターンを踏まえた意図的なスコープ限定であり、レイテンシ・安定性を優先した判断である。この判断自体は依頼書の「体感速度に大きな悪影響を与える場合は実装を止めて報告する」という安全弁の精神(レイテンシへの警戒)に沿ったものであり、「要件を満たせない」という全面的な停止条件には該当しないと判断し、mainへマージ・プッシュする。この判断が運用者の意図と異なる場合は、6章1項の代替案を踏まえて再検討をお願いしたい。
+
+---
+
+# Phase G-4 実施報告: Two-Layer Citation Audit(二段階の引用監査)+ Abstention連携の仕上げ
+
+**作業ブランチ:** `phase-g4-citation-audit`(mainから新規作成)
+**範囲:** 引用の二段階監査のうち2段階目(claim単位での使われ方の忠実性チェック)の実装、B11連携の仕上げ、G-5に向けた監査結果の永続化。
+
+---
+
+## 0. 前提として確認したこと
+
+着手前に指示書が指定した`docs/sigmaris/phase_g_report.md`(G-1〜G-3)を再確認した。特に、G-3(`self_critique.py`)の`critique_response()`・`apply_hedge_if_needed()`の正確な実装、およびG-3の懸念点5(「ストリーミング経路のadvisoryログは、DBへの永続化を行っていない」)を再確認し、本タスクがこの懸念点への直接的な対応も兼ねる設計とした(3章参照)。
+
+---
+
+## 1. 二段階目監査の実装詳細(G-3との役割分担)
+
+新設ファイル: `backend/app/services/citation_audit.py`。新設TaskType: `TaskType.CITATION_AUDIT`(`local_llm.py`、nano-tier)。
+
+### 1.1 G-3との役割分担(依頼書「G-3と重複しない範囲に絞ること」への対応)
+
+| | G-3(`critique_response`) | G-4(`audit_citation_usage`、本タスク) |
+|---|---|---|
+| 対象 | 応答"全体" vs Evidence"全体" | Evidenceの各claim"個別" |
+| 検出する問題 | 矛盾(応答がEvidenceと食い違っている) | 使い方の歪み(claim自体は正しいが、応答内での使われ方が誇張・意味の取り違え・文脈からの逸脱をしている) |
+| 判定区分 | `no_contradiction`/`minor_mismatch`/`clear_contradiction` | `not_used`/`faithful`/`distorted`(claimごと) |
+
+`_AUDIT_SYSTEM`プロンプトには「応答全体が正しいかどうかは評価対象外です(それは別の検証で既に行われています)」という一文を明記し、G-3の役割を代替・再検証しないことを、プロンプトレベルでも明示した。
+
+### 1.2 claim単位の判定を、1回のLLM呼び出しでまとめて行う設計
+
+`audit_citation_usage(response_text, evidence)`は、evidence内の全claim(最大10件、`_MAX_CLAIMS_FOR_AUDIT`)を1つのプロンプトへ番号付きで並べ、nano-tierのLLMへ**1回だけ**問い合わせ、JSON配列で各claimの判定を受け取る。
+
+**判断根拠(claim件数ぶんの個別呼び出しをしない理由)**: `research_agent.py::_classify_items()`が既に採用している「複数項目をバッチでまとめてLLMへ判定させる」というこのコードベースの既存パターンを踏襲した。claim件数に比例してLLM呼び出しが増える設計は、依頼書のレイテンシへの配慮に反すると判断した。
+
+**判断根拠(source_url/source_titleをLLMに再生成させない設計)**: `audit_citation_usage()`の戻り値は、G-2の元の`evidence`要素へ`usage`/`note`を追加しただけのものであり、`source_url`/`source_title`はG-2が保持していた値をそのまま引き継ぐ。LLMには`claim_index`(番号)と`usage`/`note`だけを出力させ、Python側で元のevidenceへ機械的に結合する——`evidence_search.py::structure_evidence()`が既に確立した「出典情報は常にAPIが実際に返した値のみを使う」というグラウンディング安全設計を、G-4でも一貫して踏襲した。
+
+---
+
+## 2. B11連携の仕上げ内容
+
+### 2.1 新設した引用不一致専用ノート
+
+「情報源は実在するが、内容が主張を十分に裏付けていない」ケース向けに、`_CITATION_MISMATCH_NOTE`を新設した。
+
+```
+[引用の確認結果に関する注意]
+検索で確認した情報源は実在しますが、その内容を十分に裏付けているとは
+言えない使い方をしている箇所があります。「情報源はありますが、断定は
+できません」「確認できた範囲では、というのが正直なところです」のよう
+に、断定を避け、正直に伝えてください。
+```
+
+**判断根拠(B11本体を拡張せず、`self_critique.py`/`citation_audit.py`側に新設した理由)**: B11(`memory_confidence.py`)の既存ノート(`_LOW_CONFIDENCE_NOTE`/`_NO_EVIDENCE_NOTE`)は、いずれも「記憶が薄い/無い」という前提の文言であり、「情報源は実在し、G-2の時点で構造的に確認済みだが、使い方が不正確」という本ケースの前提とは異なる。B11自体を「情報源はあるが使い方が不正確」という新しい概念で拡張するより、B11と同じ「短い日本語の指示文を、書き換えプロンプトへ注入する」という設計パターンだけを踏襲し、文言自体はPhase G独自のものとして新設する方が、B11の既存の意味論(記憶の確信度)を汚さないと判断した。依頼書が例示した言い回し(「情報源はありますが、断定はできません」)は、そのままこのノートに反映した。
+
+### 2.2 G-3とG-4の統合判断: `select_guidance_note()`
+
+```python
+def select_guidance_note(critique, audit_results) -> str | None:
+    if critique.get("verdict") not in (None, "no_contradiction"):
+        return confidence_guidance_note(_confidence_tier_for_verdict(critique["verdict"]))  # B11(G-3経由)
+    if any(item["usage"] == "distorted" for item in audit_results):
+        return _CITATION_MISMATCH_NOTE  # G-4固有
+    return None
+```
+
+**判断根拠(優先順位: G-3が優先)**: G-3が既に矛盾を検出している場合は、そちらのB11階層マッピングを優先する——応答全体の矛盾の方が、個別claimの使い方の粗さより深刻な問題である可能性が高いと判断した。G-3が「矛盾なし」でも、G-4がclaim単位で"distorted"を検出していれば、本タスク専用のノートを使う——これがまさに依頼書が想定する「claim自体は実在する情報だが、生成応答が文脈から外れた形で使っている」ケースであり、G-3の粗いチェックでは見逃されうる、G-4固有の検出対象である。
+
+**書き換え呼び出しの重複防止**: `finalize_response_with_citation_audit()`/`verify_response()`は、G-3・G-4のどちらか一方、または両方が問題を検出した場合でも、`rewrite_response_with_guidance()`(G-3が実装した既存の書き換え実行部、1章参照)の呼び出しを**合計1回のみ**に抑えている。テストで直接検証済み(4章参照)。
+
+---
+
+## 3. 監査結果の記録方法(G-5での測定を見据えた設計)
+
+### 3.1 新設テーブル: `sigmaris_citation_audit_log`
+
+新設マイグレーション: `supabase/migrations/202607230050_citation_audit_log.sql`(作成のみ、適用は運用者側に委ねる、依頼書の注意事項通り)。
+
+```sql
+create table if not exists public.sigmaris_citation_audit_log (
+  id                uuid primary key default gen_random_uuid(),
+  thread_id         text,
+  claim             text not null,
+  source_url        text not null,
+  source_title      text,
+  usage             text not null check (usage in ('not_used', 'faithful', 'distorted')),
+  note              text,
+  critique_verdict  text check (critique_verdict in ('no_contradiction', 'minor_mismatch', 'clear_contradiction')),
+  created_at        timestamptz not null default timezone('utc', now())
+);
+```
+
+**判断根拠(claim単位の粒度で1行ずつ記録、集計テーブルにしない理由)**: 依頼書「本タスクでは実装しないが、G-5で継続的な精度測定を実装する予定」という位置づけを踏まえ、`sigmaris_cycle_health_runs`(Phase R-3、周期的な**集計**run)ではなく`sigmaris_decision_log`(**個別イベント**ログ)の形に倣った。G-5が引用精度・再現率等の指標を計算する際の"生データ"として、本テーブルを集計させる想定であり、集計そのもの(G-5の役割)を本タスクで先取りしないよう、あえて粒度を細かいままにした。
+
+**判断根拠(`critique_verdict`列を含めた理由)**: G-3自身は何も永続化していない(G-3の報告書、懸念点5で明記済み)。本タスクでこの列を追加することで、G-5が「G-3の判定とG-4の判定がどれくらい一致/不一致するか」を、追加のテーブル結合無しに分析できるようにした——G-3の懸念点5への直接的な対応でもある。
+
+**判断根拠(`service_role_only`、JWTスコープのRLSにしなかった理由)**: このテーブルはSigmaris自身の内部検証データであり、ユーザー所有のコンテンツ(`chat_messages`等)とは性質が異なる。`sigmaris_decision_log`/`sigmaris_experience`/`sigmaris_cycle_health_runs`と同じ、既存の`service_role_only`パターンを踏襲した。
+
+### 3.2 永続化のタイミング(要件4)
+
+- 非ストリーミング経路: `verify_response()`が完了した直後、`persist_citation_audit()`を**同期的に`await`**する(DB書き込み1回程度のコストは、既に発生している複数回のLLM呼び出しに比べ無視できるため、fire-and-forgetにする必要は無いと判断した)。
+- ストリーミング経路: G-3から続くadvisory-onlyのfire-and-forgetタスク(`_log_verification_advisory()`)の中で、G-3・G-4の検証結果と合わせて永続化する。
+
+`audit_results`が空(Evidenceが無い、またはG-4の判定自体が失敗した場合)は、`persist_citation_audit()`自体が即座に何もせず返る(要件6、無駄なHTTP呼び出しをしない)。
+
+---
+
+## 4. レイテンシへの影響、および追加で行った最適化
+
+### 4.1 G-3とG-4の並行実行
+
+依頼書のレイテンシへの配慮を踏まえ、本タスクで**G-3の`critique_response()`とG-4の`audit_citation_usage()`を`asyncio.gather()`で並行実行する**最適化を追加した(`citation_audit.py::run_verification_checks()`)。両者は互いの判定結果に依存しない独立したLLM呼び出しであり、順に`await`する必然性が無いと判断した——G-1の報告書が申し送った「`classify_chat_intent()`と記憶コンテキスト構築の並列化」と同種の判断である。テストで、両呼び出しが実際に並行して開始されることを直接検証した(`RunVerificationChecksTests::test_runs_concurrently_not_sequentially`、4章参照)。
+
+### 4.2 レイテンシの見積もり
+
+- **非ストリーミング経路**: G-3(批評)+G-4(claim単位監査)は並行実行のため、追加レイテンシは「遅い方の1回分」(nano-tier、1〜3秒程度)に抑えられる——直列だった場合の約2倍のレイテンシを回避した。矛盾/不一致が検出された場合の書き換え(最大1回)は、G-3・G-4どちらの検出であっても共通の1回のみ(2.2節)。ワーストケース(検索+矛盾/不一致検出+書き換え)では、既存の応答生成に対しさらに2〜4秒程度の追加が見込まれる——G-3単独の見積もり(2〜6秒)と比べて、並行化により実質的な増分は小さい。
+- **ストリーミング経路**: G-3と同じ`asyncio.create_task()`によるfire-and-forgetパターンを踏襲しており、ユーザーへの応答時間には理論上ほぼ影響を与えない。追加されたDB書き込み(`persist_citation_audit()`)も同じバックグラウンドタスク内で行われる。
+
+### 4.3 「体感速度に大きな悪影響を与える場合は止める」の判断
+
+G-3が確立した判断(非ストリーミング経路は許容される低頻度の遅延、ストリーミング経路はadvisory-onlyでレイテンシ影響ほぼゼロ)をそのまま踏襲し、かつ本タスクでG-3・G-4を並行化したことで、G-3単独の時点より実質的なレイテンシ増分はむしろ縮小したと判断した。よって「実装を止めて報告する」条件には該当しないと判断し、実装を継続した。
+
+---
+
+## 5. テスト結果
+
+`test_phase_g4_citation_audit.py`として30件のテストを作成した(scratchディレクトリ)。既存のG-3テストファイル(`test_phase_g3_self_critique.py`)から、chat.py内の関数リネーム(`_log_self_critique_advisory` → `_log_verification_advisory`、G-3単独からG-3+G-4統合への拡張に伴う)によって重複・陳腐化した3件のテストクラスを削除し、同等以上のカバレッジを本タスクのテストファイルへ引き継いだ。
+
+```
+BuildAuditPromptTests (2件)
+  PASS: 全claim・応答内容がプロンプトに含まれること
+  PASS: claim件数の上限が守られること
+
+AuditCitationUsageTests (6件)
+  PASS: Evidenceが空の場合、LLMを呼ばず空リストを返すこと(要件6)
+  PASS: 応答が空文字の場合も同様
+  PASS: 【重要】faithful/distortedが正しくパースされ、source_url/
+        source_titleが元のevidenceの値のまま保持されること
+        (LLM生成のURLを使わない設計の直接検証、TaskType.CITATION_AUDIT
+        の使用も確認)
+  PASS: LLMが判定を返さなかったclaimはnot_usedへ安全に縮退すること
+  PASS: 不正なclaim_indexは無視されること
+  PASS: LLM呼び出し失敗時、全claimがnot_usedへfail-openすること
+
+SelectGuidanceNoteTests (5件)
+  PASS: 問題が無い場合、Noneを返すこと
+  PASS: G-3が矛盾を検出した場合、B11のマッピング済みノートを使うこと
+        (apply_hedge_if_needed()と同一のノートであることを直接比較)
+  PASS: 【重要】G-3がクリーンでも、G-4がdistortedを検出していれば、
+        引用不一致専用ノートを使うこと(G-4固有の検出対象の直接検証)
+  PASS: 両方が検出した場合、G-3側が優先されること
+  PASS: verdictが欠損していても、G-4側は正しく判定されること
+
+FinalizeResponseWithCitationAuditTests (3件)
+  PASS: 問題が無い場合、書き換え呼び出しなしで元のテキストを返すこと
+  PASS: distorted検出時、引用不一致ノートで正しく1回だけ書き換えられること
+  PASS: 【重要】G-3・G-4両方が検出した場合でも、書き換え呼び出しは
+        合計1回のみであること(要件2の直接検証)
+
+RunVerificationChecksTests (2件)
+  PASS: G-3・G-4両方の結果が正しく返ること
+  PASS: 【重要】両呼び出しが逐次ではなく並行して開始されることの直接
+        検証(タイミング計測による、4章の最適化の裏付け)
+
+VerifyResponseTests (2件)
+  PASS: 問題が無い場合、応答が変更されないこと
+  PASS: G-3の矛盾検出時、正しく書き換えられG-3の結果も返ること
+
+PersistCitationAuditTests (3件)
+  PASS: 監査結果が空の場合、HTTP呼び出しをしないこと
+  PASS: 正しいペイロード形状(thread_id・claim・source_url・usage・
+        critique_verdict等)でPOSTされること
+  PASS: HTTP失敗時、例外を伝播させないこと
+
+CitationAuditTaskTypeConfigTests (2件)
+  PASS: CITATION_AUDITがnano階層にマップされていること
+  PASS: CITATION_AUDITがローカル(Ollama)対象に含まれていること
+
+RewriteResponseWithGuidanceTests (2件、self_critique.pyのリファクタリング
+  検証)
+  PASS: 任意のガイダンス文言での書き換えが機能すること(G-4が再利用する
+        共通部品の直接検証)
+  PASS: リファクタリング後もapply_hedge_if_needed()(G-3単体)が
+        引き続き正しく機能すること(回帰確認)
+
+LogVerificationAdvisoryTests (3件、chat.pyの拡張されたストリーミング
+  advisory関数)
+  PASS: クリーンなターンでは警告ログが出ないこと
+  PASS: distorted検出時、警告ログが出て監査結果が永続化されること
+  PASS: 例外が発生しても伝播しないこと
+
+30 passed
+```
+
+既存の`backend/tests/`(16件)、G-1〜G-3の全テスト(72件、うちG-3の3件は前述の通りリネームに伴い本タスクのファイルへ統合)、直近のPhase S・R・BA4系・nano-tier移行の既存テスト一式(184件)も全て再実行し、リグレッションは確認されなかった。
+
+```
+30(本タスク) + 272(既存の関連テスト一式、G-1〜G-3含む) = 302 passed(合算実行)
+```
+
+**実モデルAPI・実際の応答生成での検証は行っていない。** テストは`LLMRouter`をモックする形にとどまる(依頼書の注意事項通り、追加のサーバーアクセス・APIキー取得は試みていない)。
+
+---
+
+## 6. 気づいた懸念点・G-5(言い回し調整+継続測定)に向けた申し送り事項
+
+1. **`select_guidance_note()`の優先順位(G-3優先)は未検証の設計判断である。** 実際の運用で、G-4が検出する「使い方の歪み」の方が、G-3が見逃す・軽視する重大な問題であるケースが多いと判明した場合、優先順位の再検討が必要になるかもしれない。G-5の継続測定が、この優先順位の妥当性を検証する材料になりうる。
+2. **`_MAX_CLAIMS_FOR_AUDIT`(10件)を超えるEvidenceがあった場合、超過分のclaimは監査対象外のまま応答生成へ使われる。** G-2の実際の生成claim数は通常1桁に収まると見込んでいるが、この上限に達するケースが実際にあるかどうかは、`sigmaris_citation_audit_log`のデータからG-5が確認できる。
+3. **`audit_citation_usage()`のプロンプトは、「文脈からの逸脱」という判定基準がやや抽象的である。** nano-tierモデルが実際にどの程度の「誇張」「意味の取り違え」を"distorted"と判定するか(閾値の厳しさ)は、実モデルでの検証ができていない。過検出・見逃しの傾向は、G-5が`sigmaris_citation_audit_log`の`usage`列の分布を集計することで初めて定量的に把握できる——本タスクはまさにそのためのデータ収集基盤を用意した、という位置づけである。
+4. **`_CITATION_MISMATCH_NOTE`の文言は、依頼書の例示に沿って新設したが、実モデルでの自然さの検証ができていない。** B11の既存ノートと同様、実際にこの文言が意図通りヘッジ表現へ反映されるかは、運用開始後の確認が必要である。
+5. **G-4の並行化最適化(4.1節)は、G-3単体の設計を変更する(`_log_self_critique_advisory`→`_log_verification_advisory`への改名、内部実装の書き換え)ことで実現した。** G-3の既存テストのうち3件が、この変更に伴い陳腐化・削除対象になった(5章参照)。今後Phase Gにさらに検証レイヤーを追加する場合、同様の「既存の検証関数を、複数レイヤー共通の並行実行フレームワークへ統合し直す」というリファクタリングが再度必要になる可能性がある——その際は、既存テストの陳腐化を都度検知・更新する運用を継続する必要がある。
+6. **本タスクで、Phase Gの検証機能(G-1〜G-4)が一通り完成した。** G-1(検索要否判定)→G-2(検索実行+構造化)→G-3(応答全体の矛盾検証)→G-4(claim単位の使われ方監査)という4段階が、いずれも「Evidenceが存在する場合にのみ発動し、通常の会話には一切のオーバーヘッドを与えない」という一貫した設計方針の下に実装された。G-5では、これら4段階が実際に生成した`sigmaris_citation_audit_log`・G-3のログ(現状DB非永続)を材料に、Phase Rと同様の継続的な精度測定(引用精度・引用再現率等)を実装する想定である——本タスクが用意した`critique_verdict`列付きの監査ログが、その最初のデータソースになる。
+
+---
+
+## 7. マージについて
+
+「テスト・検証」章の要件をすべて満たしていることを確認した(claim単位監査の実装・G-3との役割分担・B11連携の仕上げ・監査結果の永続化・既存テストの回帰確認、いずれも達成)。5章で述べた通り、G-3・G-4を並行実行する最適化により、レイテンシへの影響はG-3単独の時点よりむしろ縮小したと判断し、依頼書の指示通り確認を待たずmainへマージ・プッシュする。

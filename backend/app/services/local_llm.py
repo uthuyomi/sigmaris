@@ -70,6 +70,20 @@ class TaskType(str, enum.Enum):
     # ever fire together — see self_critique.py's module docstring for the
     # full rationale.
     SELF_CRITIQUE = "self_critique"
+    # Phase G-4(docs/sigmaris/phase_g_report.md): the second, finer-grained
+    # audit layer -- for each of G-2's Evidence claims, whether the
+    # response's *use* of that claim (direct quote/paraphrase/indirect
+    # reflection/not used) faithfully represents what the claim actually
+    # says, rather than exaggerating or misconstruing it. A distinct
+    # TaskType from SELF_CRITIQUE (not a shared one, unlike SELF_CRITIQUE's
+    # own critique+rewrite pairing): this check is independent of and runs
+    # alongside G-3's whole-response contradiction check rather than being
+    # a tightly-coupled second step of the same call, so it gets its own
+    # type per the "one TaskType per distinct classification concern"
+    # precedent (CHAT_INTENT_CLASSIFICATION/EVIDENCE_STRUCTURING) rather
+    # than SELF_CRITIQUE's "tightly-coupled steps share one type" precedent.
+    # Still nano-tier -- no new model hierarchy, per the task's constraint.
+    CITATION_AUDIT = "citation_audit"
 
 
 _LOCAL_TASK_TYPES = {
@@ -87,6 +101,7 @@ _LOCAL_TASK_TYPES = {
     TaskType.CHAT_INTENT_CLASSIFICATION,
     TaskType.EVIDENCE_STRUCTURING,
     TaskType.SELF_CRITIQUE,
+    TaskType.CITATION_AUDIT,
 }
 
 
@@ -192,6 +207,7 @@ def _openai_model_for_task(task: TaskType) -> str:
         TaskType.CHAT_INTENT_CLASSIFICATION,
         TaskType.EVIDENCE_STRUCTURING,
         TaskType.SELF_CRITIQUE,
+        TaskType.CITATION_AUDIT,
     }:
         return settings.openai_nano_model
     return settings.openai_model

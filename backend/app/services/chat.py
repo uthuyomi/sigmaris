@@ -40,8 +40,8 @@ from app.services.chat_routing import (
     classify_chat_intent,
     tool_names_for_intent,
 )
+from app.services.citation_audit import persist_citation_audit, run_verification_checks, verify_response
 from app.services.evidence_search import build_evidence_context, gather_search_evidence
-from app.services.self_critique import apply_hedge_if_needed, critique_response
 
 logger = logging.getLogger(__name__)
 TOOL_EXECUTION_TIMEOUT_SECONDS = 45
@@ -115,17 +115,27 @@ def _append_evidence_context(router_instruction: str, evidence_context: str | No
     return f"{router_instruction}\n\n{evidence_context}" if router_instruction else evidence_context
 
 
-async def _log_self_critique_advisory(
+async def _log_verification_advisory(
     final_text: str, evidence: list[dict[str, Any]], thread_id: str
 ) -> None:
-    """Phase G-3: fire-and-forget wrapper for the streaming path's
-    advisory-only critique. critique_response() already never raises (it
-    fails open internally), so this wrapper's own try/except is only a
-    second safety net against something unexpected escaping it -- an
-    unawaited asyncio task that raises produces an unretrieved-exception
-    warning but must never do anything worse."""
+    """Phase G-3/G-4: fire-and-forget wrapper for the streaming path's
+    advisory-only verification. Runs both G-3's whole-response critique
+    and G-4's claim-level citation-usage audit, logs anything flagged, and
+    persists the audit rows for G-5's future aggregation (docs/sigmaris/
+    phase_g_report.md) -- but never rewrites the already-streamed
+    response text (see the module-level rationale above the streaming
+    call site: BA4 8章's silent-buffering regression is the reason this
+    stays advisory-only here, same as G-3).
+
+    run_verification_checks() runs G-3 and G-4 concurrently and never
+    rewrites, so no latency is wasted computing a rewrite this path would
+    never use. critique_response()/audit_citation_usage() already never
+    raise (they fail open internally), so this wrapper's own try/except is
+    only a second safety net against something unexpected escaping it --
+    an unawaited asyncio task that raises produces an unretrieved-
+    exception warning but must never do anything worse."""
     try:
-        critique = await critique_response(final_text, evidence)
+        critique, audit_results = await run_verification_checks(final_text, evidence)
         if critique["verdict"] != "no_contradiction":
             logger.warning(
                 "self_critique: streaming response flagged verdict=%s thread_id=%s reason=%s",
@@ -133,6 +143,14 @@ async def _log_self_critique_advisory(
                 thread_id,
                 critique.get("reason"),
             )
+        if any(item.get("usage") == "distorted" for item in audit_results):
+            logger.warning(
+                "citation_audit: streaming response flagged distorted claim usage thread_id=%s",
+                thread_id,
+            )
+        await persist_citation_audit(
+            thread_id=thread_id, audit_results=audit_results, critique_verdict=critique.get("verdict")
+        )
     except Exception:
         logger.exception("self_critique: advisory logging failed thread_id=%s", thread_id)
 
@@ -906,16 +924,20 @@ async def run_chat_completion(
         final_text = "今の条件では返答を確定しきれなかったよ。条件を少しだけ絞ってもう一回投げてみて。"
 
     if evidence:
-        # Phase G-3(docs/sigmaris/phase_g_report.md): non-streaming path
-        # gets the *full* effect (verification + conditional hedge
+        # Phase G-3/G-4(docs/sigmaris/phase_g_report.md): non-streaming
+        # path gets the *full* effect (verification + conditional hedge
         # rewrite) -- everything here is synchronous and already awaited
         # before anything is returned to the caller, so there is no
         # streaming-silence risk to worry about (see self_critique.py's
         # module docstring for why the streaming path below is advisory-
-        # only instead).
-        critique = await critique_response(final_text, evidence)
-        if critique["verdict"] != "no_contradiction":
-            final_text, _ = await apply_hedge_if_needed(final_text, critique)
+        # only instead). verify_response() runs G-3's whole-response
+        # verdict and G-4's claim-level usage audit concurrently, then
+        # performs at most one rewrite call regardless of which layer
+        # (or both) flagged something.
+        final_text, critique, audit_results, _ = await verify_response(final_text, evidence)
+        await persist_citation_audit(
+            thread_id=thread_id, audit_results=audit_results, critique_verdict=critique.get("verdict")
+        )
 
     assistant_message = {
         "id": str(uuid.uuid4()),
@@ -1283,16 +1305,16 @@ async def stream_chat_completion_ui(
         yield f"data: {json.dumps(payload, ensure_ascii=False)}\n\n".encode("utf-8")
 
     if evidence:
-        # Phase G-3: advisory-only in the streaming path -- deltas have
+        # Phase G-3/G-4: advisory-only in the streaming path -- deltas have
         # already been relayed to the client by this point, so rewriting
         # final_text here would not change what the user sees, and
-        # awaiting the critique synchronously would add silent dead time
-        # right before the stream closes (the same failure mode BA4
+        # awaiting the critique/audit synchronously would add silent dead
+        # time right before the stream closes (the same failure mode BA4
         # 追補8/docs/sigmaris/phase_ba4_report.md 8章 already hit and fixed
         # once). Fired as an unawaited background task purely for
         # observability, mirroring response_guard.compare_response_to_
         # tool_outputs()'s existing "detect and log, never block" pattern.
-        asyncio.create_task(_log_self_critique_advisory(final_text, evidence, thread_id))
+        asyncio.create_task(_log_verification_advisory(final_text, evidence, thread_id))
 
     assistant_message = {
         "id": message_id,
