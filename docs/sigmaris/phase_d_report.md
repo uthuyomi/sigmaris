@@ -475,3 +475,246 @@ details: {"metric": "rc1_eligible_completion_rate", "current": 0.5, "baseline": 
 ## 15. マージについて
 
 「テスト・検証」章の要件をすべて満たしていることを確認した(削除後の既存テスト回帰確認・self_improvement.pyへの参照が完全に消えていることの確認・D-2の生成/フィルタ/検証/Constitution連携それぞれの動作確認、いずれも達成)。既存機能(D-1・Phase R・Phase G・Phase S・B群全体)への悪影響も、削除直後とD-2実装後の両時点での全テスト再実行によって確認した。依頼書の指示通り、確認を待たずmainへマージ・プッシュする。
+
+---
+
+# Phase D-3 実施報告: 優先順位付け・検証可能性の評価(Phase Dの仕上げ)
+
+**作業ブランチ:** `phase-d3-prioritization-verifiability`(mainから新規作成)
+**範囲:** D-2が生成した仮説(`sigmaris_hypotheses`)の優先順位付け、検証可能性の評価、`requires_special_review`仮説の別枠管理、Phase Eへの引き渡し形式の設計。**実際のPhase Eへの接続・コード変更・実行は一切行っていない。**
+
+---
+
+## 16. 前提として確認したこと
+
+`docs/sigmaris/phase_d_report.md`のD-1・D-2セクションを再確認し、以下を把握した。
+
+- `sigmaris_hypotheses`の各行が持つフィールド(`evidence_priority_score`・`expected_metric_improvements`・`requires_special_review`・`safety_review_reason`等)
+- D-2の`finalize_hypothesis()`が既に「`requires_special_review`が立った仮説を通常の仮説より後方に並べる」という単純な並べ替えを行っていること(D-3はこれを、より明確な「別枠(2トラック)」構造へ発展させる)
+- D-1の`aggregate_evidence()`・D-2の`prioritize/finalize`が一貫して採用してきた「シンプルな加算・単純な二段階ソート」という設計哲学
+
+また、Phase R(`cycle_health_runs_store.py`)・Phase G(`grounding_health_runs_store.py`)・C-mini/C-full(`eval_metrics.py`)が実際に使っている指標名を確認し、D-3の「検証可能性」評価が参照する語彙として、そのまま再利用できることを確認した(18.2節)。
+
+---
+
+## 17. 優先順位付けロジックの詳細
+
+新設: `backend/app/services/hypothesis_prioritization.py`(純粋関数)・`hypothesis_prioritization_runner.py`(I/O)・`hypothesis_prioritization_store.py`(永続化)。既存の3層分離パターンを踏襲した。**新規LLM呼び出しは一切行っていない**——D-3は、D-2が既に生成・保存済みのデータを評価するだけの層である(判断根拠は18.1節)。
+
+### 17.1 優先度スコアの算出式(依頼書1章「D-1由来の優先順位付けと、D-2で追加された仮説の質を、統合的に評価する」への対応)
+
+```
+priority_score = evidence_priority_score(D-1由来)
+                + min(検証可能と判定された指標の件数, 3)  (D-2由来の「仮説の質」の代理指標)
+```
+
+**D-2由来の「仮説の質」を、何で代理するかの判断根拠**: D-2は`expected_metric_improvements`(この仮説の実行で改善が期待できる指標名のリスト)を既に生成・保存している。この値が、既知の測定可能な指標(後述18.2節の語彙)を具体的に何件挙げられているかを、「仮説がどれだけ具体的で、根拠に基づいた予測をしているか」の代理指標として採用した。**新しいLLM評価やスコアリングモデルを追加せず、D-2が既に生成したデータをそのまま数え上げるだけ**という、依頼書の制約に最も忠実な実装だと判断した。
+
+**単純加算にした判断根拠**: 重み付け係数を新たにチューニングする複雑な式ではなく、両者をそのまま足し合わせる方式にした。D-1の`evidence_priority_score`自体が既に「深刻度の重み+複数回記録ボーナス」(bug_inventory由来)や「同時に悪化した指標の数」(metric_degradation由来)のようなシンプルな加算で構成されており、その設計哲学をそのまま延長した。
+
+**上限(cap)を設けた判断根拠**: 指標を並べ立てるほど無制限にスコアが伸びる設計を避けるため、D-1の`build_metric_degradation_items()`が「同時悪化2件以上でseverity=high、それ以上は区別しない」としたのと同じ、上限を設けて過度な精緻化を避ける判断を踏襲した。
+
+### 17.2 並べ替えの軸(依頼書2章「曖昧で検証しようがない仮説は、優先順位を下げること」への対応)
+
+```
+sort_key = (not checkable, -priority_score)
+```
+
+**検証可能性を最優先の軸にした判断根拠**: `priority_score`にそのまま検証可能性を加減点として混ぜ込む(例: 検証不能なら-5点)のではなく、**「検証可能かどうか」を独立した第一ソートキーにした**。理由は、依頼書が「曖昧な仮説の優先順位を下げる」ことを、単なる減点ではなく、より強い「後方への隔離」に近い扱いとして求めていると解釈したため——D-2の`finalize_hypothesis()`が確立した「フラグ有無を最優先、スコアを次点」という二段階ソートの設計をそのまま踏襲した(新しい重み付け式を作らない、という一貫した判断)。
+
+---
+
+## 18. `requires_special_review`仮説の、別枠管理の実装内容
+
+### 18.1 D-2の「後方配置」から、D-3の「トラック分離」への発展(判断根拠)
+
+D-2は既に、`requires_special_review`が立った仮説を通常の仮説より**後方に並べる**(同一リスト内での順序による区別)対応をしていた。D-3では、依頼書が「常に別枠で、最も慎重に扱われるようにすること」とD-2より一段階強い要求をしているため、**同一リストの末尾ではなく、構造的に完全に別のリスト(トラック)へ分離した**(`PrioritizationResult.normal_track`/`special_review_track`)。
+
+- `special_review_track`の仮説は`priority_score`によるランキングの対象に一切含めない(通常トラックとは別々に集計・別々にソートする、互いのスコアを比較する意味を持たせない)。
+- `priority_rank`は`normal_track`にのみ付与し、`special_review_track`は常に`None`とする——「ランキングの対象外である」ことをデータ構造レベルで明示する(依頼書「別枠で管理」の直接的な実装)。
+- `special_review_track`の各仮説には、**Phase Eへのhandoffペイロードを意図的に生成しない**(`phase_e_handoff=None`固定)。判断根拠: 人間の確認を経る前に、自動的に下流(将来のPhase E)へ流れうる形のデータを一切作らないことで、「最も慎重に扱う」を構造的に徹底した。
+
+### 18.2 検証可能性評価との関係
+
+`special_review_track`の仮説も`assess_verifiability()`自体は実行し、`priority_score`も参考値として算出する(標準出力・DBには記録する)——ただし、この値は運用者が目視で優先順位を把握するための参考情報にとどまり、**通常トラックとの比較や、自動的な下流処理には一切使わない**。全ての値をあえて計算しておくことで、人間が確認する際に「この仮説はどの程度緊急性が高そうか」の目安を持てるようにした(判断根拠: 完全に情報を隠すより、参考情報として残しつつ「使わない」ことを明示する方が、運用者の確認作業に資すると判断した)。
+
+---
+
+## 19. 検証可能性の評価ロジック
+
+`assess_verifiability()`(純粋関数、新規LLM呼び出しなし)。
+
+### 19.1 「言語化」はD-2が既に行っている、という判断(重要な判断根拠)
+
+依頼書2章1番目の箇条書き「各仮説について...どう変化すると予測されるかを、明確に言語化させる」は、**D-2の生成プロンプトが既に`expected_metric_improvements`として実装済みである**と判断した。D-3で新たにLLMへ「予測を言語化させる」呼び出しを追加するのではなく、**D-2が既に言語化した内容を評価するだけ**、という役割分担にした。判断根拠: (a) 依頼書「新しいスコアリングモデル・複雑な機械学習は導入しない」という制約の精神を、新しいLLM呼び出しの追加にも拡大解釈した(G-5・D-2が既に採用してきた解釈パターン)、(b) D-2の`expected_metric_improvements`は既に「RC指標・Phase G指標の名前」を挙げるよう明示的に指示されており、D-3が求める入力と実質的に同じ形をしている。
+
+### 19.2 判定基準(依頼書「具体的で、測定可能な形になっているか」への対応)
+
+```
+1. expected_metric_improvementsが空                          → 検証不能
+2. 値はあるが、既知の測定可能指標のいずれとも一致しない        → 検証不能
+3. 既知の指標に1件以上一致する                                 → 検証可能
+```
+
+**既知の測定可能指標の語彙**(`_MEASURABLE_METRIC_VOCABULARY`)は、Phase R(`cycle_health_runs_store.py`のRC-1〜RC-5)・Phase G(`grounding_health_runs_store.py`のCitation Precision/Search Trigger Rate/Contradiction Rate)・C-mini/C-full(`eval_metrics.py`の`memory_precision`/`memory_recall`/`response_error_rate`/`memory_duplicate_rate`)が**実際に使っている指標名を、そのまま引用した**——新しい指標カタログを作らない、既存資産の再利用の徹底。表記ゆれ(`RC-1`/`rc1`/`rc1_eligible_completion_rate`等)を許容するため、大文字小文字を無視した部分一致で判定する(意味解析は行わない、依頼書の制約通り)。
+
+**「もっと良くなるはず」のような曖昧な予測が、正しく検証不能と判定される仕組み**: `expected_metric_improvements`に「良くなるはず」のような文字列が入っていた場合、これは`_MEASURABLE_METRIC_VOCABULARY`のいずれとも一致しないため、機械的に「検証不能」と判定される(意味解析ではなく、既知の指標名との一致・不一致という単純な判定だが、結果として依頼書が例示した曖昧な予測を正しく除外できることをテストで確認済み、20章参照)。
+
+### 19.3 D-2の抽象性チェックとの役割分担(重複回避の判断根拠)
+
+D-2の`is_vague_or_unsupported()`は、既に`how_to_improve`(どう改善するか)の抽象性・根拠との字句的な整合性を検証済みである。D-3ではこの軸を再チェックせず、**D-3固有の新しい評価軸(`expected_metric_improvements`が測定可能な予測になっているか)だけに責務を絞った**——同じ観点を2つのフェーズで重複して検証しない、という判断。
+
+---
+
+## 20. Phase Eへの引き渡し形式の設計
+
+`build_phase_e_handoff()`が組み立てるデータ構造(`normal_track`の仮説にのみ添付、`special_review_track`には一切添付しない——18.1節参照)。
+
+```python
+{
+    "hypothesis_id": "...",
+    "priority_rank": 1,  # normalトラック内の順位(1始まり)
+    "title": "...",
+    "what_is_problem": "...",
+    "why_problem": "...",
+    "how_to_improve": "...",
+    "source_evidence": {
+        "category": "metric_degradation",  # D-1由来
+        "title": "...",
+        "priority_score": 2,
+    },
+    "expected_metric_improvements": ["RC-1"],       # D-2が生成した、生の予測
+    "verifiable_metrics": ["RC-1"],                  # D-3が既知指標と照合した結果
+    "verifiability": {"checkable": true, "reason": "..."},
+    # Phase E(未実装)が埋めるべき項目。D-3では具体的な値を設定しない。
+    "test_plan": null,
+    "rollback_plan": null,
+    "target_files": null,
+}
+```
+
+**設計方針(判断根拠)**: D-3が断定できる情報(仮説の内容・根拠・優先順位・検証可能性の判定)と、Phase E側が今後追加すべき情報(実際のテスト計画・ロールバック手順・変更対象ファイル)を、**意図的に分離した形にした**。後者は`null`の明示的なプレースホルダとして残し、Phase E側が「ここを埋める」と一目で分かるようにしている。
+
+**判断根拠(このフィールド構成にした理由)**: `test_plan`(この仮説をどうテストで検証するか)・`rollback_plan`(失敗した場合にどう戻すか)・`target_files`(実際にどのファイルを変更する想定か)の3項目は、いずれもPhase E(自動テスト環境)・Phase F(自動実装パイプライン)が本来担うべき、実装レベルの詳細設計である。D-3の時点でこれらを推測して埋めることは、依頼書「実際にPhase Eへの接続、コードの変更・実行は一切行わないこと」の精神に反する(仮に埋めたとしても、D-3自身がテストや実装の妥当性を検証する手段を持たない)。**空のプレースホルダとして明示することで、「まだ設計されていない」ことと「設計不要」を混同させない**——D-1〜D-3を通じて一貫してきた「Noneを恐れない、0や欠落と混同しない」という設計哲学を、この引き渡し形式にも適用した。
+
+`sigmaris_hypothesis_priorities`(新設、未適用)の`phase_e_handoff` jsonb列に、このペイロードをそのまま保存する。Phase E自体は未実装だが、**この列の形をそのまま次フェーズの入力仕様として使える**ことを意図した設計とした。
+
+---
+
+## 21. 出力形式・永続化
+
+`sigmaris_hypothesis_priorities`は、`sigmaris_hypotheses`の行を直接UPDATEするのではなく、**新規テーブルへ「1回の優先順位付け実行の結果」を追記する**形にした。**判断根拠**: `sigmaris_hypotheses`(D-2)・`sigmaris_citation_audit_log`(G-4)が確立した「Sigmaris自身の測定・評価データは追記専用ログとして扱う」という一貫した設計判断を踏襲した。仮説そのものは不変の記録として保ち、優先順位付けは「その時点のスナップショットに対する評価」として独立させることで、将来、検証可能指標の語彙を拡張した後などに**過去の評価結果を上書きせず再評価できる**。
+
+`hypothesis_id`はソフト参照(FK制約無し)——`sigmaris_hypotheses.evidence_bundle_id`と同じ判断根拠(現状の設計ではjoinを一切行わない、Sigmaris自身の派生データであるため)。
+
+実行方法: `python scripts/run_hypothesis_prioritization.py [--limit N] [--dry-run]`。
+
+---
+
+## 22. テスト結果
+
+`test_phase_d3_prioritization.py`として24件のテストを作成した(scratchディレクトリ)。
+
+```
+AssessVerifiabilityTests (6件)
+  PASS: 予測が空の場合、検証不能と判定されること
+  PASS: 既知の指標(RC-1)が検証可能と判定されること
+  PASS: 表記ゆれ(citation_precision等)も大文字小文字を無視して
+        認識されること
+  PASS: 【重要】既知指標のいずれとも一致しない曖昧な予測
+        (「使い勝手全般」)が、検証不能と判定されること
+  PASS: 既知・未知の指標が混在する場合、既知の指標のみが
+        matched_metricsに残ること
+  PASS: C-mini/C-full系の指標(response_error_rate等)も
+        認識されること
+
+ComputePriorityScoreTests (4件)
+  PASS: evidence_priority_scoreがそのまま基礎点になること
+  PASS: 一致した指標1件につき+1点が加算されること
+  PASS: 【重要】ボーナスに上限(3点)があること
+  PASS: evidence_priority_scoreが欠損している場合0点扱いになること
+
+BuildPhaseEHandoffTests (2件)
+  PASS: 仮説内容・根拠・検証可能指標が正しく含まれること
+  PASS: 【重要】test_plan/rollback_plan/target_filesが、Noneの
+        プレースホルダとして明示されること(D-3が推測で埋めない
+        ことの直接検証)
+
+PrioritizeHypothesesTests (7件)
+  PASS: requires_special_reviewの仮説がnormalトラックから
+        完全に除外されること
+  PASS: special_reviewトラックの仮説にpriority_rank・
+        phase_e_handoffが付与されないこと
+  PASS: 【最重要】evidence_priority_scoreが高くても、予測が曖昧な
+        (検証不能な)仮説は、スコアが低くても検証可能な仮説より
+        必ず後方に配置されること(依頼書「曖昧な仮説の優先順位を
+        下げる」の直接検証)
+  PASS: 同じ検証可能性のグループ内では、priority_score降順に
+        なること
+  PASS: normalトラックの仮説にはPhase Eへのhandoffペイロードが
+        付与されること
+  PASS: 入力が空の場合、両トラックとも空リストになること
+
+RunHypothesisPrioritizationTests (2件)
+  PASS: 仮説が0件の場合、空の結果を返すこと
+  PASS: 【重要】2トラックへの分離・検証可能件数のカウントが
+        正しく行われること
+
+RecordPrioritizationRunTests (4件)
+  PASS: 両トラックとも空の場合、HTTP通信すら発生させないこと
+  PASS: 正しいペイロード形状でバルクPOSTされること
+  PASS: HTTP失敗時、例外を伝播させず空リストを返すこと
+  PASS: get_recent_prioritization_run()が失敗時に空リストを返すこと
+
+24 passed, 3 subtests passed
+```
+
+`scripts/run_hypothesis_prioritization.py --help`の実行により、CLIの引数解析・ヘルプテキスト表示が正しく機能することも確認した。
+
+既存の`backend/tests/`(16件)・D-1〜D-2削除後のscratchテスト一式を含め、全て再実行しリグレッションが無いことを確認した。
+
+```
+24(本タスク) + 324(既存) = 348 passed, 7 subtests passed(合算実行)
+```
+
+**実モデルAPI・実データベースでの検証は行っていない。** テストは`hypothesis_store`/`supabase_rest`のHTTPクライアントをモックする形にとどまる(依頼書の注意事項通り、追加のサーバーアクセス・APIキー取得は試みていない)。マイグレーション(`202607270054_hypothesis_priorities.sql`)は作成のみ、適用は運用者側に委ねる。
+
+---
+
+## 23. Phase D全体(D-1〜D-3)を通じての振り返り
+
+### 23.1 各タスクが達成したこと
+
+| タスク | 到達点 |
+|---|---|
+| D-1 | Phase R・Phase G・Phase S-2(Mastery Drive)・bug_inventory.mdという既存4資産から根拠を集約・分類・優先順位付けし、`sigmaris_evidence_bundles`へ構造化して保存 |
+| (中間) | Constitution管理外だった旧`self_improvement.py`(persona.md直接書き換え・無検証GitHub PR作成)を発見・報告・削除 |
+| D-2 | D-1の根拠から、LLMで具体的な改良仮説を生成し、ルールベース+LLMの二段階検証、Constitution連携によるフラグ立てを行い、`sigmaris_hypotheses`へ保存 |
+| D-3(本タスク) | D-2の仮説を、検証可能性(既知の測定可能指標への具体的な予測を持つか)で評価し、`requires_special_review`仮説を別枠(2トラック)へ完全分離した上で優先順位付けし、Phase Eへの引き渡し形式を設計 |
+
+### 23.2 Phase D全体を通じて一貫していた設計哲学
+
+1. **新しい仕組みを作るより、既存資産を再利用する**: D-1はPhase R/G/S-2/bug_inventory.mdの既存データをそのまま集約し、D-2は`self_critique.py`のSelf-Critique方式・S-4の安全機構棚卸し結果をそのまま応用し、D-3はPhase R/G/C-miniの実際の指標名をそのまま「測定可能な指標」の語彙として引用した。3タスクを通じて、新しいデータ収集・新しいLLM評価の仕組みを追加したのはD-2の仮説生成そのもの(依頼書が明示的に要求した機能)のみであり、D-1・D-3はいずれも既存データの読み取り・評価にとどまっている。
+2. **単純な加算・単純な二段階ソートを繰り返し採用し、複雑な重み付けモデルを一切導入しなかった**: D-1の`priority_score`(深刻度+複数回記録ボーナス、または同時悪化指標数)、D-2の「フラグ有無を最優先、スコアを次点」、D-3の「検証可能性を最優先、スコアを次点」+「evidence_priority_score+指標具体性ボーナス(上限付き)」——いずれも、依頼書が繰り返し要求した「過度に複雑なスコアリングを避ける」という制約に対する、一貫したアプローチだった。
+3. **Noneや「別枠」を恐れず、短絡的な良し悪し判定をしない**: D-1のNone(算出対象0件)、D-2の除外(DBに残さない)、D-3の`special_review_track`(競合ランキング外)・`test_plan: null`(未設計であることの明示)——いずれも「無い」「まだ決まっていない」ことを、無理に埋めたり、0や失敗と混同したりせず、そのまま構造化して残す設計を貫いた。
+4. **「まだ何も実行されていないことの徹底」**: D-2報告書が述べた通り、Phase D全体を通じて、実際にコードやpersona.mdを変更する経路は一度も実装していない。D-3のPhase Eへのhandoff設計も、あくまで「引き渡す形式」の設計にとどまり、実際の接続・実行は行っていない。これは、削除した旧`self_improvement.py`が犯していた「無検証での実行」という失敗から得られた教訓を、D-2・D-3全体を通じて具体的に体現し続けた結果でもある。
+
+### 23.3 Phase D全体で残っている懸念事項の総まとめ
+
+以下は各タスクの懸念点セクション(6章・14章)から特に重要なものの再掲・統合、およびD-3で新たに気づいた点である。
+
+1. **実データでの検証が一度もできていない。** D-1〜D-3を通じ、この環境からはサーバーアクセス・APIキーが一切得られなかった(注意事項の許容規定通り)。全てのロジック・テストはモックベースであり、実際の`sigmaris_evidence_bundles`・`sigmaris_hypotheses`のデータに対して一度も実行されていない。**運用者側での実行が、Phase D全体にとって最優先の次のアクションである。**
+2. **3件の未適用マイグレーション**(`202607250052_evidence_bundles.sql`・`202607260053_hypotheses.sql`・`202607270054_hypothesis_priorities.sql`)が本番に適用されるまで、Phase D全体の機能は実質的に動作しない。
+3. **D-2の字句レベルの根拠グラウンディングチェック、D-3の指標語彙の部分一致判定は、いずれも意味解析を伴わない簡易ヒューリスティックである。** 表記ゆれ・言い換えに弱い(D-2報告書14章で既出、D-3でも同種の限界を負っている)。実運用でこの誤検出が無視できない割合を占めることが分かれば、embeddingベースの類似度判定への置き換えを検討する価値がある。
+4. **D-3の`compute_priority_score()`が使う「指標具体性ボーナスの上限3」・D-1の各種暫定閾値は、いずれも実データ未検証の値である。** RC-5の`drop_threshold=0.2`と同じ性質の、運用開始後に見直しが必要になる可能性が高い暫定値として記録しておく。
+5. **`sigmaris_hypothesis_priorities`は、Phase R/G/D-1/D-2と同じく「直近の状態」を毎回評価し直す設計であり、実行間の差分(前回の優先順位付けと比べて、ある仮説の順位がどう変わったか)は追跡していない。** 将来、同じ仮説が複数回のD-3実行にわたって一貫して低優先度に留まる、といった傾向を見たくなった場合、`get_recent_prioritization_run()`(既に用意済み)を使った比較ロジックの追加を検討する余地がある。
+6. **Phase Eへの引き渡し形式(20章)は、あくまでD-3時点での設計であり、実際にPhase Eに着手した際、想定外の追加情報が必要になる可能性がある。** `test_plan`/`rollback_plan`/`target_files`の3項目は現時点での推測に基づくプレースホルダであり、Phase E自体の設計時に見直しが必要になることを見込んでおく。
+7. **`special_review_track`の仮説が、実際に人間の確認を経てどう処理されるかのワークフロー(誰が、いつ、どこで確認するか)は、本タスクのスコープ外のまま未設計である。** D-2報告書14章の懸念点(Constitutionの`persona_update`カテゴリ未整備)と合わせて、次タスク以降で「要レビュー仮説の実際の運用フロー」を検討する価値がある。
+
+Phase D(D-1〜D-3、根拠収集・仮説生成・優先順位付けと検証可能性評価)はここで完了とする。実データでの検証・マイグレーション適用・Phase E(自動テスト環境)本体の設計は、独立した次のタスクとして今後継続する必要がある。
+
+---
+
+## 24. マージについて
+
+「テスト・検証」章の要件をすべて満たしていることを確認した(優先順位付けの意図通りの動作・`requires_special_review`仮説の別枠管理・曖昧/具体的な予測での検証可能性評価の差異・既存テストの回帰確認、いずれも達成)。既存機能(D-1・D-2・Phase R・Phase G・Phase S・B群全体)への悪影響も、全テスト再実行によって確認した。依頼書の指示通り、確認を待たずmainへマージ・プッシュする。
