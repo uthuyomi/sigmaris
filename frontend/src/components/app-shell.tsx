@@ -8,6 +8,7 @@ import { getDictionary, type AppLocale } from "@/lib/i18n";
 import type { AppTheme } from "@/lib/profile-settings";
 import { cn } from "@/lib/utils";
 import {
+  ActivityIcon,
   BrainCircuitIcon,
   HistoryIcon,
   MessageSquareMoreIcon,
@@ -39,6 +40,7 @@ const navIconByPath = {
   "/chat": MessageSquareMoreIcon,
   "/memory": BrainCircuitIcon,
   "/timeline": HistoryIcon,
+  "/growth": ActivityIcon,
   "/settings": Settings2Icon,
 } as const;
 
@@ -67,14 +69,16 @@ export function AppShell({
   const dict = getDictionary(locale);
   const memoryLabel = locale === "ja" ? "記憶" : "Memory";
   const timelineLabel = locale === "ja" ? "タイムライン" : "Timeline";
+  const growthLabel = locale === "ja" ? "成長ログ" : "Growth";
   const navItems = useMemo(
     () => [
       { href: "/chat", label: dict.nav.chat },
       { href: "/memory", label: memoryLabel },
       { href: "/timeline", label: timelineLabel },
+      { href: "/growth", label: growthLabel },
       { href: "/settings", label: dict.nav.settings },
     ],
-    [dict.nav.chat, dict.nav.settings, memoryLabel, timelineLabel],
+    [dict.nav.chat, dict.nav.settings, growthLabel, memoryLabel, timelineLabel],
   );
   const activeNavItem =
     navItems.find((item) => pathname === item.href || pathname.startsWith(`${item.href}/`)) ??
@@ -265,7 +269,7 @@ export function AppShell({
         </section>
           </div>
           <nav className="fixed inset-x-0 bottom-0 z-50 border-t border-stone-900/10 bg-white/95 px-3 pb-[calc(0.5rem+env(safe-area-inset-bottom))] pt-2 shadow-[0_-18px_45px_-34px_rgba(28,25,23,0.55)] backdrop-blur dark:border-white/10 dark:bg-[#212121]/95 lg:hidden">
-        <div className="mx-auto grid max-w-md grid-cols-4 gap-1">
+        <div className="mx-auto grid max-w-md grid-cols-5 gap-1">
           {navItems.map((item) => {
             const active = pathname === item.href || pathname.startsWith(`${item.href}/`);
             const Icon = navIconByPath[item.href as keyof typeof navIconByPath];

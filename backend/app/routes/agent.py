@@ -3,9 +3,11 @@ from __future__ import annotations
 # 役割: エージェント間インターフェース — 他エージェントや統括エージェントから
 #        run_chat_completion() および execute_tool() を呼び出せる HTTP エンドポイント。
 
+import asyncio
 import json
 import logging
 import uuid
+from dataclasses import asdict
 from typing import Any
 
 from fastapi import APIRouter, Header, HTTPException, Query
@@ -41,6 +43,11 @@ from app.services.user_fact_data import (
     get_user_profile,
     upsert_fact_item,
 )
+from app.services.cycle_health_runs_store import get_recent_cycle_health_runs
+from app.services.grounding_health_runs_store import get_recent_grounding_health_runs
+from app.services.drive_system import get_current_drive_state
+from app.services.migration_review_queue_store import get_pending_reviews
+from app.services.code_diff_proposal_store import get_pending_diff_proposals
 
 router = APIRouter(prefix="/api/agent", tags=["agent"])
 logger = logging.getLogger(__name__)
@@ -551,6 +558,106 @@ async def agent_preference_patterns_list(
         logger.exception("preference-patterns/list failed")
         raise HTTPException(status_code=500, detail={"error": str(exc)}) from exc
     return {"ok": True, "patterns": patterns, "count": len(patterns)}
+
+
+# ─── /api/agent/growth/ (Phase Vis-2: フロントエンド成長ログ) ──────────────────
+#
+# docs/sigmaris/phase_vis_report.md(Vis-1・定期実行化・本タスク)が選定した
+# 5指標のうち、DB/ライブ計算からの読み取りを要する4種類を、/preference-
+# patterns/listと同じ「既存の永続化・計算ロジックをそのまま呼び出すだけの、
+# 読み取り専用エンドポイント」として追加した。新しい集計・判定ロジックは
+# 一切ここに実装しない——全てのロジックは、既存のstore/service層(Phase R・
+# G・S・Safety-3)に既に存在する。
+
+@router.get("/growth/cycle-health")
+async def agent_growth_cycle_health(
+    authorization: str | None = Header(default=None),
+    x_agent_id: str | None = Header(default=None),
+    x_agent_secret: str | None = Header(default=None),
+    limit: int = Query(default=30, ge=1, le=100),
+) -> dict[str, Any]:
+    """RC-1〜RC-5の直近実行群(sigmaris_cycle_health_runs)を、新しい順で
+    返す。RC-5のstatus・safety_governance_status(Safety-3統合済み、
+    docs/sigmaris/phase_vis_report.md 9章)は、直近1件目(runs[0])を
+    参照すればよい。RC-1/RC-2の推移表示は、複数件をそのまま折れ線に使う。
+    """
+    _verify_agent(x_agent_id, x_agent_secret)
+    _require_jwt(authorization)
+    try:
+        runs = await get_recent_cycle_health_runs(limit=limit)
+    except Exception as exc:
+        logger.exception("growth/cycle-health failed")
+        raise HTTPException(status_code=500, detail={"error": str(exc)}) from exc
+    return {"ok": True, "runs": runs, "count": len(runs)}
+
+
+@router.get("/growth/grounding-health")
+async def agent_growth_grounding_health(
+    authorization: str | None = Header(default=None),
+    x_agent_id: str | None = Header(default=None),
+    x_agent_secret: str | None = Header(default=None),
+    limit: int = Query(default=30, ge=1, le=100),
+) -> dict[str, Any]:
+    """Citation Precision・Search Trigger Rate・Contradiction Rateの
+    直近実行群(sigmaris_grounding_health_runs)を、新しい順で返す。"""
+    _verify_agent(x_agent_id, x_agent_secret)
+    _require_jwt(authorization)
+    try:
+        runs = await get_recent_grounding_health_runs(limit=limit)
+    except Exception as exc:
+        logger.exception("growth/grounding-health failed")
+        raise HTTPException(status_code=500, detail={"error": str(exc)}) from exc
+    return {"ok": True, "runs": runs, "count": len(runs)}
+
+
+@router.get("/growth/drive-state")
+async def agent_growth_drive_state(
+    authorization: str | None = Header(default=None),
+    x_agent_id: str | None = Header(default=None),
+    x_agent_secret: str | None = Header(default=None),
+) -> dict[str, Any]:
+    """Drive State(Knowledge Gap/Mastery/Coherence)の、現在時点の
+    スナップショット。drive_system.py自体が履歴を持たないため(Vis-1
+    1.3節)、本エンドポイントも常に"今この瞬間"の値のみを返す——過去の
+    値と比較する時系列APIではない。"""
+    _verify_agent(x_agent_id, x_agent_secret)
+    jwt = _require_jwt(authorization)
+    try:
+        state = await get_current_drive_state(jwt)
+    except Exception as exc:
+        logger.exception("growth/drive-state failed")
+        raise HTTPException(status_code=500, detail={"error": str(exc)}) from exc
+    return {"ok": True, "drive_state": asdict(state)}
+
+
+@router.get("/growth/pending-review")
+async def agent_growth_pending_review(
+    authorization: str | None = Header(default=None),
+    x_agent_id: str | None = Header(default=None),
+    x_agent_secret: str | None = Header(default=None),
+) -> dict[str, Any]:
+    """自己改善パイプラインの「今、人間の確認を待っているもの」の件数を、
+    表示のたびに直接集計する(Vis-1の設計通り、定期実行の対象外——
+    docs/sigmaris/phase_vis_report.md 1.4節)。E-4(migration_review_
+    queue)・F-1〜F-3(code_diff_proposals)、いずれもreview_status=
+    "pending"の行数をそのまま数えるのみで、新しい集計ロジックは追加
+    していない。"""
+    _verify_agent(x_agent_id, x_agent_secret)
+    _require_jwt(authorization)
+    try:
+        migration_pending, diff_pending = await asyncio.gather(
+            get_pending_reviews(limit=100),
+            get_pending_diff_proposals(limit=100),
+        )
+    except Exception as exc:
+        logger.exception("growth/pending-review failed")
+        raise HTTPException(status_code=500, detail={"error": str(exc)}) from exc
+    return {
+        "ok": True,
+        "migration_review_pending_count": len(migration_pending),
+        "code_diff_pending_count": len(diff_pending),
+        "total_pending_count": len(migration_pending) + len(diff_pending),
+    }
 
 
 # ─── /api/agent/proactive/ ────────────────────────────────────────────────────
