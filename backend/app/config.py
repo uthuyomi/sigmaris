@@ -60,6 +60,14 @@ class Settings(BaseSettings):
     x_enabled: bool = False
     sigmaris_launch_date: str | None = None
     github_token: str | None = None  # research_agent.py's GitHub trending-repo search (rate-limit headers only)
+    # Phase F-3 (docs/sigmaris/phase_f_report.md): 承認後のPR作成専用の、
+    # 独立した書き込み権限クレデンシャル。github_token(上記、読み取り専用の
+    # トレンド検索用)とは意図的に別の変数名にした——書き込み権限を持つ
+    # クレデンシャルと、読み取り専用のそれを、運用者が env 上で混同しない
+    # ようにするための判断(詳細、レポート参照)。github_pr_publisher.py
+    # 以外のいかなるモジュールからも参照されない。
+    sigmaris_pr_github_token: str | None = None
+    sigmaris_pr_github_repo: str | None = None  # "owner/repo" 形式
     health_sync_enabled: bool = False
     news_api_key: str | None = None
     research_enabled: bool = False

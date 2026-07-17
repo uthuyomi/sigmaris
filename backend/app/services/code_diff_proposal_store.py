@@ -12,8 +12,14 @@
 # record_review_decision()は、E-4のそれと全く同じ制約(approved/rejected
 # のみを受け付け、pendingへの差し戻しを拒否)を持つ——ここでの
 # "approved"は、あくまで「この差分提案を、人間が見て良いと判断した」
-# という記録であり、それ自体がコミット・適用を引き起こすことは無い
-# (F-1にはそもそも適用する仕組みが無い、F-3のスコープ)。
+# という記録であり、それ自体がコミット・適用を引き起こすことは無い。
+#
+# 【Phase F-3追記(docs/sigmaris/phase_f_report.md)】
+# 承認された差分を、実際にGitHub上のブランチ・コミット・PRへ変換する
+# 仕組みが、diff_approval.py・github_pr_publisher.pyとして実装された。
+# 本ファイルには、そのためのDB操作(get_diff_proposal_by_id・
+# record_pr_outcome)のみを追加する——PR作成の実処理そのものは、
+# 引き続き本ファイルの外(github_pr_publisher.py)にのみ存在する。
 
 from __future__ import annotations
 
@@ -116,8 +122,9 @@ async def record_review_decision(
     proposal_id: str, *, status: str, notes: str = "", reviewed_by: str = ""
 ) -> bool:
     """人間が下した承認/却下の判断を記録するのみ。**この関数自体は、
-    承認された差分をどこにも適用しない**(適用・コミットの仕組みは
-    F-1に存在しない、F-3のスコープ)。migration_review_queue_store.py::
+    承認された差分をどこにも適用しない**——実際の適用(GitHub PR作成)は
+    diff_approval.py::approve_diff_proposal()が、本関数の呼び出し後に
+    別途、github_pr_publisher.pyへ委譲する。migration_review_queue_store.py::
     record_review_decision()と全く同じ制約(pendingへの差し戻しを拒否)。
     """
     if status not in ("approved", "rejected"):
@@ -140,4 +147,58 @@ async def record_review_decision(
         return True
     except Exception:
         logger.exception("code_diff_proposal_store: failed to record_review_decision for id=%s", proposal_id)
+        return False
+
+
+async def get_diff_proposal_by_id(proposal_id: str) -> dict[str, Any] | None:
+    """Phase F-3: 承認・却下の判断、およびPR作成の実処理のために、1件の
+    差分提案を、その全カラム(diff_text本文を含む)込みで取得する。
+    見つからない、またはエラー時はNone(既存の全storeモジュールと
+    同じベストエフォート方針——ただし呼び出し元のdiff_approval.pyは、
+    Noneを「承認不可」として扱う、fail-closed)。"""
+    try:
+        base_url, _ = _require_supabase_config()
+        client = await _get_client()
+        response = await client.get(
+            f"{base_url}/rest/v1/{_TABLE}",
+            headers=_svc_headers(),
+            params={"id": f"eq.{proposal_id}", "limit": "1"},
+        )
+        response.raise_for_status()
+        data = response.json()
+        if isinstance(data, list) and data:
+            return data[0]
+        return None
+    except Exception:
+        logger.exception("code_diff_proposal_store: failed to get_diff_proposal_by_id for id=%s", proposal_id)
+        return None
+
+
+async def record_pr_outcome(
+    proposal_id: str, *, status: str, pr_url: str = "", branch: str = "", error: str = ""
+) -> bool:
+    """Phase F-3: 承認後の実行結果(github_pr_publisher.pyの戻り値)を
+    記録する。承認(record_review_decision)とは独立したカラムに記録する
+    ——「人間が承認したかどうか」と「実際にPR作成まで到達したかどうか」を
+    混同しないため(方針4「Constitutionチェックに後から抵触した場合は
+    実行を中断し報告する」のケースでも、review_status="approved"のまま、
+    pr_creation_status側だけが失敗を記録する、正直な監査証跡)。"""
+    try:
+        base_url, _ = _require_supabase_config()
+        client = await _get_client()
+        response = await client.patch(
+            f"{base_url}/rest/v1/{_TABLE}",
+            headers=_svc_headers(),
+            params={"id": f"eq.{proposal_id}"},
+            json={
+                "pr_creation_status": status,
+                "pr_url": pr_url,
+                "pr_branch": branch,
+                "pr_creation_error": error,
+            },
+        )
+        response.raise_for_status()
+        return True
+    except Exception:
+        logger.exception("code_diff_proposal_store: failed to record_pr_outcome for id=%s", proposal_id)
         return False
