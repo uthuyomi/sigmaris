@@ -9,6 +9,16 @@
 # git操作は一切行わない。** `subprocess`・`git`コマンド・GitHub API
 # 呼び出しは、このファイルのどこにも存在しない。
 #
+# 【Phase F-2追記(docs/sigmaris/phase_f_report.md): E-1・E-2の統合】
+# F-1時点では、E-1のverdict="baseline_healthy_with_coverage"のみを対象
+# にしていた(hypothesis_verification.pyのTier 1相当)。F-2で、E-2の
+# サンドボックス基盤が直近で健全に起動・停止できることが確認できている
+# 場合に限り、E-1でverdict="insufficient_signal"だった仮説(Tier 2)も、
+# 対象に加えるよう拡張した。**Tier 2は、あくまで「サンドボックス基盤が
+# 使える状態にある」ことの確認であり、E-2が仮説の内容を検証したという
+# 意味では全く無い**——この区別の正確な記録は、hypothesis_
+# verification.pyのモジュールdocstring、およびレポートを参照。
+#
 # 【重要な設計判断: target_filesの欠落を、E-1のmatched_modulesで補う】
 # D-3のbuild_phase_e_handoff()(hypothesis_prioritization.py)が組み立てる
 # target_filesは、依頼書が指摘した通り、常にNoneの未設定プレースホルダ
@@ -38,7 +48,10 @@ from app.services.code_diff_generation import (
     generate_diff,
 )
 from app.services.hypothesis_prioritization_store import get_recent_prioritization_run
+from app.services.hypothesis_verification import classify_verification_tier
 from app.services.migration_review_queue_store import get_queued_hypothesis_ids
+from app.services.sandbox_verification_store import get_recent_sandbox_verifications
+from app.services.static_verification import extract_candidate_modules
 from app.services.static_verification_store import get_recent_static_verifications
 
 logger = logging.getLogger(__name__)
@@ -76,34 +89,53 @@ def _latest_run_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
 
 
 async def select_candidate_hypotheses(*, limit: int = _DEFAULT_LIMIT) -> list[dict[str, Any]]:
-    """E-1のverdict="baseline_healthy_with_coverage"(要件2: E-1を通過した
-    仮説のみ)を対象に、D-3のphase_e_handoffと突き合わせ、対象ファイル
-    候補(matched_modules)を持つものだけを返す。
+    """E-1・E-2の統合結果(hypothesis_verification.classify_verification_
+    tier())が"not_eligible"以外と判定した仮説を対象に、D-3のphase_e_
+    handoffと突き合わせ、対象ファイルを解決できたものだけを返す。
+
+    Tier 1(hypothesis_verified_coverage、旧F-1の対象)は、E-1の
+    matched_modulesをそのまま使う。Tier 2(sandbox_infra_available_
+    unverified_content、F-2で追加)は、E-1のmatched_modulesが常に空
+    (insufficient_signalの定義上、既存テストとの一致が無いため)である
+    ため、static_verification.extract_candidate_modules()(E-1がカバレッジ
+    照合の一次候補として使うのと同じ、生のテキスト抽出関数)を、仮説の
+    phase_e_handoffへ直接再適用し、実在するファイルに解決できる候補を
+    探す——判断根拠: Tier 2の性質上、既存テストとの一致は保証されない
+    ため、E-1のカバレッジ照合済みリストではなく、その一歩手前の生の
+    推定結果を再利用する。
 
     要件3(requires_special_review・マイグレーション仮説の除外)への
     対応: D-3のnormalトラック経由でしかsigmaris_static_verificationsに
     行が存在しない時点でrequires_special_review仮説は構造的に除外
     されており、mentions_migration()に該当する仮説はverdict=
     "excluded_migration"にしかなり得ない(baseline_healthy_with_coverage
-    と同時に成立しない、E-1のassess_hypothesis()の判定順序による)ため、
-    この2つの除外は既に構造的に保証されている。それでも、E-4の
-    migration_review_queueとの突き合わせによる、防御的な再確認を
-    追加した(E-1がD-3のtrackを再確認したのと同じ、多層防御の判断)。
+    /insufficient_signalのいずれとも同時に成立しない、E-1の
+    assess_hypothesis()の判定順序による)ため、この2つの除外は既に構造的に
+    保証されている。それでも、E-4のmigration_review_queueとの突き合わせに
+    よる、防御的な再確認を追加した(E-1がD-3のtrackを再確認したのと同じ、
+    多層防御の判断)。
     """
-    static_rows, priority_rows, queued_ids = await asyncio.gather(
+    static_rows, priority_rows, queued_ids, sandbox_rows = await asyncio.gather(
         get_recent_static_verifications(limit=limit * 5),
         get_recent_prioritization_run(limit=limit * 5),
         get_queued_hypothesis_ids(),
+        get_recent_sandbox_verifications(limit=1),
     )
 
-    healthy_rows = [
-        r for r in _latest_run_rows(static_rows)
-        if r.get("verdict") == "baseline_healthy_with_coverage" and r.get("matched_modules")
-    ]
+    latest_sandbox_verification = sandbox_rows[0] if sandbox_rows else None
     priority_by_id = {row["id"]: row for row in priority_rows if row.get("id")}
 
+    eligible_rows: list[tuple[dict[str, Any], Any]] = []
+    for row in _latest_run_rows(static_rows):
+        if row.get("verdict") not in ("baseline_healthy_with_coverage", "insufficient_signal"):
+            continue
+        tier = classify_verification_tier(row, latest_sandbox_verification=latest_sandbox_verification)
+        if tier.tier == "not_eligible":
+            continue
+        eligible_rows.append((row, tier))
+
     candidates: list[dict[str, Any]] = []
-    for row in healthy_rows:
+    for row, tier in eligible_rows:
         hyp_id = row.get("hypothesis_id")
         if not hyp_id or hyp_id in queued_ids:
             continue  # 防御的な再確認(上記docstring参照)
@@ -114,7 +146,20 @@ async def select_candidate_hypotheses(*, limit: int = _DEFAULT_LIMIT) -> list[di
         if not isinstance(handoff, dict) or not handoff:
             continue
 
-        module_name = row["matched_modules"][0]  # 単一ファイルへ限定(要件、方針1)
+        if tier.tier == "hypothesis_verified_coverage":
+            matched_modules = row.get("matched_modules") or []
+            if not matched_modules:
+                continue
+            module_name = matched_modules[0]  # 単一ファイルへ限定(要件、方針1)
+        else:
+            # Tier 2: setは順序を持たないため、決定的な選択のため
+            # ソート済みの候補から、実在するファイルに解決できる最初の
+            # ものを採用する(判断根拠)。
+            raw_candidates = sorted(extract_candidate_modules(handoff))
+            module_name = next((m for m in raw_candidates if resolve_module_path(m) is not None), None)
+            if module_name is None:
+                continue
+
         target_path = resolve_module_path(module_name)
         if target_path is None:
             continue
@@ -130,6 +175,8 @@ async def select_candidate_hypotheses(*, limit: int = _DEFAULT_LIMIT) -> list[di
                 "how_to_improve": handoff.get("how_to_improve") or "",
                 "target_module": module_name,
                 "target_path": target_path,
+                "verification_tier": tier.tier,
+                "verification_tier_reason": tier.reason,
             }
         )
         if len(candidates) >= limit:

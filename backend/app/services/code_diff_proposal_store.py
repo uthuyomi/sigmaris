@@ -62,6 +62,16 @@ async def record_diff_proposals(proposals: list[dict[str, Any]]) -> list[str]:
                 "diff_text": p.get("diff_text") or "",
                 "safety_check_status": p.get("safety_check_status"),
                 "safety_check_reason": p.get("safety_check_reason") or "",
+                # Phase F-2(docs/sigmaris/phase_f_report.md、hypothesis_
+                # verification.py): この提案の元になった仮説が、E-1単独の
+                # カバレッジ確認("hypothesis_verified_coverage")なのか、
+                # E-2のサンドボックス基盤の可用性のみに基づく
+                # ("sandbox_infra_available_unverified_content")なのかを
+                # 記録する——後者は仮説の内容そのものを検証したものでは
+                # 無いため、人間のレビュー時にこの区別が一目で分かる必要が
+                # ある。
+                "verification_tier": p.get("verification_tier"),
+                "verification_tier_reason": p.get("verification_tier_reason") or "",
                 "review_status": p.get("review_status", "pending"),
             }
             for p in proposals
