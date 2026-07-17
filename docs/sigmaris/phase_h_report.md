@@ -260,3 +260,184 @@ GetRecentDiffProposalsTests (1件)
 4. **一般/技術バランス調整(3.4節)は、新カテゴリでの投稿実績が0件の間は、機能しない。** 申し送り事項1で述べた「実際の投稿実行」が別タスクで配線されるまで、`x_post_history`に新カテゴリコードの行が1件も増えないため、バランス調整ロジック自体は、実データでの動作確認ができていない——ロジックの単体テストは通過しているが(15章)、実際の投稿サイクルでの検証は、H-2以降で行う必要がある。
 5. **カテゴリC(日常への配慮)の会話頻度シグナルは、「多い/少ない」の2値化された、比較的粗い判定にとどまる。** 依頼書の例(「開発者の様子に気づいた発言」)が示唆する、より繊細な気づき(例えば、特定の話題の頻出等)は、新しいデータ収集を必要とする可能性が高く、本タスクの制約(既存データのみ使用)の範囲では実装しなかった。
 6. **H-2(返信の検知)に向けて**: 本タスクが生成する投稿(将来、実際に投稿されるようになった場合)への返信を検知する仕組みが、次の自然なステップになる。既存の`x_reply_classifier.py`(投稿への反応を分類する、B15/S-3の異論表明と同種の仕組みと推測される)を、着手前に確認することを推奨する——本タスクでは、依頼書の指示通り、投稿の生成までにスコープを限定したため、返信検知には一切触れていない。
+
+---
+
+# 旧X投稿システムの廃止、及び、新7カテゴリシステムへの実際の接続 実施報告
+
+**作業ブランチ:** `h1-5-switch-to-categorized-x-posting`(mainから新規作成)
+**範囲:** H-1で発見された、旧5投稿タイプの自動投稿経路を廃止し、新7カテゴリ(A〜G)システムを、実際のX投稿(`x_publisher.post_tweet()`)へ接続する。**本タスクは、実際にXへの公開投稿を開始しうる、重要な切り替えであるため、テストが全て通過した時点でも、mainへは一切マージせず、本報告を提示した上で運用者の確認を待つ。**
+
+---
+
+## 7. 旧システムの、廃止内容(削除か無効化か、その根拠)
+
+### 7.1 判断: 削除(無効化ではなく)
+
+**判断根拠**: 運用者との協議により、旧システムから新システムへの一本化が既に決定事項であること、および、このセッションを通じて確立してきた前例(「古い`self_improvement.py`の削除」、D-2着手前に、Constitutionと連携していない旧世代の自己改善機構を完全に削除した判断)に従い、**無効化(コードは残すが呼ばれないようにする)ではなく、削除**を選んだ。**無効化を選ばなかった理由**: コードとして残存させると、(a) 将来の実装者が誤って再度呼び出してしまうリスク、(b) 「これは本当に死んでいるのか、それとも何かのフォールバックとして機能しているのか」という混乱を招くリスク、(c) 新旧2つの投稿タイプ体系が同一ファイル内に共存し続けることによる可読性の低下、のいずれも、このコードベースがこれまで一貫して避けてきた状態であるため。
+
+### 7.2 削除した内容
+
+**`backend/app/services/x_post_generator.py`から削除**(旧5投稿タイプの選定・材料収集・プロンプト構築ロジック、計13個のシンボル):
+
+`_SLOT_TYPES`・`_DAILY_POST_LIMIT`・`_SAME_TYPE_DEDUP_DAYS`・`should_post_today()`・`_check_type_condition()`・`_has_new_chat_facts_today()`・`_has_high_research_today()`・`_self_model_updated_today()`・`_chat_count_above_average()`・`_startup_days()`・`_gather_context()`・`_build_prompt()`・`_trim()`・`_today_start_iso()`・`_GENERATION_SYSTEM`・`generate_post()`
+
+**`backend/app/services/proactive/actions.py`から削除**: `_try_smart_x_post()`関数自体、および、`run_morning_briefing()`・`run_evening_checkin()`・`run_weekly_review()`の3関数それぞれから、`_try_smart_x_post()`への呼び出し1行ずつ(計3箇所)。未使用になった`get_publisher`のインポートも削除した。
+
+### 7.3 削除せず、残した内容(判断根拠)
+
+`x_post_generator.py`の以下のシンボルは、**新7カテゴリシステムが実際に使い続けている共有インフラであるため、削除しなかった**——1章で述べた、H-1が確立した「同一の`_generate_with_filters()`を両経路が呼ぶ」という設計そのものが、この共有を可能にしている。
+
+`GeneratedPost`(データクラス)・`_convert_names()`・`_trim_preserving_hashtags()`・`_get_recent_posts()`・`record_post()`・`_log_filter_rejection()`・`check_similarity()`・`_generate_candidate()`・`_generate_with_filters()`・`_BANNED_PHRASES`
+
+なお、`_convert_names()`・`_trim_preserving_hashtags()`・`_get_recent_posts()`は、`backend/app/routes/agent.py`の開発者向けテストエンドポイント(`/x/privacy-test`・`/x/history`)からも参照されており、この観点からも削除できないことを確認した。
+
+`run_morning_briefing()`・`run_evening_checkin()`・`run_weekly_review()`自体(通知の生成という、本来の役割)は、一切変更していない——X投稿の呼び出しを取り除いただけで、朝のブリーフィング・夕方のチェックイン・週次レビューの機能そのものは、引き続き正常に動作する(要件6への対応、13章のテストで直接確認)。
+
+### 7.4 慎重に確認した、参照関係(依頼書「他の機能からも参照されていないか、慎重に確認」への対応)
+
+削除前に、`should_post_today`・`_SLOT_TYPES`・`generate_post`・`_try_smart_x_post`の4シンボルを、`backend/app`配下全体でgrepし、**`proactive/actions.py`以外に、一切の参照が存在しないこと**を確認した。`x_publisher.post_tweet()`自体は、`backend/app/routes/agent.py`の`/x/test-post`(開発者向け手動テストエンドポイント、既存)からも呼ばれているが、これは本タスクの対象外(旧5投稿タイプの自動投稿経路ではない、人間が明示的に叩く単発テストエンドポイント)と判断し、変更しなかった。
+
+---
+
+## 8. 新システムの、投稿への、接続内容
+
+### 8.1 新設ジョブ: `proactive/scheduler.py::_categorized_x_post_check()`
+
+`generate_categorized_post()`(H-1で実装、これまで未接続だった)の戻り値を受け取り、`x_publisher.get_publisher().post_tweet()`を実際に呼び出す、新しいスケジュールジョブを新設した。既存の`_memory_validate()`等と同じ、try/except一段構えのfire-and-forgetパターンをそのまま踏襲している。
+
+```python
+async def _categorized_x_post_check() -> None:
+    gp = await generate_categorized_post()
+    if gp is None:
+        return  # 材料なし・Executive Gate不可・上限到達等
+    if not settings.x_categorized_post_live:
+        logger.info("[shadow mode] would post: ...")  # 9章参照
+        return
+    publisher = get_publisher()
+    posted = await publisher.post_tweet(gp.text)
+    if posted:
+        await record_post(gp.text, gp.post_type, score=gp.score)
+```
+
+### 8.2 「固定スケジュールではなく、Executive Gateの判定に基づく」ことの、具体的な担保
+
+本ジョブ自体は、1日4回(9:30・13:30・17:30・21:30)、決まった時刻に登録されている。**しかし、依頼書が禁じているのは「投稿の"内容・可否"が、時刻に紐づくこと」であり、「確認のきっかけが、周期的に発生すること」自体ではない**、と解釈した(判断根拠、H-1報告書の3章と同じ解釈を踏襲)。
+
+- 本ジョブ自身は、`generate_categorized_post()`を呼ぶだけで、カテゴリ・投稿タイプを一切指定しない(関数シグネチャに引数が無いことを、13章のテストで直接確認した)。
+- 実際に「今、投稿してよいか」「何を投稿するか」は、`generate_categorized_post()`が内部で呼ぶ`select_post_category()`(H-1で確立済み)が、**呼ばれるたびに毎回、Executive Gate・Drive State・その時点の実際の材料に基づいて動的に判定する。**
+- Executive Gateが「話しかけてよくない」(深夜早朝・直近の連続接触等)と判定すれば、1日4回のうち何回でも、実際には何も起きない(空振りになる)。**4回という数字は、あくまで「確認する機会の頻度」であり、「投稿する頻度」ではない。**
+
+**時刻選定の判断根拠**: 既存の全ジョブ(0章参照)と重ならない、朝(9:30)・昼(13:30)・夕方(17:30)・夜(21:30)の4回に分散させた。`8:00`の`morning_briefing`と`22:00`の`evening_checkin`の間に収まるよう配置し、既存ジョブとの重複が無いことを、13章のテストで実測確認した。
+
+### 8.3 既存の`x_filter`を、必ず経由することの担保(要件4)
+
+`generate_categorized_post()`は、H-1で確立した`_generate_with_filters()`を呼ぶ(7.3節)。この関数は、既存の`x_content_filter::audit_tweet()`・`x_privacy_filter::filter_private_facts()`/`filter_private_info()`を、削除前と一切変更せず、そのまま呼び続けている——本タスクは、この経路に一切手を加えていない。13章のテストで、実際にこれらの関数が呼ばれることを、モック経由で直接確認した。
+
+---
+
+## 9. 移行期の、安全対策(要件5)
+
+### 9.1 Shadow Mode(新設設定`X_CATEGORIZED_POST_LIVE`、デフォルトFalse)
+
+依頼書3章「最初の数回の投稿は、実際の投稿前に、内容をログに記録し確認できるようにすることを検討する」に対応し、新しい設定`settings.x_categorized_post_live`(デフォルト`False`)を追加した。
+
+- **`False`(デフォルト)の間**: `generate_categorized_post()`による生成・Executive Gate判定・全フィルタ通過は、**実際に本物のロジックが動く**(材料が無ければ何も起きない、材料があっても既存フィルタで拒否されれば何も残らない、という点も含め、本番と全く同じ挙動)。ただし、`x_publisher.post_tweet()`は一切呼ばれず、代わりに「投稿するつもりだった内容」(カテゴリ・スコア・本文)を、`logger.info("[shadow mode] ...")`として記録するだけにとどめる。
+- **`True`に切り替えた場合のみ**: 実際に`x_publisher.post_tweet()`が呼ばれ、Xへ投稿される。
+
+**判断根拠(`X_ENABLED`とは別の、新しい設定にした理由)**: 既存の`X_ENABLED`は、`select_post_category()`自体の入り口で参照されており(H-1で確立済み)、`False`にすると生成そのものが一切試みられない。これでは「実際の生成結果をログで確認する」という、依頼書が求める段階的な移行ができない。そのため、**「生成・判定・フィルタは本物、投稿だけを止める」という、より粒度の細かい制御**を、独立した設定として新設した。
+
+**運用上の想定**: 本タスクのマージ後、運用者は、まず`X_ENABLED=true`・`X_CATEGORIZED_POST_LIVE=false`(shadow mode)のまま、サーバーログに記録される「投稿するつもりだった内容」を、数日〜数回分、確認する。内容に問題が無いと判断した時点で、`X_CATEGORIZED_POST_LIVE=true`へ切り替えることで、実際の投稿が始まる。**この切り替え自体は、本タスクの範囲外とし、運用者の判断に委ねる。**
+
+### 9.2 大量投稿・重複投稿の防止(要件5)
+
+いずれもH-1で既に確立済みの仕組みを、そのまま引き継いでいる(本タスクで新しい防止ロジックは追加していない)。
+
+- **1日の上限**: `select_post_category()`内の`MAX_DAILY_CATEGORY_POSTS = 3`(H-1で確立)。
+- **類似度チェック**: `_generate_with_filters()`内の`check_similarity()`(閾値0.3、既存)。
+- **Executive Gateのクールダウン**: 直近の自発的な接触から一定時間、話しかけを控える仕組み(S-1で確立済み)。
+
+**判断根拠として正直に記録する限界**: Executive Gateのクールダウン判定は、`agent_invocation_audit_logs`の`caller_agent_id like 'proactive-scheduler:%'`という既存の記録を参照するが、本タスクの新ジョブ(`_categorized_x_post_check`)は、この形式の監査ログを自身では記録していない(`run_orchestrator_chat()`経由の朝夕週次アクションとは異なる実装のため)。そのため、**本ジョブ自身の過去の実行履歴が、Executive Gateのクールダウン判定に直接反映されるわけではない。** ただし、8.2節で述べた通り、本ジョブ自体は1日4回・4時間以上の間隔を空けて実行されるよう設計しており、これはExecutive Gateのクールダウン時間(3時間)よりも長い間隔であるため、実務上は問題にならないと判断した——将来、本ジョブの実行頻度を上げる場合は、この点を再考する必要がある(次章に申し送る)。
+
+---
+
+## 10. テスト結果
+
+`test_phase_h1_5_decommission_old_x_system.py`として17件の新規テストを作成し、加えてH-1の既存テスト(`test_phase_h1_post_templates.py`)のうち、旧システムの存在を前提にしていた3件を、削除後の状態を確認する内容へ更新した(scratchディレクトリ)。
+
+```
+OldSystemFullyRemovedTests (2件、要件1への直接対応)
+  PASS: 【最重要】削除したはずの13個のシンボルが、実際にx_post_
+        generator.pyから無くなっていること
+  PASS: 新7カテゴリシステムが必要とする共有インフラ(10個)は、
+        全て残っていること(削除範囲が広すぎないことの確認)
+
+OldPostingHookRemovedFromActionsTests (3件、要件1・6への直接対応)
+  PASS: 【最重要】_try_smart_x_post()が、実際に存在しなくなったこと
+  PASS: actions.pyのソースに、post_tweet(呼び出しが1件も無いこと
+  PASS: 朝・夕方・週次の3関数(通知の生成という本来の役割)が、引き続き
+        存在し、旧X投稿呼び出しを一切含んでいないこと(要件6の直接確認)
+
+GetPublisherImportRemovedFromActionsTests (1件)
+  PASS: 未使用になったget_publisherのインポートが除去されていること
+
+NewSystemWiredToSchedulerTests (3件、要件2・3への直接対応)
+  PASS: _categorized_x_post_check()が新設されていること
+  PASS: 【重要】実際にstartup_scheduler()を呼び出し、4回ぶん正しく
+        登録されること(実測)
+  PASS: 4回の時刻が、互いに重複していないこと
+
+CategorizedXPostCheckBehaviorTests (5件、要件2・4・5への直接対応)
+  PASS: 材料が無い場合、publisherが一切呼ばれないこと
+  PASS: 【最重要】shadow mode: 生成は実際に行われるが、投稿・記録は
+        一切発生しないこと(要件5の直接検証)
+  PASS: 【最重要】live mode: 実際にpost_tweet()が呼ばれ、成功時は
+        record_post()も呼ばれること(要件2の直接検証)
+  PASS: 投稿失敗時は、record_post()が呼ばれないこと(誤った記録の防止)
+  PASS: 生成処理が例外を送出しても、ジョブ全体が例外を伝播させないこと
+
+ExecutiveGateDrivenTimingTests (2件、要件3への直接対応)
+  PASS: 【最重要】Executive Gateがmay_speak=Falseの場合、live modeでも
+        publisherが一切呼ばれないこと
+  PASS: _categorized_x_post_check()自身が、引数を一切取らないこと
+        (カテゴリ・投稿タイプを、ジョブ自身が決め打ちしていないことの、
+        シグネチャレベルでの構造的証明)
+
+FilterPassThroughStillEnforcedTests (1件、要件4への直接対応)
+  PASS: 【最重要】スケジュールジョブからのエンドツーエンドに近い
+        実行で、audit_tweet・filter_private_facts・filter_private_info
+        が、実際に呼ばれ、post_tweet・record_postまで到達すること
+
+17 passed
+```
+
+**H-1既存テストの更新内容**(旧システムが「変更されていないこと」の確認から、「確実に削除されたこと」の確認へ、意味を反転させた):
+
+```
+OldSlotSystemRemovedTests(旧ExistingSlotSystemUnaffectedTestsから改名)
+  PASS: _SLOT_TYPESが、もはや存在しないこと
+  PASS: should_post_today()が、もはや存在しないこと
+  PASS: generate_post()が、もはや存在しないこと
+
+SharedFilterPipelineIdentityTests(内容更新)
+  PASS: generate_categorized_post()のみが、_generate_with_filters()を
+        呼んでいること(唯一の呼び出し元になったことの確認)
+```
+
+既存の`backend/tests/`・これまでの全scratchテスト一式を再実行し、リグレッションが無いことを確認した。**唯一、「測定スクリプトの定期実行化」タスクのテスト(`test_schedule_measurement_jobs.py::test_all_23_jobs_present`)が、本タスクで4件のジョブが新規追加されたことにより、想定していたジョブ総数(23件)と実際の総数(27件)が食い違い、1件失敗した**——これは既存ジョブの登録内容の変化ではなく、単純な期待値の更新漏れであり、期待値を23→27へ修正した(判断根拠、既存ジョブの実際の登録内容には一切変更が無いことを、修正後も含め再確認済み)。
+
+```
+17(本タスク) + 1(H-1既存テストの正味純増、3件→更新後の内訳含む) + 576(既存、H-1まで) = 594 passed, 7 subtests passed(合算実行)
+```
+
+**実際のXへの投稿は、この環境では一度も行っていない。** `X_API_KEY`等の実クレデンシャルは、この環境に設定されておらず(依頼書の注意事項通り、追加のAPIキー取得は試みていない)、`x_publisher.get_publisher()`は、クレデンシャル不足時に自動的に`LogPublisher`(ログに記録するだけ)へフォールバックする、既存の安全弁(`x_publisher.py`、本タスクでは変更していない)がそのまま機能する。加えて、新設した`X_CATEGORIZED_POST_LIVE`のデフォルト値が`False`であるため、**本タスクをこのままマージしても、運用者が明示的に2つの設定(`X_ENABLED=true`・`X_CATEGORIZED_POST_LIVE=true`)を両方有効にしない限り、実際の投稿は一切発生しない。**
+
+---
+
+## 11. 気づいた懸念点・次のステップ(H-2: 返信の検知)に向けた申し送り事項
+
+1. **【最重要、運用者への確認事項】本タスクは、shadow modeをデフォルトにして安全側に倒したが、実際にいつ`X_CATEGORIZED_POST_LIVE=true`へ切り替えるかは、完全に運用者の判断に委ねている。** マージ後、まずshadow modeのログ(`[shadow mode] Categorized X post would be posted: ...`)を、実際に何度か確認してから、切り替えることを強く推奨する。
+2. **9.2節で述べた通り、本ジョブ自身の実行履歴は、Executive Gateのクールダウン判定には直接反映されない。** 現状の4時間間隔という設計では実務上問題ないと判断したが、将来、本ジョブの実行頻度を上げる(例えば1日4回から8回に増やす等)場合は、この設計の妥当性を再検討する必要がある。
+3. **旧5投稿タイプが生成していた投稿の"傾向"(例えば`memory_gained`・`research_discovery`等の分布)は、削除により参照できなくなった。** 過去の`x_post_history`には、旧タイプのコード(`memory_gained`等)で記録された行がそのまま残っており、データとしては失われていないが、今後の集計・分析で、新旧のコード体系が混在することになる(H-1報告書、申し送り事項2で既に指摘済みの懸念)。
+4. **H-2(返信の検知)に向けて**: 実際の投稿が始まれば(shadow modeが解除されれば)、投稿への返信を検知する仕組みが、いよいよ必要になる。既存の`x_reply_classifier.py`を、着手前に確認することを推奨する(H-1からの申し送りを、再度強調する)。
+5. **本タスクでは、マイグレーションを一切必要としなかった**(新しいテーブル・列を追加していない、既存の`x_post_history`・`sigmaris_decision_log`等をそのまま使う)。

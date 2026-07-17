@@ -383,6 +383,56 @@ async def _safety_governance_scan() -> None:
         logger.exception("Safety governance scan job raised unexpectedly")
 
 
+# ── 旧X投稿システムの廃止、及び、新7カテゴリシステムへの実際の接続
+# (docs/sigmaris/phase_h_report.md)。旧proactive/actions.py::
+# _try_smart_x_post()(should_post_todayの固定スロット判定でX投稿を
+# 直接実行)は削除済み——本ジョブが、シグマリスの投稿を実際にXへ送る、
+# 唯一の経路になった。
+#
+# 【依頼書「投稿のタイミングが、固定スケジュールではなく、Executive
+# Gateの判定に基づくこと」への対応】本ジョブ自体は、1日4回、決まった
+# 時刻に「今、投稿してよいか確認する」という、機会を作るだけである
+# ——旧システムのように「この時間帯には、このタイプを投稿する」という
+# 対応関係は、一切存在しない。実際に投稿するかどうか・何を投稿するかは、
+# 毎回100%、generate_categorized_post()内部で呼ばれるselect_post_
+# category()(Executive Gate・Drive State・その日の実際の材料に基づく
+# 動的な判定、H-1で確立済み)が決める。本ジョブは、その判定を仰ぐ
+# "きっかけ"を、1日に4回作るだけであり、Executive Gateが「話しかけて
+# よくない」と判定すれば(深夜早朝・直近の連続接触等)、4回のうち何回でも
+# 空振りになりうる。
+async def _categorized_x_post_check() -> None:
+    from app.services.x_post_generator import generate_categorized_post, record_post  # noqa: PLC0415
+    from app.services.x_publisher import get_publisher  # noqa: PLC0415
+    try:
+        gp = await generate_categorized_post()
+        if gp is None:
+            logger.info("Categorized X post check: no post generated this cycle")
+            return
+
+        if not settings.x_categorized_post_live:
+            # 移行期の安全策(依頼書3章): 生成・Executive Gate判定・全
+            # フィルタは実際に通した本物の結果だが、x_publisher.post_
+            # tweet()は呼ばず、実際に投稿するつもりだった内容をログに
+            # 記録するだけに留める(shadow mode、config.py参照)。
+            logger.info(
+                "[shadow mode] Categorized X post would be posted: category=%s score=%.1f text=%s",
+                gp.post_type, gp.score, gp.text,
+            )
+            return
+
+        publisher = get_publisher()
+        posted = await publisher.post_tweet(gp.text)
+        if posted:
+            await record_post(gp.text, gp.post_type, score=gp.score)
+            logger.info(
+                "Categorized X post: posted category=%s len=%d score=%.1f", gp.post_type, len(gp.text), gp.score,
+            )
+        else:
+            logger.warning("Categorized X post: publisher returned False for category=%s", gp.post_type)
+    except Exception:
+        logger.exception("Categorized X post check raised unexpectedly")
+
+
 def startup_scheduler() -> None:
     global _scheduler
 
@@ -423,6 +473,19 @@ def startup_scheduler() -> None:
     _scheduler.add_job(_cycle_health_measure, CronTrigger(hour=3, minute=20, timezone=tz), id="cycle_health_measure", replace_existing=True)
     _scheduler.add_job(_grounding_health_measure, CronTrigger(day_of_week="sun", hour=5, minute=40, timezone=tz), id="grounding_health_measure", replace_existing=True)
     _scheduler.add_job(_safety_governance_scan, CronTrigger(day_of_week="sun", hour=5, minute=45, timezone=tz), id="safety_governance_scan", replace_existing=True)
+
+    # 旧X投稿システムの廃止、及び、新7カテゴリシステムへの実際の接続
+    # (docs/sigmaris/phase_h_report.md)。1日4回、朝・昼・夕方・夜の
+    # 時間帯に分散させ、既存の全ジョブと重ならない時刻を選んだ
+    # (8:00 morning_briefing・22:00 evening_checkinの間に収まる)。
+    # 4回はあくまで"確認の機会"であり、実際に投稿するかどうかは毎回
+    # Executive Gateとselect_post_category()が動的に判定する
+    # (_categorized_x_post_check()のdocstring参照、固定スケジュールでは
+    # ない)。
+    _scheduler.add_job(_categorized_x_post_check, CronTrigger(hour=9,  minute=30, timezone=tz), id="categorized_x_post_check_1", replace_existing=True)
+    _scheduler.add_job(_categorized_x_post_check, CronTrigger(hour=13, minute=30, timezone=tz), id="categorized_x_post_check_2", replace_existing=True)
+    _scheduler.add_job(_categorized_x_post_check, CronTrigger(hour=17, minute=30, timezone=tz), id="categorized_x_post_check_3", replace_existing=True)
+    _scheduler.add_job(_categorized_x_post_check, CronTrigger(hour=21, minute=30, timezone=tz), id="categorized_x_post_check_4", replace_existing=True)
 
     _scheduler.start()
     logger.info("Proactive scheduler started (tz=%s)", tz)
