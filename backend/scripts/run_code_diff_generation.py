@@ -15,10 +15,15 @@ review_status="pending"(安全性チェックを通過した場合)、または
 として保存されるだけである。**承認された差分を実際に適用する仕組みは、
 本タスクには一切存在しない**(将来のF-3で、慎重に設計される)。
 
-対象仮説の絞り込み(要件2・3への対応):
-  - E-1のverdict="baseline_healthy_with_coverage"のみを対象とする
-    (excluded_migration・baseline_unhealthy・insufficient_signalは
-    いずれも対象外)
+対象仮説の絞り込み(要件2・3への対応、Phase F-2でE-1・E-2の統合により
+2段階のTierへ拡張済み——hypothesis_verification.py参照):
+  - Tier1: E-1のverdict="baseline_healthy_with_coverage"
+    (既存テストのカバレッジが、仮説の内容に基づいて確認済み)
+  - Tier2: E-1のverdict="insufficient_signal"だが、直近のE-2実行で
+    サンドボックス基盤自体は健全と確認済み(**仮説の内容そのものが
+    検証されたわけではない**、環境の可用性のみの確認であることに注意)
+  - excluded_migration・baseline_unhealthyは、いずれのTierにも該当せず
+    対象外
   - D-3のnormalトラック経由の仮説のみ(requires_special_reviewは
     構造的に除外済み)
   - E-4のmigration_review_queueに既に登録されている仮説は、防御的に
@@ -69,6 +74,14 @@ _STATUS_LABELS = {
     "generation_failed": "生成失敗/対象外",
 }
 
+# Phase F-2: この提案が、E-1単独のカバレッジ確認によるものか、E-2の
+# サンドボックス基盤の可用性のみによるものかを、CLI出力でも明確に区別
+# する(後者は仮説の内容を検証したものではないため)。
+_TIER_LABELS = {
+    "hypothesis_verified_coverage": "Tier1: E-1が既存テストのカバレッジを確認済み",
+    "sandbox_infra_available_unverified_content": "Tier2: E-2でサンドボックス基盤の可用性のみ確認済み(内容は未検証)",
+}
+
 
 async def _main(args: argparse.Namespace) -> None:
     print(f"Phase F-1 コード差分生成を実行中... limit={args.limit}")
@@ -88,7 +101,9 @@ async def _main(args: argparse.Namespace) -> None:
         print("(0件——E-1でbaseline_healthy_with_coverageと判定された仮説が無い可能性)")
     for p in result["proposals"]:
         label = _STATUS_LABELS.get(p["safety_check_status"], p["safety_check_status"])
+        tier_label = _TIER_LABELS.get(p.get("verification_tier"), p.get("verification_tier"))
         print(f"[{label}] {p['title']} -> {p['target_file']}")
+        print(f"    検証段階: {tier_label}")
         if p["safety_check_reason"]:
             print(f"    理由: {p['safety_check_reason']}")
         print(f"    review_status: {p['review_status']}")
