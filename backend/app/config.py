@@ -58,6 +58,16 @@ class Settings(BaseSettings):
     x_access_token: str | None = None
     x_access_token_secret: str | None = None
     x_enabled: bool = False
+    # 旧X投稿システムの廃止、及び、新7カテゴリシステムへの実際の接続
+    # (docs/sigmaris/phase_h_report.md): X_ENABLED=trueの状態でも、この
+    # フラグがFalse(デフォルト)の間は、7カテゴリシステムは生成・
+    # Executive Gate判定・全フィルタを実際に通した上で、"投稿する
+    # つもりだった内容"をログに記録するのみで、実際にはx_publisher.
+    # post_tweet()を呼ばない(shadow mode)。運用者が、ログを確認して
+    # 問題ないと判断した場合にのみ、明示的にTrueへ切り替えることを
+    # 想定した、移行期の安全策(依頼書「最初の数回の投稿は、実際の投稿前
+    # にログに記録し確認できるようにする」への対応)。
+    x_categorized_post_live: bool = False
     sigmaris_launch_date: str | None = None
     github_token: str | None = None  # research_agent.py's GitHub trending-repo search (rate-limit headers only)
     # Phase F-3 (docs/sigmaris/phase_f_report.md): 承認後のPR作成専用の、
