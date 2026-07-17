@@ -236,7 +236,15 @@ async def structure_evidence(
 def build_evidence_context(evidence: list[dict[str, Any]]) -> str | None:
     """構造化された証拠を、応答生成プロンプトへ注入するテキストブロックへ
     整形する。Noneを返した場合は呼び出し側が何も追加しない(既存のプロン
-    プト構造を変えない)。"""
+    プト構造を変えない)。
+
+    Phase G-5(docs/sigmaris/phase_g_report.md): persona.md 15章(調べた
+    情報の伝え方)への参照を追加した。persona.md全文は毎ターン注入され
+    ない(BA4 追補7、system_overrideの4000文字上限)ため、章の存在だけを
+    ドキュメント化しても実際の生成には反映されない——Phase S-3の
+    dissent_context/goal_alignment_contextが、persona.mdの該当章を名指し
+    で参照する指示文をこの注入チャネルへ直接書く、という既存パターンを
+    そのまま踏襲した。"""
     if not evidence:
         return None
     lines = ["[検索で確認した情報(参考情報、出典付き)]"]
@@ -244,7 +252,10 @@ def build_evidence_context(evidence: list[dict[str, Any]]) -> str | None:
         lines.append(f"- {item['claim']}(出典: {item['source_title']} {item['source_url']})")
     lines.append(
         "上記は実際にWeb検索で確認した、出典付きの情報です。関連する場合は活用し、"
-        "出典に基づかない推測とは明確に区別してください。"
+        "出典に基づかない推測とは明確に区別してください。persona.md 15章(調べた"
+        "情報の伝え方)に従い、「調べてみたところ」のような、今回調べた情報である"
+        "ことが自然に伝わる言い回しを使ってください。ただし1ターンで何度も"
+        "繰り返さないこと。"
     )
     return "\n".join(lines)
 

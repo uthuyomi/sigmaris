@@ -830,3 +830,257 @@ LogVerificationAdvisoryTests (3件、chat.pyの拡張されたストリーミン
 ## 7. マージについて
 
 「テスト・検証」章の要件をすべて満たしていることを確認した(claim単位監査の実装・G-3との役割分担・B11連携の仕上げ・監査結果の永続化・既存テストの回帰確認、いずれも達成)。5章で述べた通り、G-3・G-4を並行実行する最適化により、レイテンシへの影響はG-3単独の時点よりむしろ縮小したと判断し、依頼書の指示通り確認を待たずmainへマージ・プッシュする。
+
+---
+
+# Phase G-5 実施報告: 「調べたことが分かる」言い回しの調整、+ 継続的な精度測定
+
+**作業ブランチ:** `phase-g5-grounding-health`(mainから新規作成)
+**範囲:** persona.mdへの検索由来情報の言い回しルール追加、およびG-4の`sigmaris_citation_audit_log`から算出する継続的な精度測定(Citation Precision・Search Trigger Rate・Contradiction Rate)。Phase G(G-1〜G-5)全体の完了サマリーも本節末尾に含める。
+
+---
+
+## 0. 前提として確認したこと
+
+着手前に指示書が指定した2ファイルを確認した。
+
+- `docs/sigmaris/phase_g_report.md`(G-1〜G-4): 特にG-4が新設した`sigmaris_citation_audit_log`の正確なスキーマ(`thread_id`・`claim`・`source_url`・`source_title`・`usage`・`note`・`critique_verdict`・`created_at`)を再確認し、本タスクの指標算出がこのテーブルの実際の列構成と整合するよう設計した。
+- `docs/sigmaris/phase_r_report.md`: RC指標(RC-1〜RC-5)の設計思想——「Noneは0ではなく算出対象0件を意味する」「高い/低いを短絡的に良し悪しと結びつけない」「独立したCLIスクリプト+`cycle_health_runs`テーブル+`cycle_health_metrics.py`(純粋関数)/`cycle_health_runner.py`(I/O)の3層分離」という設計パターンを、本タスクでもそのまま踏襲した。
+
+---
+
+## 1. persona.mdに追加した言い回しルールの内容
+
+`docs/persona.md`に**15章「調べた情報の伝え方」**を新設した(既存の12〜14章と同じ「新規追加」表記のスタイルを踏襲)。
+
+### 1.1 ルールの要点
+
+- **多用してよいフレーズ**: 「調べてみたところ」「最近の情報によると」「〇〇によれば」「確認したところ」
+- **5章(確信度の伝え方)との関係を明記**: 「調べた」という前置きは、事実層/傾向層/仮説層という既存の確信度階層とは独立した軸であり、両方を組み合わせて使う(例: 「調べたら〇〇でした」= 事実層相当、「調べてみたのですが、〇〇のようです。まだ確証はないんですが」= 仮説層相当)
+- **過剰な繰り返しの禁止**: 1ターンで「調べた」を何度も繰り返さない。直前の文脈から検索済みであることが明らかな場合は前置き自体を省略してよい
+- **G-3/G-4の監査結果との整合性**: 「情報源はあるが使い方が不正確」(G-4)・矛盾検出(G-3)の場合は、5章の確信度表現(ヘッジ)を、「調べた」という前置きよりも優先する
+
+### 1.2 サンプル文面(依頼書要件1)
+
+```
+悪い例: 〇〇の価格は5万円です。
+良い例: 調べてみたところ、〇〇の価格は5万円のようです。
+```
+
+```
+海星「このカメラの最新モデルの価格っていくら?」
+シグマリス「調べてみたところ、公式サイトでは12万円前後のようですね。
+           ただ、在庫状況までは確認できませんでした。」
+```
+
+```
+海星「(直前に「価格調べて」と頼んだ流れで)で、いくらだった?」
+シグマリス「12万円前後でした。在庫はちょっと分からなかったです。」
+(直前の文脈で検索済みと分かるため、前置きを省略した例)
+```
+
+### 1.3 実際の生成プロンプトへの反映(重要な実装判断)
+
+**persona.md全文は毎ターン注入されない**(BA4 追補7、`system_override`の4000文字上限により、persona.mdは短い方針への置換が既に行われている——`docs/sigmaris/phase_ba4_report.md` 7章参照)。そのため、15章を書き加えるだけでは、実際の生成には一切反映されない。
+
+**判断根拠**: Phase S-3の`_build_dissent_context()`・B16の`_build_goal_alignment_context()`が、persona.mdの該当章を名指しで参照する指示文を、それぞれの注入チャネル(`preference_patterns_context`)へ直接書き込む、という既存パターンを確認し、本タスクでも同じ手法を踏襲した。`evidence_search.py::build_evidence_context()`(G-2が新設、Evidenceを応答生成プロンプトへ注入する関数)の末尾へ、以下の1文を追加した。
+
+```python
+"persona.md 15章(調べた情報の伝え方)に従い、「調べてみたところ」のような、"
+"今回調べた情報であることが自然に伝わる言い回しを使ってください。ただし1ターンで"
+"何度も繰り返さないこと。"
+```
+
+これにより、Evidenceが存在するターン(G-1の`needs_search=true`判定があったターン)でのみ、この指示が実際のプロンプトへ注入される——通常の会話には一切影響しない(要件5)。
+
+---
+
+## 2. 3つの指標の算出ロジック
+
+新設ファイル: `backend/app/services/grounding_health_metrics.py`(純粋関数)・`grounding_health_runner.py`(I/O)・`grounding_health_runs_store.py`(永続化)。`cycle_health_metrics.py`/`cycle_health_runner.py`/`cycle_health_runs_store.py`(Phase R)と同じ3層分離を踏襲した。
+
+### 2.1 共通: claim単位のログを「1ターン」へ再構成する
+
+`sigmaris_citation_audit_log`はclaim単位のフラットなログであり、「1回のやり取り」という単位は列として持たない。`citation_audit.persist_citation_audit()`が1ターン分の全claimを**1回のバルクINSERT**で書き込んでおり、Postgresの`now()`は同一トランザクション内の全行で同じ値になるため、**同じターンのclaimは常に同一の`created_at`を持つ**。`(thread_id, created_at)`の組をキーにグルーピングすることで、新しい列・新しいデータ収集を一切追加せず、既存ログの構造だけから「1ターン」単位を安全に再構成した(依頼書「新しいデータ収集の仕組みを追加しないこと」への対応)。
+
+### 2.2 Citation Precision(引用精度)
+
+```
+precision = faithful_count / (faithful_count + distorted_count)
+```
+
+分母0件(引用されたclaimが1件もない=全て`not_used`)の場合はNone(0%と区別)。
+
+**判断根拠(`not_used`を分母から除外)**: `not_used`は「Evidenceとして取得されたが、応答内では触れられなかったclaim」であり、検索結果を全て使い切らないこと自体はG-2の設計上正常な挙動である。「引用の使い方」の精度を測る本指標の対象を、実際に使われたclaim(`faithful` + `distorted`)に限定した。
+
+### 2.3 Search Trigger Rate(検索発動率) — 下限近似値であることの明記
+
+```
+rate = audited_turns(監査ログに記録が残ったターン数) / total_turns(全アシスタント発言数)
+```
+
+**【重要】この指標は、G-1の`needs_search=true`判定そのものの下限近似値である。** G-1の判定結果は現状どのターンについても永続化されていない(`chat.py`の`assistant_message.metadata`には`routeIntent`/`routeReason`/`routeSource`のみが記録され、`search`判定は含まれない)。依頼書「新しいデータ収集の仕組みを追加しないこと」の制約により、本タスクではこれを追加していない。
+
+そのため、実際に`needs_search=true`と判定された件数の代わりに、「実際に`sigmaris_citation_audit_log`へ記録が残ったターン数」を分子として使う。以下の場合に実際の発動件数より**少なく**カウントされる(下限近似):
+
+- `needs_search=true`と判定されたが、G-2のWeb検索自体が失敗した場合
+- 検索は成功したが、引用(citation)を含まない応答だった場合(`_extract_cited_spans()`が空リストを返した場合)
+
+いずれの場合もG-4の監査自体が発火せず、監査ログに記録が残らない。**判断根拠(この近似のまま実装した理由)**: 真の値を得るには、G-1の判定結果を`chat_messages.metadata`へ新たに永続化する設計変更が必要になるが、これは依頼書が明示的に禁じる「新しいデータ収集の仕組み」に該当すると判断した。6章の設計メモで、この制約を解消する将来案を具体的に記載する。
+
+### 2.4 Contradiction Rate(矛盾検出率)
+
+```
+rate = flagged_turns / audited_turns(検証が行われたターン数)
+```
+
+「フラグが立った」の判定は、そのターンのいずれかのclaimが`usage="distorted"`(G-4)、またはそのターンの`critique_verdict`が`"no_contradiction"`以外(G-3)のいずれか一方でも該当すれば真とする——G-4の`select_guidance_note()`が採用するOR方式の判断を、指標の集計でも一貫して適用した。
+
+**判断根拠(分母を「検証が行われたターン」に限定)**: 全ターンを分母にすると、「そもそも検証が行われなかった」ケースと「検証したが問題なしだった」ケースが区別できなくなり、指標の意味が「矛盾検出率」から別の指標にすり替わってしまう。分母はSearch Trigger Rateの`audited_turns`と同じ値になる。
+
+---
+
+## 3. 実行方法(CLIコマンド)
+
+```bash
+cd backend
+python scripts/run_grounding_health.py
+python scripts/run_grounding_health.py --window-days 60
+python scripts/run_grounding_health.py --dry-run   # DBに記録せず標準出力のみ
+```
+
+`run_cycle_health.py`と完全に同じ引数体系(`--window-days`・`--notes`・`--dry-run`)、同じ環境変数(`SUPABASE_SERVICE_ROLE_KEY`等)を採用した。標準出力は、3指標それぞれについて「値がNoneの場合は算出対象0件を意味する」「Search Trigger Rateは下限近似値である」という注意書きを、値そのものと併記する形にした——依頼書要件4(「高い/低い=良い/悪いを短絡的に決めつけず、その意味を正確に説明できる設計にすること」)への対応であり、Phase Rの`run_cycle_health.py`が既に確立している、指標の値の直後に解釈上の注意を1行添えるという表示スタイルをそのまま踏襲した。
+
+**新設マイグレーション**: `supabase/migrations/202607240051_grounding_health_runs.sql`(作成のみ、適用は運用者側に委ねる)。`sigmaris_cycle_health_runs`と同じ「1回の実行 = 1行、見出し指標は実列、詳細は`details` jsonb」という設計を踏襲した、独立した新規テーブルとした——判断根拠は、RC指標(循環の健全性)・C-mini/C-full(記憶検索精度)・Grounding指標(検索・引用精度)が測定対象の異なる別系統の指標であり、同じテーブルに混在させると「どの指標体系の行か」が読み取り時に曖昧になるという、`sigmaris_cycle_health_runs`のマイグレーション自身が既に述べている理由をそのまま適用した。
+
+---
+
+## 4. テスト結果
+
+`test_phase_g5_grounding_health.py`として22件のテストを作成した(scratchディレクトリ)。
+
+```
+ComputeCitationPrecisionTests (4件)
+  PASS: 引用されたclaimが0件の場合、precisionがNoneになること
+  PASS: 全てfaithfulな場合、precision=1.0になること
+  PASS: faithful/distortedが混在する場合、正しい比率になること
+  PASS: not_usedのみの場合もprecisionがNoneになること(分母から除外)
+
+ComputeSearchTriggerRateTests (4件)
+  PASS: 全ターン数が0の場合、rateがNoneになること
+  PASS: 監査ログが空の場合、rate=0.0になること
+  PASS: 【重要】同一(thread_id, created_at)の複数claimが1ターンとして
+        正しくグルーピングされること(バルクINSERTのcreated_at一致を
+        利用したターン再構成ロジックの直接検証)
+  PASS: 異なるターンが正しく別々にカウントされること
+
+ComputeContradictionRateTests (5件)
+  PASS: 監査ログが空の場合、rateがNoneになること
+  PASS: クリーンなターンはフラグが立たないこと
+  PASS: distortedなclaimがあるターンはフラグが立つこと
+  PASS: 【重要】全claimがfaithfulでも、critique_verdictが矛盾を示す場合は
+        フラグが立つこと(G-3・G-4のOR方式判定の直接検証)
+  PASS: critique_verdictが欠損している場合、no_contradiction相当として
+        扱われること
+  PASS: 複数ターンが混在する場合の比率が正しく算出されること
+
+RunGroundingHealthTests (2件)
+  PASS: 3指標が正しく統合されて返ること
+  PASS: 監査ログ取得・ターン数カウントの両方に、正しい期間の起点が
+        渡されること
+
+RecordGroundingHealthRunTests (2件)
+  PASS: 正しいペイロード形状でPOSTされること
+  PASS: HTTP失敗時、例外を伝播させずNoneを返すこと
+
+GetCitationAuditLogSinceTests (2件、citation_audit.pyへ新設した読み取り
+  ヘルパー)
+  PASS: sinceフィルタが正しくクエリに含まれること
+  PASS: 失敗時に空リストを返すこと
+
+CountAssistantMessagesSinceTests (2件、app_chat_data.pyへ新設したカウント
+  ヘルパー)
+  PASS: role=assistant・user_idスコープで正しくカウントされること
+  PASS: 非リスト結果の場合、0を返すこと
+
+22 passed
+```
+
+既存の`backend/tests/`(16件)、G-1〜G-4の全テスト(102件)、直近のPhase S・R・BA4系・nano-tier移行の既存テスト一式(206件)も全て再実行し、リグレッションは確認されなかった。
+
+```
+22(本タスク) + 302(既存の関連テスト一式、G-1〜G-4含む) = 324 passed(合算実行)
+```
+
+`scripts/run_grounding_health.py --help`の実行により、CLIの引数解析・ヘルプテキスト表示が正しく機能することも確認した。
+
+**実モデルAPI・実データベースでの検証は行っていない。** テストは`supabase_rest`のHTTPクライアントをモックする形にとどまる(依頼書の注意事項通り、追加のサーバーアクセス・APIキー取得は試みていない)。
+
+---
+
+## 5. Phase G全体(G-1〜G-5)を通じての振り返り・残っている懸念事項の総まとめ
+
+### 5.1 各フェーズの到達点
+
+| Phase | 到達点 | 主な設計判断 |
+|---|---|---|
+| G-1 | 「検索が必要か」の軽量判定。既存の`classify_chat_intent()`(nano-tier)へ相乗り | ルールベース(鮮度キーワード等)+LLM判定のハイブリッド。新規LLM呼び出しゼロ |
+| G-2 | 実際のWeb検索実行+構造化されたEvidence(claim/source_url/source_title/retrieved_at)への変換 | 既存のcuriosity_engine.pyは汎用検索に不向きと判断し、OpenAI Responses APIのweb_searchツールを新規採用。出典はAPIの実引用のみ使用 |
+| G-3 | 応答全体とEvidence全体の矛盾を検出するSelf-Critique検証 | B11のConfidenceTier・ヘッジ文言を実際に再利用。ストリーミング経路は8章の教訓によりadvisory-onlyに限定 |
+| G-4 | claim単位の使われ方監査(二段階目)。B11連携の仕上げ、G-5向けの永続化 | G-3と重複しないclaim粒度のチェック。G-3・G-4を並行実行しレイテンシを最適化 |
+| G-5 | persona.mdへの言い回しルール追加、継続的な精度測定(3指標) | G-4の監査ログのみを使い新規データ収集ゼロ。Phase Rの3層分離パターンを踏襲 |
+
+### 5.2 Phase G全体を通じた一貫した設計哲学
+
+- **「Evidenceが存在する場合にのみ発動し、通常の会話には一切のオーバーヘッドを与えない」**という原則が、G-1〜G-5の全段階で一貫して守られた。`needs_search=false`のターンには、G-1のルールベース判定以外、一切の追加コストが発生しない。
+- **既存資産の再利用が、単なる方針ではなく、実際に毎回具体的な調査・判断を伴って実践された**: G-2でのcuriosity_engine.py不採用の判断(調査の上で理由を明記)、G-3・G-4でのB11(`confidence_guidance_note()`)の直接再利用、G-5でのPhase R 3層分離パターンの踏襲。
+- **レイテンシへの警戒が、単なる見積もりに留まらず、実際の設計変更を伴って反映された**: G-3でのストリーミング経路のadvisory-only化(BA4 8章の実際の障害記録を根拠とした判断)、G-4でのG-3・G-4並行実行化。
+
+### 5.3 残っている懸念事項(既存分の再掲+G-5での新規分)
+
+1. (G-1から継続)ルールベースのキーワードリストが、日本語の口語表現のロングテールをカバーしきれない。
+2. (G-2から継続)`search_context_size="low"`が原因で、情報が不足するケースが実運用でどの程度発生するかは未検証。
+3. (G-3から継続)実際の主要経路(ストリーミング)では、矛盾検出時の実際の応答書き換えが行われない(advisory-onlyのため)。
+4. (G-4から継続)`audit_citation_usage()`の「文脈からの逸脱」判定基準が抽象的で、実モデルでの検証ができていない。
+5. **(G-5で新規)Search Trigger Rateは下限近似値であり、真の発動率とは乖離しうる。** 2.3節で述べた通り、G-1の判定結果自体を永続化していないことに起因する。6章の設計メモに、この制約を解消する具体案を記載する。
+6. **(G-5で新規)Citation Precision・Contradiction Rateは、あくまでG-3/G-4というAIによる自動判定の結果を集計したものであり、その自動判定自体の精度(4)が未検証である以上、指標自体にもその不確実性が引き継がれる。** 「measuring the measurer」の限界として認識しておく必要がある——将来、人手によるサンプル検査(例えば`sigmaris_citation_audit_log`から一定数を無作為抽出し、実際にclaimの使われ方が正しく分類されているかを目視確認する)を行い、G-3/G-4自体の判定精度を検証する価値がある。
+7. **(G-5で新規)`sigmaris_grounding_health_runs`は、Phase R同様「直近N日」を毎回計算し直す設計であり、RC-3/RC-5のような「前回実行との比較」機能は持たない。** 本タスクの3指標には、RC-3(信念の反転)・RC-5(急激な悪化検知)に相当する時系列比較の要求が無かったため実装しなかったが、将来的に「先月と比べて引用精度が悪化していないか」を自動検知したい場合は、`get_recent_grounding_health_runs()`(既に用意済み)を使った比較ロジックの追加を検討する余地がある。
+
+---
+
+## 6. Phase RとPhase Gの、将来的な統合可能性についての設計メモ
+
+依頼書の要求に従い、実装は行わず、設計メモとして記載する。
+
+### 6.1 現状の関係
+
+Phase R(RC指標)・C-mini/C-full(eval_runs)・Phase G(Grounding指標)は、意図的に**独立したテーブル・独立したCLIスクリプト・独立した指標体系**として実装されている。3者はいずれも「Sigmaris自身の振る舞いを測定する」という大枠の目的は共有するが、測定対象のレイヤーが異なる。
+
+| 指標体系 | 測定対象 | テーブル |
+|---|---|---|
+| RC指標(Phase R) | Experience→Memory→...→Actionという循環自体の健全性 | `sigmaris_cycle_health_runs` |
+| eval_runs(C-mini/C-full) | 記憶検索(B群)の精度 | `sigmaris_eval_runs` |
+| Grounding指標(Phase G) | 検索・引用の精度 | `sigmaris_grounding_health_runs` |
+
+### 6.2 統合の動機になりうるシナリオ
+
+将来、以下のような問いに答えたくなった場合、3者を横断した分析が必要になる。
+
+- 「Grounding指標が悪化した時期に、RC指標(特にRC-2、時間的一貫性)も同時に悪化していないか」——検索結果の混入がchat_messagesの時系列に何らかの影響を与えていないかを確認したい場合
+- 「Contradiction Rateが高いターンは、そのままsigmaris_experienceへ記録され、Phase Rの循環(RC-1)に乗るのか、それとも矛盾検出によって循環から除外されるのか」——G-3/G-4の検証結果が、Phase Rが測る循環自体にどう影響するかを追跡したい場合
+
+### 6.3 統合の設計案(未実装、案のみ)
+
+**案A: 共通の「measurement run」メタテーブルを新設し、各指標体系のrunsテーブルへ外部キーで紐づける。** `sigmaris_measurement_runs(id, run_type, run_at)`のような薄いテーブルを作り、`sigmaris_cycle_health_runs`/`sigmaris_eval_runs`/`sigmaris_grounding_health_runs`それぞれに`measurement_run_id`列を追加する。判断根拠: 既存の3テーブルの構造(見出し指標を実列に持つ、というスタイル)を一切変更せずに、後から横断クエリを可能にできる、最も非破壊的な統合方法。
+
+**案B: 定期実行を1つのCLIスクリプトへ統合し、実行タイミングだけを揃える。** `run_cycle_health.py`・`run_eval.py`・`run_grounding_health.py`を、同じcronジョブ(例えば週次)から順に呼び出すラッパースクリプトを新設する。テーブル構造は現状のまま独立を維持しつつ、`run_at`が近い実行同士を後から時系列で突き合わせやすくする。判断根拠: 実装コストが最も低く、テーブル設計への影響がゼロ。ただし「同時刻に実行された」という保証がラッパー側の運用に依存する、緩い紐付けに留まる。
+
+**案C(非推奨として明記): 3つの指標体系を1つのテーブルへ統合する。** 検討した上で不採用と判断した——`sigmaris_cycle_health_runs`のマイグレーションコメントが既に指摘する通り、測定対象の異なる指標を1つのテーブルへ混在させると、「どの指標体系の行か」が読み取り時に曖昧になる。この既存の判断根拠は、Phase G追加後も変わらず有効である。
+
+**現時点での推奨**: 案Aが最もクリーンだが、実際に横断分析が必要になるまでは過剰実装になりうる。統合の実需が具体的に生じた時点(例えば上記6.2節のシナリオが実際に運用上の疑問として浮上した時)に、案Aを実装するのが妥当と考える。
+
+---
+
+## 7. マージについて
+
+「テスト・検証」章の要件をすべて満たしていることを確認した(persona.mdへのルール追加・言い回しの反映・3指標の算出・CLIからの実行・既存テストの回帰確認、いずれも達成)。依頼書の指示通り、確認を待たずmainへマージ・プッシュする。これをもって、Phase G(G-1〜G-5、Trigger Detection・Evidence Structuring・Self-Critique検証・Two-Layer Citation Audit・言い回し調整+継続測定)が完了する。

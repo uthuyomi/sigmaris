@@ -308,3 +308,29 @@ async def persist_citation_audit(
         r.raise_for_status()
     except Exception:
         logger.exception("citation_audit: persist_citation_audit failed")
+
+
+async def get_citation_audit_log_since(since: str, *, limit: int = 2000) -> list[dict[str, Any]]:
+    """Phase G-5(docs/sigmaris/phase_g_report.md、grounding_health_
+    runner.py用): sinceのISO8601文字列以降に記録された監査ログ行を、
+    古い順に返す。失敗時は空リスト(persist_citation_audit()と同じ
+    ベストエフォート方針——cycle_health_runs_store.get_recent_cycle_
+    health_runs()と同型)。"""
+    try:
+        base_url, _ = _require_supabase_config()
+        client = await _get_client()
+        r = await client.get(
+            f"{base_url}/rest/v1/{_TABLE}",
+            headers=_svc_headers(),
+            params={
+                "created_at": f"gte.{since}",
+                "order": "created_at.asc",
+                "limit": str(limit),
+            },
+        )
+        r.raise_for_status()
+        data = r.json()
+        return data if isinstance(data, list) else []
+    except Exception:
+        logger.exception("citation_audit: get_citation_audit_log_since failed")
+        return []

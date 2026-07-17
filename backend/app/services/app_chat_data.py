@@ -223,6 +223,34 @@ async def get_recent_messages_across_threads(
     return rows
 
 
+async def count_assistant_messages_since(jwt: str, since: str) -> int:
+    """Phase G-5(docs/sigmaris/phase_g_report.md、grounding_health_
+    runner.py用): sinceのISO8601文字列以降に保存された、assistantロールの
+    メッセージ数を返す(Search Trigger Rateの分母 = 全ターン数)。
+
+    get_recent_messages_across_threads()と同じuser_idスコープのクエリだが、
+    全件取得ではなくselect=idのみに絞り、件数だけを返す——
+    research_agent.py::_db_count_today_high()が既に確立している「カウント
+    専用にはselect=idだけ取得してlen()で数える」という既存パターンを踏襲
+    した(PostgRESTのcount=exactヘッダを使う方式も検討したが、この
+    コードベースのrest_select()は現状そのオプションを露出しておらず、
+    新たに対応を追加するより既存パターンの再利用を優先した)。
+    """
+    context = await get_profile_context(jwt)
+    user_id = context["userId"]
+    result = await rest_select(
+        jwt,
+        "chat_messages",
+        {
+            "select": "id",
+            "user_id": f"eq.{user_id}",
+            "role": "eq.assistant",
+            "created_at": f"gte.{since}",
+        },
+    )
+    return len(result) if isinstance(result, list) else 0
+
+
 async def replace_chat_messages(
     jwt: str,
     *,
