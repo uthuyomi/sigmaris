@@ -262,6 +262,127 @@ async def _memory_snapshot_generate() -> None:
         logger.exception("Memory snapshot generation job raised unexpectedly")
 
 
+# ── Phase Vis-1の前提条件対応(docs/sigmaris/phase_vis_report.md): RC-1〜
+# RC-5・Phase G指標・Safety Governanceは、いずれもVis-1時点では手動CLI
+# 実行のみで、この定期実行の仕組みに一切登録されていなかった。以下3件は、
+# 既存のscripts/run_cycle_health.py・scripts/run_grounding_health.py・
+# scripts/scan_safety_critical_files.pyが、既に確立した計測ロジック
+# (cycle_health_runner.py/grounding_health_runner.py/safety_critical_
+# files_scan.py)を、そのまま呼び出すだけであり、新しい計測ロジックは
+# 一切追加していない——既存の`_memory_validate`等と全く同じ、
+# try/except一段構えのfire-and-forgetパターンを踏襲した。 ─────────────
+
+async def _cycle_health_measure() -> None:
+    from app.services.cycle_health_runner import run_cycle_health  # noqa: PLC0415
+    from app.services.cycle_health_runs_store import record_cycle_health_run  # noqa: PLC0415
+    try:
+        jwt = await get_sigmaris_jwt()
+        result = await run_cycle_health(jwt=jwt)
+        rc1 = result["rc1_cycle_completion"]
+        rc2 = result["rc2_temporal_consistency"]
+        rc3 = result["rc3_belief_stability"]
+        rc4 = result["rc4_policy_belief_alignment"]
+        rc5 = result["rc5_cycle_break"]
+        safety_gov = result["safety_governance"]
+        run_id = await record_cycle_health_run(
+            window_days=result["window_days"],
+            period_from=result["period_from"],
+            period_to=result["period_to"],
+            rc1={
+                "total_experiences": rc1["total_experiences"],
+                "reached_count": rc1["reached_count"],
+                "raw_completion_rate": rc1["raw_completion_rate"],
+                "eligible_count": rc1["eligible_count"],
+                "eligible_completion_rate": rc1["eligible_completion_rate"],
+            },
+            rc2={
+                "score": rc2["score"],
+                "chat_pairs_checked": rc2["chat_pairs_checked"],
+                "chat_order_violation_count": rc2["chat_order_violation_count"],
+                "event_experience_checked": rc2["event_experience_checked"],
+                "event_experience_violation_count": rc2["event_experience_violation_count"],
+            },
+            rc3={
+                "score": rc3["score"],
+                "comparable_pattern_count": rc3["comparable_pattern_count"],
+                "flip_count": rc3["flip_count"],
+                "unsupported_flip_count": rc3["unsupported_flip_count"],
+            },
+            rc4={"score": rc4["score"], "flags_evaluated": rc4["flags_evaluated"]},
+            rc5={"status": rc5["status"], "broke_metrics": rc5["broke_metrics"]},
+            safety_governance={
+                "status": safety_gov["status"],
+                "unregistered_count": safety_gov["unregistered_count"],
+            },
+            notes="scheduled:cycle_health",
+            details=result["details_for_persistence"],
+        )
+        logger.info(
+            "Cycle health job done: run_id=%s rc5_status=%s safety_governance_status=%s",
+            run_id, rc5["status"], safety_gov["status"],
+        )
+        if rc5["status"] == "break_detected":
+            logger.warning("Cycle health job: RC-5 detected a break (broke_metrics=%s)", rc5["broke_metrics"])
+        if safety_gov["status"] == "gap_detected":
+            logger.warning(
+                "Cycle health job: safety governance gap detected (unregistered_files=%s)",
+                safety_gov["unregistered_files"],
+            )
+    except Exception:
+        logger.exception("Cycle health job raised unexpectedly")
+
+
+async def _grounding_health_measure() -> None:
+    from app.services.grounding_health_runner import run_grounding_health  # noqa: PLC0415
+    from app.services.grounding_health_runs_store import record_grounding_health_run  # noqa: PLC0415
+    try:
+        jwt = await get_sigmaris_jwt()
+        result = await run_grounding_health(jwt=jwt)
+        run_id = await record_grounding_health_run(
+            window_days=result["window_days"],
+            period_from=result["period_from"],
+            period_to=result["period_to"],
+            citation_precision=result["citation_precision"],
+            search_trigger_rate=result["search_trigger_rate"],
+            contradiction_rate=result["contradiction_rate"],
+            notes="scheduled:grounding_health",
+            details=result["details_for_persistence"],
+        )
+        logger.info(
+            "Grounding health job done: run_id=%s citation_precision=%s contradiction_rate=%s",
+            run_id, result["citation_precision"]["precision"], result["contradiction_rate"]["rate"],
+        )
+    except Exception:
+        logger.exception("Grounding health job raised unexpectedly")
+
+
+async def _safety_governance_scan() -> None:
+    # Safety-3(safety_critical_files_scan.py)のスキャンロジックを直接
+    # 呼び出すのみ。DB書き込みは行わない——毎日のcycle_health_measureが
+    # 既にsafety_governance_status(同じスキャン結果)をsigmaris_cycle_
+    # health_runsへ記録しているため、二重に記録しない(判断根拠、
+    # docs/sigmaris/phase_vis_report.md参照)。本ジョブの意義は、
+    # cycle_health_measureが(RC-1〜5計測の途中で例外を投げる等の理由で)
+    # 失敗した日でも、このスキャンだけは独立して実行され続けることに
+    # ある——依頼書「状況確認」という言葉通り、ログへの記録のみで完結する。
+    from pathlib import Path  # noqa: PLC0415
+    from app.services.safety_critical_files_scan import find_unregistered_gate_files  # noqa: PLC0415
+    try:
+        backend_root = Path(__file__).resolve().parents[3]  # proactive/ -> services/ -> app/ -> backend/
+        result = find_unregistered_gate_files(backend_root)
+        logger.info(
+            "Safety governance scan job done: scanned=%d gate_pattern=%d unregistered=%d",
+            result.scanned_file_count, result.gate_pattern_file_count, result.unregistered_count,
+        )
+        if not result.coverage_complete:
+            logger.warning(
+                "Safety governance scan job: unregistered candidates detected: %s",
+                [c.relative_path for c in result.unregistered_candidates],
+            )
+    except Exception:
+        logger.exception("Safety governance scan job raised unexpectedly")
+
+
 def startup_scheduler() -> None:
     global _scheduler
 
@@ -292,6 +413,16 @@ def startup_scheduler() -> None:
     _scheduler.add_job(_knowledge_graph_extract, CronTrigger(day_of_week="sun", hour=5, minute=15, timezone=tz), id="knowledge_graph_extract", replace_existing=True)
     _scheduler.add_job(_memory_snapshot_generate, CronTrigger(day_of_week="sun", hour=5, minute=25, timezone=tz), id="memory_snapshot_generate", replace_existing=True)
     _scheduler.add_job(_self_interest_queries,CronTrigger(day_of_week="sun", hour=5,  minute=30, timezone=tz), id="self_interest_queries",replace_existing=True)
+
+    # Phase Vis-1の前提条件対応(docs/sigmaris/phase_vis_report.md参照)。
+    # cycle_health_measure: 毎日3:20(memory_embedの3:00から20分後、6:15の
+    # curiosity_searchまで約3時間の空きがあった深夜帯へ配置)。
+    # grounding_health_measure・safety_governance_scan: 日曜早朝、B2週次
+    # バッチ(4:00〜5:30)の直後、5:40/5:45(B2本体とは重ならず、6:15の
+    # curiosity_searchまで30分以上の余裕を残した)。
+    _scheduler.add_job(_cycle_health_measure, CronTrigger(hour=3, minute=20, timezone=tz), id="cycle_health_measure", replace_existing=True)
+    _scheduler.add_job(_grounding_health_measure, CronTrigger(day_of_week="sun", hour=5, minute=40, timezone=tz), id="grounding_health_measure", replace_existing=True)
+    _scheduler.add_job(_safety_governance_scan, CronTrigger(day_of_week="sun", hour=5, minute=45, timezone=tz), id="safety_governance_scan", replace_existing=True)
 
     _scheduler.start()
     logger.info("Proactive scheduler started (tz=%s)", tz)
