@@ -25,6 +25,7 @@ from typing import Any
 
 from app.services.evidence_aggregation import EvidenceItem
 from app.services.local_llm import TaskType, get_llm_router
+from app.services.safety_critical_files import get_safety_mechanism_keywords
 
 logger = logging.getLogger(__name__)
 
@@ -248,19 +249,16 @@ async def critique_hypothesis_correspondence(hyp: GeneratedHypothesis, item: Evi
 # 再利用した(新しい安全機構リストを作らず、既存のS-4棚卸し結果を根拠に
 # する、という判断)。ファイル名は仮説の文章中に出現しないため、概念名で
 # 一致を取る。
-_SAFETY_MECHANISM_KEYWORDS = (
-    "response_guard", "response_guard.py",
-    "memory_confidence", "memory_confidence.py", "B11",
-    "constitution_guard", "constitution_guard.py",
-    "self_critique", "self_critique.py",
-    "citation_audit", "citation_audit.py",
-    "dissent", "dissent.py",
-    "executive_gate", "executive_gate.py",
-    "persona.md 9章", "persona.md 10章", "persona.md9章", "persona.md10章",
-    "制止する時のルール", "禁止事項", "絶対に超えない境界線",
-    "constitution.md", "憲法",
-    "confidence_guidance_note", "ヘッジ",
-)
+#
+# 【Safety-2追記(docs/sigmaris/safety_governance_report.md)】このタプル
+# は、以前はこのファイルへ直接ハードコードされていたが、code_diff_
+# generation.py::_SAFETY_MECHANISM_FILE_PATTERNSと内容がほぼ同一である
+# にもかかわらず独立して更新されており、F-3で新設されたファイルがどちら
+# にも反映されていない、という具体的な抜けをSafety-1が発見した。単一の
+# 正典(safety_critical_files.py)へ統合し、両ファイルがそこを参照する
+# 形に変更した——値・照合ロジック(下記rule_based_safety_flag()の
+# `keyword.lower() in haystack.lower()`)は一切変更していない。
+_SAFETY_MECHANISM_KEYWORDS = get_safety_mechanism_keywords()
 
 # 「安全機構を弱める方向」であることを示す動詞的キーワード。安全機構の
 # 名前が単に言及されているだけ(例: 「引用監査の結果を活用する」)ではなく、

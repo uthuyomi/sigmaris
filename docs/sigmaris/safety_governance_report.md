@@ -159,3 +159,225 @@ backend/app/services/constitution_guard.py: blocked_safety_mechanism           (
 - **CIK分類の当てはめ(2章)は、本タスクが独自に導出した解釈であり、以前の議論の正確な再現ではない可能性がある**(0章・提案4で既述)。
 - **調査は、`backend/app/services/`配下のPythonファイルと、`docs/`配下のMarkdownファイルを中心に行った。** フロントエンド(`frontend/`)側に、独立した安全機構が存在するかどうかは、本タスクでは調査していない(依頼書が例示した6機構、および関連するphase報告書が、いずれもバックエンド側の機構のみを扱っていたため、調査範囲をバックエンドに絞った)。
 - **表1の14件それぞれの「実際の発動頻度」「過去に実際に発動した実績があるか」は、本タスクでは調査していない**(ログ・監査データの分析は、依頼書のスコープ外と判断した)。
+
+---
+
+# Safety-2 実施報告: 安全機構リストの統合、及び、CIK分類の正式な定義
+
+**作業ブランチ:** `safety-2-list-consolidation-cik`(mainから新規作成)
+**範囲:** Safety-1が発見した、D-2(`hypothesis_generation.py`)とF-1(`code_diff_generation.py`)の、独立してハードコードされた2つの"安全上重要なファイル"リストを、単一の正典へ統合する。あわせて、CIK分類(Capability・Identity・Knowledge)を正式に定義し、Safety-1が棚卸しした14の安全機構を再分類する。**D-2・F-1、それぞれの判定ロジック自体(キーワード一致 vs ファイルパスパターン一致)は、一切変更していない。**
+
+---
+
+## 6. 統合された、リストの、実装内容
+
+### 6.1 新設モジュール: `backend/app/services/safety_critical_files.py`
+
+I/Oなし・LLM呼び出しなしの純粋なデータ定義モジュール。`SafetyCriticalFile`(`name`/`file_pattern`/`keywords`/`origin_phase`の4フィールドを持つ、frozenなdataclass)のタプルとして、安全上重要なファイルを一元管理する。
+
+```python
+@dataclass(frozen=True)
+class SafetyCriticalFile:
+    name: str
+    file_pattern: str        # F-1::check_diff_safety()が re.search() で照合
+    keywords: tuple[str, ...]  # D-2::rule_based_safety_flag()が部分一致で照合
+    origin_phase: str        # 由来の追跡用(判定ロジックには使わない)
+
+SAFETY_CRITICAL_FILES: tuple[SafetyCriticalFile, ...] = (...)
+
+def get_safety_mechanism_keywords() -> tuple[str, ...]:
+    return tuple(kw for entry in SAFETY_CRITICAL_FILES for kw in entry.keywords)
+
+def get_safety_mechanism_file_patterns() -> tuple[str, ...]:
+    return tuple(entry.file_pattern for entry in SAFETY_CRITICAL_FILES)
+```
+
+`hypothesis_generation.py`・`code_diff_generation.py`側の変更は、ハードコードされていたタプルリテラルを、この2関数の呼び出しへ置き換えただけである。
+
+```python
+# 変更前(hypothesis_generation.py)
+_SAFETY_MECHANISM_KEYWORDS = (
+    "response_guard", "response_guard.py", ...  # 25個のハードコードされた文字列
+)
+
+# 変更後
+from app.services.safety_critical_files import get_safety_mechanism_keywords
+_SAFETY_MECHANISM_KEYWORDS = get_safety_mechanism_keywords()
+```
+
+```python
+# 変更前(code_diff_generation.py)
+_SAFETY_MECHANISM_FILE_PATTERNS: tuple[str, ...] = (
+    r"response_guard\.py$", ...  # 9個のハードコードされた正規表現
+)
+
+# 変更後
+from app.services.safety_critical_files import get_safety_mechanism_file_patterns
+_SAFETY_MECHANISM_FILE_PATTERNS: tuple[str, ...] = get_safety_mechanism_file_patterns()
+```
+
+**判定ロジック自体(`rule_based_safety_flag()`の`keyword.lower() in haystack.lower()`によるループ、`check_diff_safety()`の`re.search(pattern, normalized)`によるループ)は、1行も変更していない。** 依頼書の制約「既存の判定ロジック自体は変更しないこと」への直接対応。
+
+### 6.2 収録対象を、依頼書が明示した3ファイルから、9ファイルへ拡張した判断根拠(独断で決めた箇所)
+
+依頼書は「`diff_approval.py`・`github_pr_publisher.py`・`diff_patch.py`**等**」と例示した。この「等」を、以下の判断基準で拡大解釈し、自己改善パイプライン(D-2〜F-3)全体の中で**実際に安全性の判定ロジック・承認制約を実装しているファイル**を、追加で6件収録した。
+
+| 追加ファイル | 由来 | 実装している安全性ロジック |
+|---|---|---|
+| `hypothesis_generation.py` | D-2 | `rule_based_safety_flag()`自身 |
+| `static_verification.py` | E-1 | `mentions_migration()`自身 |
+| `migration_review_queue_store.py` | E-4 | `record_review_decision()`のpending差し戻し拒否 |
+| `code_diff_generation.py` | F-1 | `check_diff_safety()`自身——**本リストを参照する関数自体を含むファイルであり、これが弱められれば本統合全体の意味が失われるため、最優先で保護すべきと判断した** |
+| `code_diff_proposal_store.py` | F-1/F-3 | `record_review_decision()`/`record_pr_outcome()` |
+| `review_diff_proposals.py` | F-3 | 承認・却下への唯一のCLI入口 |
+
+**判断根拠**: Safety-1が発見した抜け(F-3の新規ファイルが未登録だった)と、全く同じ性質のリスクは、実はF-3の3ファイルだけでなく、ゲート機能を実装している他の全ファイルに共通する構造的な問題である。依頼書の要件2は「F-3の…制御コード自体」と明示するが、この理由付けはPhaseを問わず、ゲート実装ファイル全般に等しく当てはまるため、範囲をD-2〜F-1まで一貫して広げた。一方、これらを呼び出すだけのオーケストレーション層(`code_diff_generation_runner.py`・`migration_review_queue.py`等、ゲート機能を実装していないファイル)は対象外とした——依頼書「過剰な、再設計を、避けること」に従い、「実際に安全性の判定ロジックを含むファイルのみ」という、明確で説明可能な基準に絞った。
+
+### 6.3 統合結果の検証(実測)
+
+元のD-2キーワード(25個)・F-1パターン(9個)が、いずれも新しい統合リストの部分集合として1件も欠落なく残っていることを、実際に集合比較して確認した。新しい統合リストは、キーワード48個・パターン18個(9機構 → 18機構への倍増、うち9件が本タスクでの新規追加)。
+
+実際に`check_diff_safety()`を呼び出し、Safety-1が発見した抜けが解消されたことを実測した:
+
+```
+backend/app/services/diff_approval.py: blocked_safety_mechanism           (旧: passed)
+backend/app/services/github_pr_publisher.py: blocked_safety_mechanism     (旧: passed)
+backend/app/services/diff_patch.py: blocked_safety_mechanism              (旧: passed)
+backend/app/services/code_diff_proposal_store.py: blocked_safety_mechanism (旧: passed)
+backend/scripts/review_diff_proposals.py: blocked_safety_mechanism         (旧: passed)
+backend/app/services/hypothesis_generation.py: blocked_safety_mechanism    (新規追加分)
+backend/app/services/static_verification.py: blocked_safety_mechanism     (新規追加分)
+backend/app/services/migration_review_queue_store.py: blocked_safety_mechanism (新規追加分)
+backend/app/services/code_diff_generation.py: blocked_safety_mechanism    (新規追加分)
+backend/app/services/orchestrator/response_guard.py: blocked_safety_mechanism (対照: 元から検出済み、回帰なし)
+backend/app/services/constitution_guard.py: blocked_safety_mechanism      (対照: 同上)
+backend/app/services/evidence_aggregation.py: passed                      (対照: 無関係ファイルは引き続きpassed、過剰ブロックなし)
+```
+
+### 6.4 対象外とした`_BLOCKED_FILE_PATTERNS`について
+
+F-1には、本タスクが統合した`_SAFETY_MECHANISM_FILE_PATTERNS`とは別に、`.env`・`config.py`・`auth.py`等の機密情報・CI設定・依存関係マニフェストを対象とする`_BLOCKED_FILE_PATTERNS`が存在する。**このリストは統合の対象外とした。** 判断根拠: D-2側に対応するキーワードリストがそもそも存在せず(「.envに触れるな」に相当する自由文キーワードという概念が成立しない)、Safety-1が発見した「2箇所の重複」という問題の対象そのものではないため。依頼書「既存のD-2・F-1の判定ロジック自体は変更しないこと」の精神を、収録対象の判断にも一貫して適用した。
+
+---
+
+## 7. CIK分類の、正式な定義
+
+**採用文書についての判断**: 依頼書は「`constitution.md`、または、新規の文書として」明文化することを求めている。本タスクは、`docs/sigmaris/safety_governance_report.md`(Safety-1・本タスクの成果物)を定義の正式な置き場所として採用し、`constitution.md`は編集しなかった。**判断根拠**: (a) `constitution.md`は「人間(海星さん)が直接編集する固定文書」であり(同ファイルのPhase S-4追記節)、この方針をむやみに崩したくなかったこと、(b) 依頼書自身の「報告してほしい内容」章が、CIK分類の正式な定義の記載場所として`safety_governance_report.md`を明示していること、(c) CIK分類は、Constitution本体の思想的な条項(Article 1〜9)というより、Safety-1〜3という一連の横断的なガバナンス調査のための、実務的な分類ツールという性格が強いと判断したこと。
+
+### 7.1 正式な定義
+
+Safety-1(2章)が示した"仮定としての解釈"を土台に、以下の通り正式に定義する。
+
+> **Capability(能力の一線)**: シグマリスが、世界に対して実際に行使できる「権限」の範囲を規定する軸。ある機構がゲートする対象が、コード・データベース・外部システム・ファイルシステム等、現実の状態を変更する(または変更しうる)「行動」そのものである場合、この軸に分類する。
+>
+> **Identity(同一性の一線)**: シグマリスが、自分自身を何者として提示し、ユーザーとの関係性をどう保つかを規定する軸。ある機構がゲートする対象が、名乗る名前・トーン・距離感・依存を助長しない振る舞い等、「自己呈示・関係性の様式」である場合、この軸に分類する。
+>
+> **Knowledge(知識・認識論の一線)**: シグマリスが、何をどれだけの確信度で主張してよいかを規定する軸。ある機構がゲートする対象が、記憶検索の確信度・事実の整合性・引用の忠実性等、「認識的な主張の正確さ・誠実さ」である場合、この軸に分類する。
+
+### 7.2 分類手順(曖昧なケースへの対応)
+
+1. その機構が、**何を判定対象にしているか**(行動そのものか/自己呈示か/主張の確からしさか)を、実装(判定ロジックが実際に何を入力に取るか)から確認する。
+2. 1つの軸に明確に対応する場合は、その軸に分類する。
+3. **複数の軸にまたがる場合は、両方を記録し、どちらが"主"かを、実装が持つ判定ロジックの直接の対象(1次的にチェックしている内容)を基準に決める。** 例: `persona.md`10章は、「依存助長・ロールプレイの禁止」(Identity)と「確信度の低い情報の断定禁止」(Knowledge)の両方を含むが、章全体の主眼(禁止事項の大半)がIdentity寄りであるため、Identityを主、Knowledgeを従として記録する。
+4. **メタな保護機構(ある機構が、他の機構"自体"を保護する場合)は、保護している対象の軸(複数になりうる)を全て記録した上で、保護を実現する仕組み自体の性質(行動のゲートかどうか)で主分類を決める。** 例: F-1〜Safety-2のブロックリストは、保護対象がIdentity・Knowledge・Capabilityの全軸にまたがるが、ブロックの仕組み自体は「コード変更という行動を止める」ものであるため、主分類はCapabilityとする。
+
+---
+
+## 8. 14の安全機構の、再分類結果
+
+7章の正式な定義に基づき、Safety-1が棚卸しした表1の14件を、改めて分類し直した。**結果はSafety-1の当てはめ(2章)から変化しなかった**——Safety-1の"仮定としての解釈"が、事後的に定義した正式な基準とも一致したことを、ここで確認できたことになる。
+
+| # | 機構 | CIK分類(正式定義による再分類) | 判定根拠(7.1の定義への当てはめ) |
+|---|---|---|---|
+| 1 | 名前・アイデンティティの一線(`response_guard.py`) | **Identity** | 判定対象=名乗る名前そのもの |
+| 2 | 事実整合性ガード | **Knowledge** | 判定対象=応答内の主張が事実(ツール出力)と一致するか |
+| 3 | B11(校正された放棄判定) | **Knowledge** | 判定対象=記憶検索結果への確信度 |
+| 4 | Self-Critique(G-3) | **Knowledge** | 判定対象=応答とEvidenceの整合性 |
+| 5 | Citation Audit(G-4) | **Knowledge** | 判定対象=claim単位の引用の忠実性 |
+| 6 | 制止する時のルール(persona.md 9章) | **Identity**(主)/関係性 | 判定対象=反対の伝え方という関係性の様式 |
+| 7 | 禁止事項(persona.md 10章) | **Identity**(主)、**Knowledge**(従) | 依存助長・ロールプレイ禁止=Identity、確信度の低い情報の断定禁止=Knowledge(7.2節の曖昧ケース) |
+| 8 | Constitution・Capability一線 | **Capability** | 判定対象=コード変更・DB変更・外部投稿等の行動 |
+| 9 | D-2 `requires_special_review` | **Capability** | 判定対象=将来Capability一線に触れうる行動の"種"(仮説) |
+| 10 | E-1 マイグレーション検出 | **Capability** | 判定対象=DB構造変更という行動 |
+| 11 | E-4 マイグレーションレビューキュー | **Capability** | 判定対象=DB構造変更の実行可否 |
+| 12 | F-1〜Safety-2 ブロックリスト(`safety_critical_files.py`) | **Capability**(主)、保護対象はIdentity/Knowledge/Capability全軸 | 判定対象=コード変更という行動そのもの。保護している中身は#1〜11の全軸にまたがる(7.2節のメタ機構ケース) |
+| 13 | F-1〜F-3 承認フロー全体 | **Capability** | 判定対象=コード変更の実行可否 |
+| 14 | F-3 二重チェック | **Capability** | 同上 |
+
+**分類の分布**: Capability 8件、Knowledge 4件、Identity 2件(#7は2軸にまたがるためIdentityとKnowledge両方にカウント)。Safety-1の考察通り、Capabilityが最多——Phase D〜Fが「行動」を伴う自己改善パイプラインの構築に集中していた時期であることと整合する。
+
+---
+
+## 9. 今後の、リストの更新忘れを、防ぐための、運用ルールの提案
+
+依頼書「複雑な自動化の仕組みでなくてよい」との指示に従い、以下の2点を組み合わせた、軽量な仕組みを提案する。
+
+### 9.1 運用ルール(人間向け、ドキュメントベース)
+
+今後のPhase(自己改善パイプラインに関わるもの: D・E・F系列、および将来のSafety系列)の完了報告に、次のチェック項目を1行加えることを提案する:
+
+> **「本Phaseで新設・変更したファイルのうち、安全性の判定ロジック・承認ゲート・確信度制御等を実装するものはあるか? あれば、`backend/app/services/safety_critical_files.py`の`SAFETY_CRITICAL_FILES`へ追加し、追加した判断根拠を報告書に明記すること。」**
+
+これは、今回のタスク自体が辿った手順(Safety-1で発見 → Safety-2で対応)を、次回以降は都度の完了報告の中で先回りして確認する、という運用上の習慣化であり、新しい仕組みの実装を必要としない。
+
+### 9.2 機械的な補助(すでに実装済み、6.3節で述べた検証の一部として恒久化)
+
+`SAFETY_CRITICAL_FILES`に登録された各エントリが、実際にリポジトリ上に存在するファイルを指しているかを検証する、軽量なテストを新設した(`RegistryFreshnessTests::test_every_registered_file_actually_exists_in_repo`、10章参照)。**これは「リネーム・削除されたのに登録が残ったままの、古いエントリ」というドリフトの片方向のみを検出する**——「追加登録されるべき新しいファイルが、まだ登録されていない」という、より重要な逆方向のドリフトは、ファイル存在チェックという機械的な手段だけでは原理的に検出できない(「安全性に関わるかどうか」の判断は人間の意味理解を要するため)。この逆方向は、9.1節の運用ルールで補うほかない、という限界を正直に記録する。
+
+---
+
+## 10. テスト結果
+
+`test_safety_2_list_consolidation.py`として10件の新規テストを作成した(scratchディレクトリ)。
+
+```
+SharedListStructureTests (4件)
+  PASS: hypothesis_generation.pyのキーワードが、safety_critical_files.py
+        由来であること(オブジェクト等価性の直接検証)
+  PASS: code_diff_generation.pyのパターンが、同上
+  PASS: SAFETY_CRITICAL_FILESに重複したnameが無いこと
+  PASS: 全エントリが、keywords・file_patternの両方を持つこと
+
+OriginalNineMechanismsPreservedTests (2件、依頼書「判定ロジック自体は
+  変更しない」への直接対応)
+  PASS: 【重要】元の25個のキーワードが、統合後も1件も欠落していない
+        (集合演算による直接検証)
+  PASS: 【重要】元の9個のファイルパターンが、同上
+
+F3AndPipelineGateFilesNowProtectedTests (3件、依頼書の要件1・2への
+  直接対応)
+  PASS: 【最重要】diff_approval.py・github_pr_publisher.py・diff_patch.py・
+        code_diff_proposal_store.py・review_diff_proposals.py・
+        hypothesis_generation.py・static_verification.py・
+        migration_review_queue_store.py・code_diff_generation.pyの
+        9ファイル全てが、check_diff_safety()で正しくblocked_safety_
+        mechanismと判定されること(Safety-1が発見した抜けの解消の実測)
+  PASS: 無関係なファイル(evidence_aggregation.py)は引き続きpassed
+        (過剰ブロックが発生していないことの回帰確認)
+  PASS: D-2側(rule_based_safety_flag())でも、hypothesis_generation.py
+        自身への言及が、自由文キーワード一致で検出できること
+
+RegistryFreshnessTests (1件、9.2節の運用ルール補助の一部)
+  PASS: 登録された全エントリが、実際にリポジトリ上に存在するファイルを
+        指していること
+
+10 passed
+```
+
+既存の`backend/tests/`・D-2〜Safety-1の全scratchテスト一式を再実行し、リグレッションが無いことを確認した。**唯一、F-1の`CheckDiffSafetyTests::test_diff_touching_unexpected_file_blocked`が、統合直後に1件失敗した**——これは判定ロジックの回帰ではなく、このテストが「安全機構リストに含まれない、無関係なファイル」の一例として`hypothesis_generation.py`を`expected_target_file`に使っていたところ、本タスクの意図通りの変更(6.2節)によって、そのファイル自体が安全機構ファイルに"格上げ"されたことによる、テストフィクスチャの偶発的な衝突だった。判定ロジック自体は変更していないため、`expected_target_file`を、安全機構リストに含まれない別の無関係ファイル(`hypothesis_prioritization.py`)へ差し替える、テストのみの1行修正で解消した(判断根拠、依頼書「既存のD-2・F-1のテストが引き続き通ることを確認する」への対応として、テスト意図を保ったまま最小限の修正にとどめた)。
+
+```
+10(本タスク) + 505(既存、F-3まで) = 515 passed, 7 subtests passed(合算実行)
+```
+
+**実モデルAPI・実データベースでの検証は行っていない。** 本タスクはPythonの定数リストの統合のみであり、マイグレーションを必要としない(DBスキーマ変更なし)。
+
+---
+
+## 11. 気づいた懸念点・次のステップ(Safety-3: 異常検知・監視の強化)に向けた申し送り事項
+
+1. **9.2節で述べた通り、「新しく追加登録されるべきファイルが、まだ登録されていない」という、より本質的な方向のドリフトは、機械的には検出できない。** Safety-3(異常検知・監視の強化)が、この限界に対処する仕組み(例: 新規ファイル作成を伴うコミットで、ファイル冒頭のコメントに"安全機構"related語彙があるかを検知する、軽量なヒューリスティック等)を検討する価値があるかもしれないが、過剰な自動化にならないよう慎重な設計が必要だと考える。
+2. **6.2節の判断で、収録対象を9ファイルへ拡張したが、この基準(「実際に安全性の判定ロジックを含むファイル」)自体の线引きは、本タスクの独自解釈である。** 今後、自己改善パイプラインにさらにファイルが追加された場合(Safety-3以降で新設されるファイルを含む)、同じ基準を機械的に適用できるとは限らない——最終的には、9.1節の運用ルールに基づく人間の判断が必要になる場面が、引き続き残る。
+3. **7章でCIK分類を`safety_governance_report.md`に定義したが、`constitution.md`本体には反映していない。** 海星さんが、CIK分類をConstitution本体の一部として正式に位置づけたい場合は、別途、`constitution.md`への追記を検討する余地がある(本タスクでは、7章で述べた判断根拠により、あえて見送った)。
+4. **表1の14機構のうち、#7(persona.md 10章)のみが2軸にまたがる、という状況は、Safety-1・Safety-2を通じて変わっていない。** これは欠陥ではなく、`persona.md`10章自体が複数の関心事(依存助長禁止・確信度の断定禁止)を1つの章にまとめている、既存文書の構成に起因するものであり、Safety-3以降でこの章を分割する等の変更は、`persona.md`自体の編集を伴うため、本タスクのスコープ外とした。
+5. **Safety-1が「その他の抜け」として記録した`sigmaris_self_discrepancies`の未配線状態(3.1節)は、本タスクでは対応していない。** Safety-1の提案3として申し送られたままであり、引き続きSafety-3以降の検討課題として残る。

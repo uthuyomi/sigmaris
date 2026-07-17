@@ -19,6 +19,7 @@ import re
 from dataclasses import dataclass
 
 from app.services.local_llm import TaskType, get_llm_router
+from app.services.safety_critical_files import get_safety_mechanism_file_patterns
 
 logger = logging.getLogger(__name__)
 
@@ -140,17 +141,18 @@ _BLOCKED_FILE_PATTERNS: tuple[str, ...] = (
 # そのまま再利用した——D-2のrule_based_safety_flag()が仮説の"文章"を
 # 対象にしたのと同じキーワード源を、ここでは"生成された差分の対象ファイル
 # パス"に対して適用する。新しい安全機構リストは作らない。
-_SAFETY_MECHANISM_FILE_PATTERNS: tuple[str, ...] = (
-    r"response_guard\.py$",
-    r"memory_confidence\.py$",
-    r"constitution_guard\.py$",
-    r"self_critique\.py$",
-    r"citation_audit\.py$",
-    r"dissent\.py$",
-    r"executive_gate\.py$",
-    r"persona\.md$",
-    r"constitution\.md$",
-)
+#
+# 【Safety-2追記(docs/sigmaris/safety_governance_report.md)】このタプル
+# は、以前はこのファイルへ直接ハードコードされていたが、hypothesis_
+# generation.py::_SAFETY_MECHANISM_KEYWORDSと内容がほぼ同一であるにも
+# かかわらず独立して更新されており、F-3で新設されたdiff_approval.py等が
+# どちらのリストにも反映されていない、という具体的な抜けをSafety-1が
+# 実測で発見した(check_diff_safety()を直接呼び出し、diff_approval.py
+# 等が誤ってpassed判定になることを確認した)。単一の正典(safety_
+# critical_files.py)へ統合し、両ファイルがそこを参照する形に変更した
+# ——値・照合ロジック(下記check_diff_safety()のre.search(pattern,
+# normalized))は一切変更していない。
+_SAFETY_MECHANISM_FILE_PATTERNS: tuple[str, ...] = get_safety_mechanism_file_patterns()
 
 _DIFF_PATH_RE = re.compile(r"^\+\+\+ b/(.+)$", re.MULTILINE)
 
