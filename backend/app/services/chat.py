@@ -6,6 +6,7 @@ import asyncio
 import json
 import logging
 import re
+import time
 import uuid
 from collections.abc import AsyncGenerator, AsyncIterator
 from datetime import UTC, datetime
@@ -41,6 +42,7 @@ from app.services.chat_routing import (
     tool_names_for_intent,
 )
 from app.services.citation_audit import persist_citation_audit, run_verification_checks, verify_response
+from app.services.live_events import emit_live_event
 from app.services.evidence_search import build_evidence_context, gather_search_evidence
 
 logger = logging.getLogger(__name__)
@@ -1000,9 +1002,42 @@ async def stream_chat_completion_ui(
     )
 
     client = _require_openai_client()
+    # Sigmaris Live-2(docs/sigmaris/sigmaris_live_report.md): Live-1が最初の
+    # 試験対象として提案したclassify_chat_intent()にのみ、イベント発行を
+    # 追加した。emit_live_event()はfire-and-forget(呼び出し元をawaitで
+    # 一切ブロックしない、失敗しても本来の意図分類処理には影響しない)。
+    #
+    # 本タスクでは、非streaming経路(run_chat_completion())には、あえて
+    # 手を加えていない——Live-1が「リアルタイムな可視化」の対象として
+    # 想定していたのはstreaming経路(このstream_chat_completion_ui())
+    # であり、run_chat_completion()を使う呼び出し元(WearOS等、BA4報告書
+    # 参照)には、そもそもSigmaris Liveを見ながら使うという利用形態が
+    # 想定されない。依頼書「他の処理には手を加えないこと」を、対象範囲を
+    # 広げない方向で厳格に解釈した(判断根拠、報告書に詳述)。
+    #
+    # invocation_idについて: orchestrator/service.pyが発行する真の
+    # invocation_id(監査ログのID)は、現時点ではHTTP境界(schedule_agent_
+    # client.py → routes/agent.py → ここ)を越えて渡されていない
+    # (X-Correlation-IDヘッダは送信されているが、agent_chat_stream()は
+    # まだこれを読んでいない)。共有ホットパスであるagent_chat_stream()の
+    # シグネチャ変更は本タスクの範囲外と判断し、この関数内で既に生成済み
+    # のmessage_id(979行目)を、イベント相関用のIDとして代用した。
+    # 1ターン内でのイベント相関(started→finished)には十分だが、
+    # orchestrator側の監査ログとの突き合わせはできない——次タスクへの
+    # 申し送り事項として報告書に明記する。
+    _live_event_started_at = time.perf_counter()
+    emit_live_event("intent_classification_started", message_id)
     route = await classify_chat_intent(
         messages=messages,
         attachment_facts=attachment_facts,
+    )
+    emit_live_event(
+        "intent_classification_finished",
+        message_id,
+        intent=route["intent"],
+        source=route["source"],
+        needs_search=bool((route.get("search") or {}).get("needs_search")),
+        elapsed_ms=int((time.perf_counter() - _live_event_started_at) * 1000),
     )
     logger.info(
         "chat stream routed thread_id=%s intent=%s source=%s reason=%s",
