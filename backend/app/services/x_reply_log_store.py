@@ -15,6 +15,7 @@
 from __future__ import annotations
 
 import logging
+from datetime import datetime, timezone
 from typing import Any
 
 from app.config import settings
@@ -102,6 +103,72 @@ async def record_detected_reply(
     except Exception:
         logger.exception("x_reply_log_store: failed to record_detected_reply reply_tweet_id=%s", reply_tweet_id)
         return None
+
+
+async def get_replies_needing_draft(*, limit: int = 20) -> list[dict[str, Any]]:
+    """Phase H-2.5(docs/sigmaris/phase_h_report.md): filter_outcomeが
+    "eligible"または"developer_bypass"で、まだ返信案を生成していない
+    (reply_draft_status="not_generated")行を、古い順に返す。生成
+    オーケストレーション(x_reply_generator.py)の、唯一の読み取り口。
+    失敗時は空リストを返す(既存store関数と同じベストエフォート方針)。"""
+    try:
+        base_url, _ = _require_supabase_config()
+        client = await _get_client()
+        response = await client.get(
+            f"{base_url}/rest/v1/{_TABLE}",
+            headers=_svc_headers(),
+            params={
+                "select": "*",
+                "filter_outcome": "in.(eligible,developer_bypass)",
+                "reply_draft_status": "eq.not_generated",
+                "order": "detected_at.asc",
+                "limit": str(limit),
+            },
+        )
+        response.raise_for_status()
+        data = response.json()
+        return data if isinstance(data, list) else []
+    except Exception:
+        logger.exception("x_reply_log_store: failed to get_replies_needing_draft")
+        return []
+
+
+async def save_reply_draft(
+    *,
+    reply_log_id: str,
+    status: str,
+    text: str | None = None,
+    audience: str | None = None,
+    score: float | None = None,
+) -> bool:
+    """検知した返信1件に対して生成した返信案を、"投稿待ち"の状態で保存
+    する(依頼書「実際の投稿は行わないこと」——本関数はDBへの書き込みの
+    みで、x_publisher.post_tweet()等、投稿に相当する処理は一切呼ばない)。
+    status="generation_failed"の場合は、text/audience/scoreをNoneのまま
+    記録してよい(全リトライ失敗を記録するだけの用途)。戻り値は成功可否
+    (例外は投げない、既存store関数と同じベストエフォート方針)。"""
+    if status not in ("pending_post", "generation_failed"):
+        raise ValueError(f"status must be pending_post or generation_failed, got: {status!r}")
+    try:
+        base_url, _ = _require_supabase_config()
+        client = await _get_client()
+        response = await client.patch(
+            f"{base_url}/rest/v1/{_TABLE}",
+            headers=_svc_headers(),
+            params={"id": f"eq.{reply_log_id}"},
+            json={
+                "reply_draft_status": status,
+                "reply_draft_text": text,
+                "reply_draft_audience": audience,
+                "reply_draft_score": score,
+                "reply_draft_generated_at": datetime.now(timezone.utc).isoformat(),
+            },
+        )
+        response.raise_for_status()
+        return True
+    except Exception:
+        logger.exception("x_reply_log_store: failed to save_reply_draft reply_log_id=%s", reply_log_id)
+        return False
 
 
 async def get_recent_eligible_replies(*, limit: int = 50) -> list[dict[str, Any]]:

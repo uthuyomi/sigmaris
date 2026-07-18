@@ -442,12 +442,23 @@ async def _categorized_x_post_check() -> None:
 # に相乗りすること」への対応——新しい定期実行基盤は作らず、既存の
 # AsyncIOScheduler/CronTriggerのパターンをそのまま使う。
 #
-# 【本ジョブが行わないこと】x_reply_detector.run_reply_detection()の
-# 戻り値(検知・フィルタリング結果)を、ログに残すのみ。実際の返信文の
-# 生成・投稿は、次のタスクの範囲であり、本ジョブには一切実装しない
-# (x_reply_detector.pyのモジュールdocstring参照)。
+# 【Phase H-2.5追記】検知直後に、フィルタを通過した返信の返信案を生成する
+# generate_pending_drafts()(x_reply_generator.py)も、同じジョブの中で
+# 続けて呼ぶことにした。新しいcronエントリを4件追加する代わりに、
+# 「検知→(通過分の)生成」を1つのジョブ実行内で完結させた判断根拠:
+# 生成対象は、このジョブが検知したばかりの行(またはこれまでに未生成の
+# 行)に限られるため、検知と生成を別々のスケジュールで走らせても、
+# 生成側は結局この検知ジョブの完了を待つだけになり、cronエントリを
+# 追加する実益がない。
+#
+# 【本ジョブが行わないこと】返信案の生成までは行うが、生成された返信案を
+# 実際にXへ投稿する処理(x_publisher.post_tweet())は、本ジョブにも
+# generate_pending_drafts()にも一切実装しない——生成された案は
+# "pending_post"(投稿待ち)としてDBに保存されるのみ(次のタスクH-3が、
+# 承認フローとともに実際の投稿を実装する)。
 async def _x_reply_detection_check() -> None:
     from app.services.x_reply_detector import run_reply_detection  # noqa: PLC0415
+    from app.services.x_reply_generator import generate_pending_drafts  # noqa: PLC0415
     try:
         result = await run_reply_detection()
         logger.info(
@@ -461,6 +472,15 @@ async def _x_reply_detection_check() -> None:
             )
     except Exception:
         logger.exception("X reply detection check raised unexpectedly")
+
+    try:
+        draft_result = await generate_pending_drafts()
+        logger.info(
+            "X reply draft generation done: candidates=%d generated=%d failed=%d",
+            draft_result["candidates"], draft_result["generated"], draft_result["failed"],
+        )
+    except Exception:
+        logger.exception("X reply draft generation raised unexpectedly")
 
 
 def startup_scheduler() -> None:
