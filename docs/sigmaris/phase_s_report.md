@@ -1046,3 +1046,118 @@ BriefingCheckTests (6件)
 2. **上記1への対応として、ブリーフィング専用の閾値・専用の判定ロジックを設けるという選択肢もあったが、今回は採用しなかった。** 判断根拠は36章の通り、依頼書が「既存のX投稿の選定と同様に」と明示していたため、まずは共通のGateをそのまま適用する最小構成で実装し、実際の発生頻度を観測してから調整すべきと考えたためである(既存の懸念点2「クールダウンと閾値はセットで見直すべき」という申し送りと同じ理由)。
 3. **37章で述べた通り、クールダウンの非対称性(通知系のみカウント対象)は今回解消していない。** 具体的な対応案は37.4節に記載した。
 4. **`_briefing_check()`は`get_sigmaris_jwt()`と`evaluate_executive_gate()`の2回の追加I/O(JWT取得+Drive State算出、内部でB3/Phase R/B16の3系統読み取り)を、cronの発火のたびに行う。** 従来の`_morning`/`_evening`/`_weekly`はJWT取得のみ(`_run_action()`内)で完結していたため、今回の変更で1日あたり3回分のDrive State算出が新たに発生する。既存の`_categorized_x_post_check`が1日4回同じコストを既に払っていることを踏まえると許容範囲と判断したが、Executive Gateの呼び出し頻度が今後さらに増える場合は、S-1の懸念点3・S-2の懸念点4で既に指摘されている「高頻度呼び出し時の重複読み取り」の問題が、より顕在化する可能性がある。
+
+---
+
+# Phase S-6 実施報告: ブリーフィング機能の完全廃止
+
+**作業ブランチ:** `phase-s6-remove-briefing-feature`(mainから新規作成)
+**範囲:** 朝ブリーフィング・夕方チェックイン・週次レビュー(Phase S-5でExecutive Gate経由の動的実行に変更したばかりの機能)を、運用者判断により機能自体として完全に廃止する。Executive Gate(`evaluate_executive_gate()`)自体、およびX投稿選定ロジックは削除・変更しない。
+
+---
+
+## 40. 廃止した機能の一覧
+
+以下を完全に削除した(無効化ではなく削除、`self_improvement.py`削除時の前例(`bea3ada`コミット)を踏襲)。
+
+| 種別 | 対象 | 削除内容 |
+|---|---|---|
+| ファイル削除 | `backend/app/services/proactive/actions.py` | `run_morning_briefing()`・`run_evening_checkin()`・`run_weekly_review()`・`_run_action()`・`ActionResult`・3つのプロンプト定数、ファイル全体を削除 |
+| 関数削除 | `backend/app/services/proactive/scheduler.py` | Phase S-5で新設した`_briefing_check()`、および`_morning()`/`_evening()`/`_weekly()`を削除 |
+| cron登録削除 | 同上 | `id="morning_briefing"`/`"evening_checkin"`/`"weekly_review"`の3つの`add_job()`呼び出しを削除 |
+| 未使用import削除 | 同上 | `actions.py`からのimport一式、`typing.Callable`/`Awaitable`/`TypeVar`(いずれも`_safe()`/`_briefing_check()`削除後、他に使用箇所が無いことを確認した上で削除)、`_safe()`ヘルパー自体も削除(唯一の呼び出し元が`_briefing_check()`だったため) |
+| APIエンドポイント修正 | `backend/app/routes/agent.py` | `POST /api/agent/proactive/trigger`から`morning_briefing`/`evening_checkin`/`weekly_review`の3アクションを削除。同エンドポイントが提供していた`research`トリガー(`run_research()`呼び出し)は、無関係な機能のため維持した。`_ACTION_MAP`辞書は対象が`research`1つだけになったため、辞書自体を廃し、単純な`if`分岐に簡略化した |
+| ドキュメント更新 | `docs/IMPLEMENTATION_STATUS.md` | APIエンドポイント一覧の該当行を`research`のみに修正。既にPhase Hの旧X投稿システム廃止時点で事実上無効化されていた「X投稿の朝ブリーフィング統合」という、二重に古くなっていた注意書きも削除した |
+| ドキュメント更新 | `docs/sigmaris/lifecycle.md` | 「ライフサイクルとSchedulerの対応」ガントチャートから`morning_briefing`/`evening_checkin`/`weekly_review`の3行を削除し、削除した旨の注記を追加。Actフェーズの「現在の実装」欄の「✅ プッシュ通知送信: `proactive/actions.py`」を「❌ プッシュ通知送信 — Phase S-6で完全廃止済み」に修正 |
+| コメント修正(機能変更なし) | `backend/app/services/orchestrator/service.py` | `_PROACTIVE_CALLER_PREFIX`周辺のコメントに、Phase S-6での注記(唯一の書き込み元が消滅し、`_is_proactive_call()`が今後常にFalseを返すこと)を追加した。ロジック自体は無変更(41章参照) |
+| コメント修正(機能変更なし) | `backend/app/services/executive_gate.py` | `_get_last_proactive_contact_at()`のdocstringに、Phase S-6での注記(このデータソースが今後常に空になり、`cooldown_active`が事実上常にFalseになること)を追加した。ロジック自体は無変更(41章参照) |
+
+**削除しなかったもの**: `evaluate_executive_gate()`(`executive_gate.py`)、`select_post_category()`・`_categorized_x_post_check()`を含むX投稿選定の全経路、Drive System(`drive_system.py`)、Goal Proposal(`goal_proposal.py`)は、依頼書の明示的な指示通り一切変更していない。
+
+---
+
+## 41. 削除前の最終確認結果(他からの参照が無いことの確認)
+
+削除前に、以下のパターンでコードベース全体(`backend/`・`docs/`・`frontend/`)をgrep検索した。
+
+```
+run_morning_briefing|run_evening_checkin|run_weekly_review|proactive\.actions|_briefing_check|ActionResult|_ACTION_MAP
+```
+
+削除前の時点で、ヒットしたファイルは以下の4つのみだった(Phase S-5報告書自身、履歴として残るPhase報告書群は除く)。
+
+1. `backend/app/services/proactive/scheduler.py`(削除対象そのもの)
+2. `backend/app/services/proactive/actions.py`(削除対象そのもの)
+3. `backend/app/routes/agent.py`(`_ACTION_MAP`経由で3関数を手動トリガーAPIから呼んでいた——**依頼書が明示的に想定していなかった、削除前調査で新たに発見した参照箇所**。40章の通り修正済み)
+4. `backend/tests/`配下: 該当する参照は0件だった(grep確認済み、削除によるテスト破壊のリスクなし)
+
+削除後、同じパターンで再度全文検索し、`backend/`配下の実コード(`.py`ファイル)には一切ヒットしないことを確認した。ヒットが残るのは以下のみで、いずれも意図的に残した履歴的記述である。
+
+- `docs/sigmaris/phase_h_report.md`・`phase_a1_report.md`・`temporal_layer_report.md`・`global_state_migration_audit.md`・`phase_vis_report.md`: 過去のPhase報告書(その時点のスナップショットとして記録されたものであり、他のPhase報告書と同様、過去の記述を遡って書き換えない方針を踏襲した)
+- `docs/sigmaris/decision_flow.md`: 通知ルーティングの設計コンセプトを扱う文書で、`morning_briefing`を通知チャネルの一例として挙げている。「📋 Planned」マーカー付きの構想レベルの記述であり、本タスクの対象(実装コードの削除)とは性質が異なると判断し、今回は変更していない。**判断に迷う場合は報告に記載するに留めてよい、という依頼書3章の許容に基づく判断。**
+- `backend/app/services/proactive/scheduler.py`内の2箇所の歴史的コメント(X投稿・返信検知の時刻選定理由として「当時存在した8:00 morning_briefing」等に言及): 廃止した旨を追記した上でそのまま残した(40章参照、時刻選定の経緯の記録として価値があるため)
+- `backend/app/services/proactive/scheduler.py`内、Phase Hのコメント(「旧proactive/actions.py::_try_smart_x_post()」への言及): これは今回削除した3関数とは別の、Phase H時点で既に削除済みだった旧関数への言及であり、無関係(そのまま維持)
+
+**新規発見(依頼書が想定していなかった参照)**: `backend/app/routes/agent.py`の`POST /api/agent/proactive/trigger`エンドポイントが、`_ACTION_MAP`経由でこの3関数を外部エージェント向けの手動トリガーAPIとして公開していたことを、削除前の調査で発見した。依頼書1章「他の機能から、これらの関数が参照されていないか、慎重に確認してから削除すること」への対応として、このエンドポイントを修正した(40章参照)。同エンドポイントは`research`アクションも扱っており、これは本タスクと無関係な既存機能のため、そちらは維持している。
+
+---
+
+## 42. Executive Gate・X投稿の選定への影響確認結果
+
+### 42.1 直接的な影響: 無し(削除・変更なし)
+
+`evaluate_executive_gate()`(`executive_gate.py`)・`select_post_category()`(`x_post_category_selector.py`)・`_categorized_x_post_check()`(`scheduler.py`)は、いずれも1行も変更していない。実際に`import`して呼び出せること、既存のcronジョブ登録(`categorized_x_post_check_1`〜`_4`)がそのまま残っていることを、削除後にモジュールレベルのimportテストで直接確認した(43章参照)。
+
+### 42.2 間接的な影響: クールダウン判定の実質的な無効化(重要、悪影響ではなく仕様上の帰結)
+
+Phase S-5時点の調査(37章)で既に、Executive Gateの3時間クールダウン(`_get_last_proactive_contact_at()`)は`caller_agent_id`が`"proactive-scheduler:"`で始まる`agent_invocation_audit_logs`の行のみを参照し、その**唯一の書き込み元が`proactive/actions.py::_run_action()`(=朝ブリーフィング・夕方チェックイン・週次レビューの3つ)だった**ことが判明していた。
+
+本タスクでその唯一の書き込み元を完全に削除したため、**今後このテーブルに`"proactive-scheduler:"`プレフィックスの新しい行は一切書き込まれなくなる。** 実運用への影響は以下の通り。
+
+1. デプロイ後、既存の過去ログ(もしあれば)が3時間の時間経過とともに「直近の接触」として参照されなくなり、以後`_get_last_proactive_contact_at()`は恒常的に`None`を返すようになる(43章のスモークテストで、書き込み行が0件の状態でも`None`へ正しく縮退することを確認済み)。
+2. `evaluate_executive_gate()`の3段階の絶対制約のうち、**クールダウン制約(2段目)が今後実質的に「常に非該当」として扱われる**ことになる。深夜早朝制約(1段目)・Drive閾値判定(3段目)は無変更であり、いずれも独立して機能し続ける。
+3. X投稿選定(`select_post_category()`)への具体的な影響: 従来、直近3時間以内に朝ブリーフィング等が実行されていた場合にのみ、X投稿がクールダウンでブロックされる可能性があった(Phase S-5報告37.1節)。この可能性が、ブリーフィング自体の消滅により**構造的に消滅した**。X投稿の1日の頻度自体は、既存の`MAX_DAILY_CATEGORY_POSTS=3`(`x_post_category_selector.py`)という独立した上限によって、引き続き抑制される。
+
+**この変化を「悪影響」ではなく「削除の自然な帰結」と判断した根拠**: 依頼書2章は「Executive Gate・X投稿の選定ロジックに悪影響を与えないこと」を求めているが、これは「ロジック自体が壊れる・例外を投げる・誤動作する」ことを指すと解釈した。今回確認した変化は、ロジックの一部(クールダウン)が参照するデータソースが自然に空になるという、**入力データの変化であって、ロジックの破壊ではない**。`evaluate_executive_gate()`はNoneを安全に処理する設計(既存の`last_contact_at is not None and ...`という条件式)であるため、例外・誤動作は発生しない。ただし、これはPhase S-5report 37章で「次善の課題」として明記していたクールダウンの非対称性問題を、「解消」ではなく「(書き込み元が無くなったことで)一方の当事者が消えた」という別の形で決着させたことになるため、43章のテストで明示的に検証し、44章の懸念点としても改めて明記する。
+
+---
+
+## 43. テスト結果
+
+```
+grep確認(41章): 削除後、backend/配下の実コードに旧3関数・actions.py・_ACTION_MAPへの参照が0件
+モジュールimportテスト:
+  PASS: app.main が例外なくimportできること(FastAPIアプリ全体の起動経路に問題がないこと)
+  PASS: app.services.proactive.scheduler のimportが成功し、_morning/_evening/_weekly/
+        _briefing_check/_safe がいずれも存在しない(hasattr=False)こと
+  PASS: app.routes.agent のimportが成功し、proactive_trigger は引き続き存在すること
+  PASS: app.services.executive_gate.evaluate_executive_gate、
+        app.services.x_post_category_selector.select_post_category が引き続きimport・
+        参照可能であること
+  PASS: app.services.proactive.scheduler._categorized_x_post_check が引き続き存在すること
+  PASS: _get_last_proactive_contact_at()を、書き込み行0件(rest_selectが空リストを返す)の
+        状態でモック実行し、例外を投げずNoneへ正しく縮退すること
+        (42.2節で述べた「常にNoneになる」帰結の直接検証)
+```
+
+既存の`backend/tests/`(16件)を変更前後で再実行し、リグレッションがないことを確認した。
+
+```
+16 passed(変更前)
+16 passed(変更後)
+```
+
+`scheduler.py`・`routes/agent.py`・`executive_gate.py`・`orchestrator/service.py`の構文チェック(`ast.parse`)が全て成功することを確認した。
+
+Phase S-5で作成した`_briefing_check()`向けのscratchテスト(6件)は、対象の関数自体が削除されたため、今回削除された機能を検証するテストとして意味を失った。`backend/tests/`には元々追加していなかった(scratchディレクトリのみ)ため、リポジトリ側での後始末は不要。
+
+**実モデルAPI・実DBでの検証は行っていない。** 注意事項の通り、追加のサーバーアクセス・APIキー取得は試みていない。本タスクは新規マイグレーションを必要としない(コード・ドキュメントの削除のみで、DBスキーマ変更は無し)。
+
+---
+
+## 44. 気づいた懸念点
+
+1. **【重要、42.2節の詳細】Executive Gateの3時間クールダウンが、書き込み元の消滅により実質的に恒常的な非該当状態になった。** これはPhase S-5報告37章で「次善の課題」としていたクールダウンの非対称性問題を、直接解消したわけではなく、「非対称の一方(通知系)が丸ごと無くなったことで、クールダウン自体が意味を失った」という形で結果的に決着した。将来、Executive Gate経由の別の自発的発話機構(例えば、いずれかの形でGoal Proposal(S-2)がスケジューラに配線される等)が新設された場合、この3時間クールダウンに実効性を持たせるには、その新機構が`"proactive-scheduler:"`プレフィックス(または新しい合意されたプレフィックス)を`caller_agent_id`にセットする必要がある——さもないと、クールダウンという安全装置が存在しないのと同じ状態が続く。
+2. **`orchestrator/service.py`のTemporal Layer Step 2機構(`_is_proactive_call()`・`_fact_items_excluding_mentioned_events()`)が、今回の削除により事実上到達不能なコードになった。** これらは`caller_agent_id`が`"proactive-scheduler:"`で始まる場合にのみ発動する設計だったが、その条件を満たす呼び出し元が無くなったため、常にFalse側の分岐(=通常のチャット同様の扱い)を通ることになる。今回はこの機構自体の削除は行わなかった——理由は(a) `orchestrator/service.py`はチャット応答経路の中核であり、専用テスト(`tests/orchestrator/test_service.py`)を持つ既存のコア機能であるため、依頼書が明示的に対象としていない箇所への踏み込みはリスクに見合わないと判断したこと、(b) 依頼書3章が「関連する記述の整理」について「判断に迷う場合は削除せず、報告に記載するに留めてもよい」と明示的に許容していることの2点である。コメントでの注記のみ追加し、コード自体(ロジック)は無変更とした。実害は無い(通常のチャット応答には一切影響しない、到達不能コードが残るだけ)が、将来同種の"プロアクティブ発話"の仕組みを再設計する際は、この既存機構を再利用できる可能性がある点は申し送っておく。
+3. **`docs/sigmaris/decision_flow.md`に、`morning_briefing`を通知チャネルの一つとして扱う設計記述が残っている。** 41章で述べた通り、これは「📋 Planned」マーカー付きの構想レベルの文書であり、実装コードの削除に直接連動させるべきかどうか判断が分かれると考え、今回は変更していない。もしこの文書が今後、実装の参照元として扱われる場面が生じた場合は、事前にこの記述の扱い(削除する/構想として残す)を明示的に判断する必要がある。
+4. **Phase S-5で「気づいた懸念点」として記録した、Drive閾値0.6によるブリーフィング頻度の過少化リスク(39章1点目)は、本タスクにより該当箇所自体が削除されたため解消(該当なし)となった。** 念のため明記する。

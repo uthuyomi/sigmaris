@@ -71,9 +71,19 @@ async def _get_last_proactive_contact_at(jwt: str) -> datetime | None:
     """直近の自発的な話しかけの時刻を、agent_invocation_audit_logsから
     取得する。「自発的」の判定は、orchestrator/service.py::_is_proactive_
     call()が既に使っている"proactive-scheduler:"プレフィックス
-    (proactive/actions.py::_run_action()がcaller_agent_idに付与する、
+    (旧proactive/actions.py::_run_action()がcaller_agent_idに付与していた、
     Temporal Layer Step2から確立済みの既存シグナル)をそのまま踏襲する
     ——新しい「自発的接触」の記録テーブル・記録経路は一切追加していない。
+
+    【Phase S-6での注記】このプレフィックスを実際にセットしていた唯一の
+    書き込み元(旧proactive/actions.py、朝ブリーフィング・夕方チェックイン・
+    週次レビュー)は機能自体を完全廃止した。このため本関数は今後、常に
+    Noneを返す(=cooldown_active=False)ようになる——X投稿選定
+    (x_post_category_selector.py)への影響としては、「直近のブリーフィング
+    から3時間以内はX投稿を控える」という制約が事実上消滅したことを意味する
+    (詳細な判断根拠、docs/sigmaris/phase_s_report.md Phase S-6参照)。
+    quiet_hours制約・Drive閾値判定は無変更のため、X投稿選定ロジック自体が
+    壊れることはない。
     """
     try:
         rows = await rest_select(jwt, "agent_invocation_audit_logs", {

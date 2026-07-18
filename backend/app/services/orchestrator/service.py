@@ -621,6 +621,17 @@ def _build_relevant_memories_context(memories: list[dict[str, Any]]) -> str | No
 # last_mentioned_at (requirement 2), so this whole mechanism is gated on the
 # caller_agent_id proactive/actions.py's _run_action() always sets, not on
 # any new parameter threaded through run_orchestrator_chat's public signature.
+#
+# Phase S-6(docs/sigmaris/phase_s_report.md): proactive/actions.pyの3関数
+# (旧morning_briefing/evening_checkin/weekly_review)は機能自体を完全廃止
+# した。この結果、"proactive-scheduler:"で始まるcaller_agent_idを実際に
+# セットする呼び出し元は、コードベース上に一つも存在しなくなった——
+# つまり_is_proactive_call()は今後常にFalseを返し、この関数・
+# _fact_items_excluding_mentioned_events()は事実上到達不能になっている。
+# 実害は無い(通常のユーザーチャットの経路には一切影響しない)ため削除は
+# 見送ったが、将来Executive Gate経由の別の自発的発話機構が
+# "proactive-scheduler:"プレフィックスを再びセットするようになれば、
+# この仕組みは自動的に復活する。
 _PROACTIVE_CALLER_PREFIX = "proactive-scheduler:"
 
 

@@ -21,11 +21,6 @@ from app.services.self_model import get_self_model, record_discrepancy, reflect,
 from app.services.x_publisher import get_publisher
 from app.services.x_reply_classifier import XReplyClassifier
 from app.services.health_data import HealthDataCollector, _summarize_health_items
-from app.services.proactive.actions import (
-    run_evening_checkin,
-    run_morning_briefing,
-    run_weekly_review,
-)
 from app.services.decision_log import get_active_preference_patterns
 from app.services.memory_validator import validate_all_facts
 from app.services.memory_search import search_relevant_memories, update_fact_embeddings
@@ -703,21 +698,17 @@ async def agent_live_stream(
 
 
 # ─── /api/agent/proactive/ ────────────────────────────────────────────────────
-
-
-_ACTION_MAP = {
-    "morning_briefing": run_morning_briefing,
-    "evening_checkin": run_evening_checkin,
-    "weekly_review": run_weekly_review,
-}
-
-_VALID_ACTIONS = list(_ACTION_MAP) + ["research"]
+#
+# Phase S-6(docs/sigmaris/phase_s_report.md): 朝ブリーフィング・夕方
+# チェックイン・週次レビュー(旧morning_briefing/evening_checkin/
+# weekly_review)は機能自体を完全廃止した。このエンドポイントの手動トリガー
+# 対象は"research"のみに縮小した(_ACTION_MAP/ProactiveTriggerRequestの
+# action列挙・多アクション対応の分岐は、対象が1つだけになったため不要と
+# 判断し削除した)。
 
 
 class ProactiveTriggerRequest(BaseModel):
-    action: str = Field(
-        description="morning_briefing | evening_checkin | weekly_review | research"
-    )
+    action: str = Field(description="research")
 
 
 @router.post("/proactive/trigger")
@@ -727,30 +718,19 @@ async def proactive_trigger(
 ) -> dict[str, Any]:
     _require_jwt(authorization)
 
-    # research action: does not go through orchestrator, returns raw result dict
-    if payload.action == "research":
-        from app.services.research_agent import run_research  # noqa: PLC0415
-        try:
-            result = await run_research()
-        except Exception as exc:
-            logger.exception("proactive/trigger research failed")
-            raise HTTPException(status_code=500, detail={"error": str(exc)}) from exc
-        return {"ok": True, "action": "research", "result": result}
-
-    fn = _ACTION_MAP.get(payload.action)
-    if fn is None:
+    if payload.action != "research":
         raise HTTPException(
             status_code=400,
-            detail={"error": f"Unknown action '{payload.action}'. Valid: {_VALID_ACTIONS}"},
+            detail={"error": f"Unknown action '{payload.action}'. Valid: ['research']"},
         )
 
-    result = await fn()
-    return {
-        "ok": result.ok,
-        "action": result.action,
-        "notified": result.notified,
-        "error": result.error,
-    }
+    from app.services.research_agent import run_research  # noqa: PLC0415
+    try:
+        result = await run_research()
+    except Exception as exc:
+        logger.exception("proactive/trigger research failed")
+        raise HTTPException(status_code=500, detail={"error": str(exc)}) from exc
+    return {"ok": True, "action": "research", "result": result}
 
 
 # ─── /api/agent/self/ ────────────────────────────────────────────────────────
