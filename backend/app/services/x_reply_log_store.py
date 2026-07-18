@@ -171,6 +171,123 @@ async def save_reply_draft(
         return False
 
 
+async def get_reply_drafts_pending_review(*, limit: int = 50) -> list[dict[str, Any]]:
+    """Phase H-3(docs/sigmaris/phase_h_report.md): reply_draft_status=
+    "pending_post"(返信案の生成が完了している)かつreview_status=
+    "pending"(まだ海星さんが決定していない)の行を、古い順に返す。
+    承認CLI(scripts/review_reply_drafts.py)の`list`が使う、唯一の
+    読み取り口。失敗時は空リストを返す(既存store関数と同じベスト
+    エフォート方針)。"""
+    try:
+        base_url, _ = _require_supabase_config()
+        client = await _get_client()
+        response = await client.get(
+            f"{base_url}/rest/v1/{_TABLE}",
+            headers=_svc_headers(),
+            params={
+                "select": "*",
+                "reply_draft_status": "eq.pending_post",
+                "review_status": "eq.pending",
+                "order": "detected_at.asc",
+                "limit": str(limit),
+            },
+        )
+        response.raise_for_status()
+        data = response.json()
+        return data if isinstance(data, list) else []
+    except Exception:
+        logger.exception("x_reply_log_store: failed to get_reply_drafts_pending_review")
+        return []
+
+
+async def get_reply_draft_by_id(reply_log_id: str) -> dict[str, Any] | None:
+    """1件のx_reply_log行を、idで取得する。承認CLIの`show`・
+    reply_approval.pyの、承認・却下操作の前段で使う、唯一の読み取り口。
+    見つからない・失敗時はNoneを返す。"""
+    try:
+        base_url, _ = _require_supabase_config()
+        client = await _get_client()
+        response = await client.get(
+            f"{base_url}/rest/v1/{_TABLE}",
+            headers=_svc_headers(),
+            params={"select": "*", "id": f"eq.{reply_log_id}"},
+        )
+        response.raise_for_status()
+        data = response.json()
+        if isinstance(data, list) and data:
+            return data[0]
+        return None
+    except Exception:
+        logger.exception("x_reply_log_store: failed to get_reply_draft_by_id reply_log_id=%s", reply_log_id)
+        return None
+
+
+async def record_reply_review_decision(
+    reply_log_id: str, *, status: str, notes: str = "", reviewed_by: str = "",
+) -> bool:
+    """海星さんの、承認・却下という決定そのものを記録する(F-3の
+    record_review_decision()と同じパターン——review_status/review_notes/
+    reviewed_by/reviewed_atの4列のみを更新する、決定の記録に徹した
+    関数)。呼び出し元(reply_approval.py)が、pending状態であることの
+    確認を、この関数の呼び出し前に済ませている前提(責務の分離)。"""
+    if status not in ("approved", "rejected"):
+        raise ValueError(f"status must be approved or rejected, got: {status!r}")
+    try:
+        base_url, _ = _require_supabase_config()
+        client = await _get_client()
+        response = await client.patch(
+            f"{base_url}/rest/v1/{_TABLE}",
+            headers=_svc_headers(),
+            params={"id": f"eq.{reply_log_id}"},
+            json={
+                "review_status": status,
+                "review_notes": notes,
+                "reviewed_by": reviewed_by,
+                "reviewed_at": datetime.now(timezone.utc).isoformat(),
+            },
+        )
+        response.raise_for_status()
+        return True
+    except Exception:
+        logger.exception("x_reply_log_store: failed to record_reply_review_decision reply_log_id=%s", reply_log_id)
+        return False
+
+
+async def record_reply_post_outcome(
+    reply_log_id: str, *, status: str, tweet_id: str | None = None, error: str | None = None,
+) -> bool:
+    """承認後、実際にXへの投稿を試みた結果を記録する(F-3の
+    record_pr_outcome()と同じパターン——「決定の記録」(record_reply_
+    review_decision)とは別の列に、「実行結果」を記録する。承認の記録
+    自体は、この関数がどう呼ばれても一切変更しない——post_status=
+    "blocked_by_recheck"の場合でも、review_status="approved"のままで
+    あることが、正直な監査証跡になる、というF-3のgate B原則を踏襲)。"""
+    if status not in ("posted", "failed_to_post", "blocked_by_recheck"):
+        raise ValueError(f"status must be posted/failed_to_post/blocked_by_recheck, got: {status!r}")
+    try:
+        base_url, _ = _require_supabase_config()
+        client = await _get_client()
+        payload: dict[str, Any] = {"post_status": status}
+        if tweet_id is not None:
+            payload["posted_tweet_id"] = tweet_id
+        if status == "posted":
+            payload["posted_at"] = datetime.now(timezone.utc).isoformat()
+        response = await client.patch(
+            f"{base_url}/rest/v1/{_TABLE}",
+            headers=_svc_headers(),
+            params={"id": f"eq.{reply_log_id}"},
+            json=payload,
+        )
+        response.raise_for_status()
+        return True
+    except Exception:
+        logger.exception(
+            "x_reply_log_store: failed to record_reply_post_outcome reply_log_id=%s error=%s",
+            reply_log_id, error,
+        )
+        return False
+
+
 async def get_recent_eligible_replies(*, limit: int = 50) -> list[dict[str, Any]]:
     """filter_outcomeが"eligible"(開発者以外・フィルタ通過)または
     "developer_bypass"(開発者本人)の、直近の返信を新しい順に返す。
