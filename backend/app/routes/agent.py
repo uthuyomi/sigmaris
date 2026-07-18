@@ -48,6 +48,7 @@ from app.services.grounding_health_runs_store import get_recent_grounding_health
 from app.services.drive_system import get_current_drive_state
 from app.services.migration_review_queue_store import get_pending_reviews
 from app.services.code_diff_proposal_store import get_pending_diff_proposals
+from app.services.live_events import get_live_event_bus
 
 router = APIRouter(prefix="/api/agent", tags=["agent"])
 logger = logging.getLogger(__name__)
@@ -658,6 +659,47 @@ async def agent_growth_pending_review(
         "code_diff_pending_count": len(diff_pending),
         "total_pending_count": len(migration_pending) + len(diff_pending),
     }
+
+
+# ─── /api/agent/live/ (Sigmaris Live-2: イベント配信) ────────────────────────
+#
+# docs/sigmaris/sigmaris_live_report.md(Live-1の設計、本タスクLive-2での
+# 最初の実装)。Live-1、3.4節の設計通り、「観察者の接続」と「実際にチャット
+# しているユーザー自身の接続」を分離する——本エンドポイントは、特定の
+# チャットリクエストのHTTP接続とは独立した、読み取り専用のSSE配信のみを
+# 行う。認証は、既存の/api/agent/growth/*と同じX-Agent-ID/X-Agent-Secret
+# 方式を再利用する(新しい認証機構は作らない)。Live-1、4.3節の設計通り、
+# 配信されるイベントは常に要約データのみ(発話内容・記憶の中身は含まない)
+# のため、/api/agent/growth/*と異なり、ユーザーJWT(_require_jwt)は要求
+# しない——将来の詳細情報取得(Live-3相当)でのみ、JWTによる本人確認を
+# 追加すべきというのが、Live-1が示した設計方針である。
+
+@router.get("/live/stream")
+async def agent_live_stream(
+    x_agent_id: str | None = Header(default=None),
+    x_agent_secret: str | None = Header(default=None),
+) -> StreamingResponse:
+    """Sigmaris Liveのイベントを、SSEでリアルタイムに配信する。接続中は、
+    live_events.LiveEventBusに発行された全イベントを、そのまま中継する
+    (要約データのみ、Live-1・4章のプライバシー方針に従う——本エンド
+    ポイント自体はペイロードの中身を検査・加工しない)。"""
+    _verify_agent(x_agent_id, x_agent_secret)
+    bus = get_live_event_bus()
+    queue = bus.subscribe()
+
+    async def _generate():
+        try:
+            # 接続確認用の最初のイベント(観察者側が、接続自体は成功した
+            # ことを確認できるようにする——実際のintent_classification_*
+            # イベントは、次にチャットが行われるまで届かないため)。
+            yield b": connected\n\n"
+            while True:
+                event = await queue.get()
+                yield f"data: {json.dumps(event, ensure_ascii=False)}\n\n".encode("utf-8")
+        finally:
+            bus.unsubscribe(queue)
+
+    return StreamingResponse(_generate(), media_type="text/event-stream")
 
 
 # ─── /api/agent/proactive/ ────────────────────────────────────────────────────

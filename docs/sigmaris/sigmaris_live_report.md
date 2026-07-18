@@ -295,3 +295,107 @@ difference: -10.144ms (誤差範囲内、統計的な有意差なし)
 - 最初の試験導入対象として、既存調査が最大のボトルネックと特定し、かつ現在最も不可視で、実装リスクも最も低い、意図分類(`classify_chat_intent()`)を提案した(6章)。
 
 **次のタスクへの申し送り**: 本タスクでは、`emit_live_event()`・`live_event_bus`・新規SSEエンドポイントのいずれも実装していない。次タスク(Live-2相当)では、まず6.1節で提案した意図分類の1箇所にのみ、最小のイベント発行を試験的に組み込み、実運用での挙動(観測者への配信遅延・接続安定性等)を確認してから、他の段階へ拡張することを推奨する。
+
+---
+
+# Sigmaris Live Live-2 実施報告: 最初のイベント発行の試験的な導入
+
+Live-1が提案した設計に基づき、`classify_chat_intent()`にのみ、実際にイベント発行・SSE配信を実装した。他の処理(記憶検索・応答生成等)には、依頼書の指示通り一切手を加えていない。
+
+## 7. イベント発行の実装詳細
+
+### 7.1 新設モジュール: `backend/app/services/live_events.py`
+
+Live-1、3.1〜3.2節の設計をそのまま実装した。
+
+- `LiveEventBus`(dataclass): プロセス内メモリの、単純なpub/subバス。`_subscribers: set[asyncio.Queue]`を保持し、`subscribe()`/`unsubscribe()`/`publish()`の3メソッドのみを持つ。
+- `publish(event)`: 同期・非I/O(インメモリのキュー操作のみ)。接続中の全観察者のキューへ`put_nowait()`する。キューが満杯(`maxsize=100`)の観察者にはこのイベントをスキップし、`logger.warning()`のみ行う(例外は送出しない——観察者側の受信遅延が、発行側や他の観察者に一切影響しないための設計)。
+- `emit_live_event(event_type, invocation_id, **fields)`: fire-and-forgetの入口。`asyncio.create_task(_publish_live_event(...))`のみを行う同期関数。
+- `_publish_live_event(...)`: タスク本体。`try/except`で自己完結し、失敗しても外部(呼び出し元・asyncioのタスク管理)に一切伝播しない。イベント本体(`event`/`invocation_id`/`timestamp`+可変フィールド)は、この関数の中で組み立てる。
+
+### 7.2 呼び出し箇所: `backend/app/services/chat.py`
+
+`stream_chat_completion_ui()`内、`classify_chat_intent()`の呼び出し(既存のコード、変更前は1005-1008行目)を、`emit_live_event()`の呼び出しで挟む形にした。
+
+```python
+_live_event_started_at = time.perf_counter()
+emit_live_event("intent_classification_started", message_id)
+route = await classify_chat_intent(
+    messages=messages,
+    attachment_facts=attachment_facts,
+)
+emit_live_event(
+    "intent_classification_finished",
+    message_id,
+    intent=route["intent"],
+    source=route["source"],
+    needs_search=bool((route.get("search") or {}).get("needs_search")),
+    elapsed_ms=int((time.perf_counter() - _live_event_started_at) * 1000),
+)
+```
+
+`classify_chat_intent()`関数自体(`chat_routing.py`)は、1行も変更していない——依頼書「既存の意図分類の処理速度・精度に一切悪影響を与えないこと」への対応として、既存の、慎重に軽量化されてきた関数の内部には触れず、その呼び出し元(1箇所のみ)を挟む形に徹した。
+
+**判断根拠1: 非streaming経路(`run_chat_completion()`)には、あえて手を加えていない。** `chat.py`には`classify_chat_intent()`の呼び出しが2箇所存在する(streaming用の`stream_chat_completion_ui()`と、非streaming用の`run_chat_completion()`)。Live-1が「リアルタイムな可視化」の対象として想定していたのは、実際に応答が生成されている最中に画面へ反映される、streaming経路である。非streaming経路(WearOS等、`docs/sigmaris/phase_ba4_report.md`で言及)には、そもそもSigmaris Liveを見ながら使うという利用形態が想定されないと判断し、依頼書「他の処理には手を加えないこと」を、対象範囲を広げない方向で厳格に解釈した。
+
+**判断根拠2: `invocation_id`には、`orchestrator/service.py`が発行する真の監査ログID(`invocation_id`)ではなく、`chat.py`内で既に生成済みの`message_id`を代用した。** 真のIDは、`schedule_agent_client.py`が`X-Correlation-ID`ヘッダとして送信済みだが、受け手の`routes/agent.py::agent_chat_stream()`は、現時点でこのヘッダを読んでいない。これを読むよう変更するには、共有ホットパスである`agent_chat_stream()`のシグネチャ変更が必要になり、依頼書が求める「本タスクの範囲は`classify_chat_intent()`のみ」という厳格な限定から外れる、既存の本番エンドポイントへの追加リスクだと判断した。`message_id`は、1ターン内でのイベント相関(`started`→`finished`の対応付け)には十分に機能するが、`orchestrator/audit.py`の監査ログとは突き合わせられない、という制約が残る(9章に申し送り)。
+
+## 8. SSE配信の実装詳細(publish/subscribe分割の実現方法)
+
+Live-1、3.3〜3.4節の設計に基づき、発行層(7章)とは独立した配信層を実装した。
+
+### 8.1 バックエンド: `GET /api/agent/live/stream`(`backend/app/routes/agent.py`)
+
+既存の`/api/agent/growth/*`と同じ`_verify_agent(x_agent_id, x_agent_secret)`のみで認証する(Live-1、4.3節の設計通り、配信されるデータが要約情報のみのため、ユーザーJWTによる本人確認は不要と判断——将来の詳細取得エンドポイントでのみ追加すべき、という方針を踏襲した)。接続ごとに`bus.subscribe()`で専用の`asyncio.Queue`を取得し、`while True: event = await queue.get()`でイベントを待ち受け、`data: {...}\n\n`形式(既存の`/api/agent/chat/stream`と全く同じSSE形式)でyieldし続ける。接続が切れた場合は`finally`節で確実に`unsubscribe()`する。
+
+これにより、**このエンドポイントへの接続(観察者)と、実際にチャットしている`/api/orchestrator/chat/stream`への接続は、完全に独立したHTTP接続になる**——Live-1、3.4節が提案した「観察者の視点とチャットしている接続の分離」を、そのまま実現した。
+
+### 8.2 フロントエンド: `/api/live/stream`(Next.js API Route)+ `/live`(確認用ページ)
+
+- `frontend/src/app/api/live/stream/route.ts`(新設): サーバーサイドで、既存の`agent-client.ts::readAgentHeaders()`(`/growth`ページが使うものと全く同じ関数)を使い、エージェント認証ヘッダ付きでバックエンドのSSEへ接続し、`upstream.body`(`ReadableStream`)を、加工せずそのままブラウザへ中継する。**エージェント認証情報は、サーバーサイドの環境変数からのみ読み、ブラウザには一切渡さない**(既存の`/growth`・`/timeline`ページと同じ設計方針)。`EventSource`(ブラウザAPI)はカスタムヘッダを付与できないため、この中継層が必須になる。
+- `frontend/src/app/live/page.tsx`(新設)+`frontend/src/components/live/live-event-log.tsx`(新設): `requireUser()`(既存の認証ガード)で保護した、最小限の確認用ページ。`new EventSource("/api/live/stream")`で接続し、受信した各イベントを、直近200件までのテキストログとして画面に表示するのみ。**依頼書の指示通り、本格的なSigmaris Live画面(点灯・メトリクス・グラフ等)は実装していない。** ナビゲーション(`app-shell.tsx`)にもリンクを追加していない(確認用の一時的なページと位置づけたため)。
+
+### 8.3 判断根拠: なぜチャット自身のSSE接続に相乗りせず、別接続にしたか
+
+Live-1、3.4節で検討した「同一クライアントへは、チャット自身のSSEストリームに`live_event`フィールドを追加する形でも配信できる」という代替案は、本タスクでは採用しなかった。判断根拠: (a) 依頼書が明示的に「観察者の視点と、実際にチャットしているユーザーの接続が分離される、というLive-1の提案を踏まえた設計にすること」を要件として指定しており、まず分離された設計を実装することが本タスクの直接の要求だと判断した。(b) 相乗り方式は、`orchestrator/service.py`の`OrchestratorStreamEvent`(既存のdelta/tool_event/done)にフィールドを追加する必要があり、これも「他の処理には手を加えないこと」が禁じる範囲に近い、共有インフラへの変更になる。独立したSSEエンドポイントは、既存のチャットストリームに一切触れずに実現できる、最も低リスクな選択肢だった。
+
+## 9. 処理速度への影響の確認結果
+
+依頼書「可能であれば、処理速度への影響を実測、または見積もる」への対応として、Live-1の実験(シミュレーション)ではなく、**実際に実装した`emit_live_event()`そのものを直接計測**した。
+
+```
+2000回のstarted+finishedペア呼び出し(観察者接続なし):
+  合計 13.57ms、1ペアあたり平均 6.79マイクロ秒
+
+同条件、観察者(SSE購読者)が1つ接続された状態:
+  合計 14.48ms、1ペアあたり平均 7.24マイクロ秒
+```
+
+`classify_chat_intent()`自体は、ヒューリスティックで即座に終わる場合でも数ミリ秒〜数十ミリ秒、LLM呼び出しにフォールバックする場合は`incident_response_latency_investigation.md`の実測で数秒(場合によっては8秒超)かかる処理である。今回追加した`emit_live_event()`2回分のオーバーヘッド(合計で1桁マイクロ秒オーダー)は、**いずれのケースでも、処理全体の所要時間に対して測定不能なほど小さい**(最も速いヒューリスティック経路と比較しても、1000分の1以下)。
+
+また、観察者が接続していても、いなくても、オーバーヘッドはほぼ変わらない(6.79μs vs 7.24μs、誤差の範囲内)ことを確認した——`publish()`が接続中の観察者数に対して線形の処理(`for queue in list(self._subscribers):`)であるため、観察者が極端に多くない限り(本システムは個人利用規模のため現実的でない)、この結論は変わらないと考える。
+
+**追加で判明した挙動(9.1で申し送り)**: 観察者が接続したままイベントを受信し続けない場合(`queue.get()`を呼ばれない状態が続く場合)、`_QUEUE_MAXSIZE`(100件)に達した時点から、`publish()`のたびに`logger.warning("live_events: subscriber queue full, dropping event")`が出力され続けることを、意図的にキューを枯渇させる実験で確認した。実際のSSEエンドポイント(8.1節)は`while True: await queue.get()`で継続的に消費し続けるため、正常系では発生しない挙動だが、観察者側の接続が実質的にハングした場合(受信を止めたがTCP接続自体は残っている等)には、警告ログが継続的に出力される可能性がある——これは9.1節の懸念点として明記する。
+
+## 10. テスト結果
+
+`test_sigmaris_live_2_intent_classification_pilot.py`に15件のテストを新設した。既存テストとあわせて、全688件(Live-1までの673件+新規15件)が成功した。回帰は発生していない。
+
+サンプル(要件ごと):
+
+- **要件1(`classify_chat_intent()`にのみ、試験的にイベント発行が追加されること)**: `test_emits_started_then_finished_around_classify_call` — `stream_chat_completion_ui()`を実行し、`classify_chat_intent()`の呼び出し前後で、正確に2回(`intent_classification_started`→`intent_classification_finished`)`emit_live_event()`が呼ばれることを確認。
+- **要件2(処理速度・精度への非影響)**: `test_classify_chat_intent_receives_unmodified_arguments`(渡される引数が一切変更されていないこと)・`test_route_result_is_used_unchanged_downstream`(戻り値`route`が、既存の後続処理`build_specialized_router_instruction()`へ、そのまま正しく渡ること)。
+- **要件(イベント発行の失敗が、本来の処理に影響しないこと)**: `test_bus_publish_exception_does_not_affect_caller` — `LiveEventBus.publish()`自体が例外を送出するよう意図的に細工した状態で、`stream_chat_completion_ui()`全体を実行し、応答生成が正常に完了する(`finishReason: stop`まで到達する)ことを確認。`test_failing_publish_does_not_leave_unhandled_task_exception` — 失敗時にも、タスク自身が例外を握りつぶすことを確認。
+- **要件3(SSE配信)**: `LiveEventBusDeliveryTests`(5件、subscribe/publish/unsubscribe・複数観察者への同時配信・キュー満杯時の非例外的なドロップ・`emit_live_event()`からの end-to-end到達)、`LiveStreamRouteTests`(2件、`_verify_agent()`による認証の必須化・`StreamingResponse`が正しい`media_type`で返ること)。
+- **要件4(生データを含まないこと)**: `test_finished_event_payload_contains_only_summary_fields` — ペイロードに`intent`/`source`/`needs_search`/`elapsed_ms`のみが含まれ、`reason`(自由文)やユーザー発言そのものが含まれないことを確認。
+- **要件5(他の処理には手を加えないこと)**: 記憶検索・応答生成関連のコードは一切変更していない(既存694件級のテストが無変更で成功していることが、その裏付け)。
+- **要件6(既存機能への非影響)**: 既存688件(Live-2までの回帰込み)が全て成功。フロントエンドは`npx eslint`・`npx tsc --noEmit`のいずれもエラーなしを確認。
+
+## 11. 気づいた懸念点・次のステップ(Live-3以降、他の処理への拡大)に向けた申し送り事項
+
+1. **`invocation_id`が、`orchestrator/service.py`の真の監査ログIDと一致しない(7.2節、判断根拠2)。** 次タスクで他の処理(記憶検索等、`orchestrator/service.py`側で発生する処理)にイベント発行を拡大する際は、そちら側では真の`invocation_id`が既に手元にあるため問題にならないが、`chat.py`側のイベント(意図分類・応答生成・Evidence検索)と、`orchestrator/service.py`側のイベント(記憶検索等)を、同一ターンとして相関させたい場合、`X-Correlation-ID`ヘッダを`agent_chat_stream()`が実際に読み取り、`chat.py`へ引き渡す変更が、いずれ必要になる。本タスクでは、この変更を意図的に見送った(判断根拠、7.2節)。
+2. **観察者が受信を止めた場合の警告ログ(9章末尾)。** 現状は`logger.warning()`が無制限に出続ける設計である。実運用で問題になる場合は、同一観察者に対する警告を一定間隔に間引く、または一定回数のドロップでそのキューを強制的に`unsubscribe()`する、といった対策を、次タスクで検討する余地がある。
+3. **複数ワーカー構成への非対応(Live-1、3.4節で明記済みの制約の再確認)。** `LiveEventBus`はプロセス内メモリのみで動作するため、`docs/infrastructure.md`で確認した現在の単一uvicornプロセス構成が前提。将来、複数ワーカー構成へ移行する場合は、Redis pub/sub等への置き換えが必要になる。
+4. **`/live`確認用ページは、意図的に最小限に留めた(依頼書の指示通り)。** 本格的なSigmaris Live画面の設計・実装は、次タスク(Live-3以降)の範囲とする。UI設計(Live-1、5.3節で提案した「本物のstreamingと、瞬時の判定を、視覚的に区別する」工夫等)は、今回のテキストログ表示には反映していない。
+5. **実際のOpenAI APIキー・実Ollama環境での検証は、依頼書の制約により行っていない。** `classify_chat_intent()`自体の応答は全てモックであり、実モデルでの意図分類の所要時間そのものへの影響(理論上ゼロのはずだが)は、本番環境での実測を推奨する。
+6. **次タスクへの提案: Live-1、6.2節が示した優先順位(応答生成→記憶検索→Evidence検索/ツール呼び出し)を踏襲しつつ、まずは`/live`ページを実際にしばらく運用し、意図分類のイベントが安定して配信され続けること(接続の安定性・警告ログの発生頻度等)を確認してから、次の処理へ拡大することを推奨する。**
