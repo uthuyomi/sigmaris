@@ -303,6 +303,59 @@ class CapabilitySummary:
     source_files: list[str]
 
 
+# ── Self-3: 応答生成への選択的注入(docs/sigmaris/self_awareness_report.md) ──
+#
+# 依頼書1章「全ての要約を常に注入するのではなく、必要に応じて(例えば
+# "自分は何ができるか"に関連する質問が検出された場合にのみ)注入する
+# という選択的な注入も検討すること」への対応。
+#
+# 【判断根拠(キーワード一致方式を採用し、新しいLLM分類呼び出しを追加
+# しなかった理由)】 chat_routing.py::classify_chat_intent()という、
+# 毎ターン発生する既存のnano-tier意図分類が既に存在するが、その分類軸
+# (event_lookup/mobility_plan/schedule_import/calendar_write/
+# sync_control)は、いずれも予定管理という別の関心事のためのものであり、
+# 「自分は何ができるか」という自己参照的な質問は、この分類のどのカテゴリ
+# にも自然に対応しない。新しいLLM呼び出しをもう1つ、毎ターン追加する
+# より、`chat_routing.py`のCALENDAR_WRITE_KEYWORDS等が既に採用している
+# 「軽量なキーワード一致」という、このコードベース一貫の設計哲学を
+# そのまま踏襲する方が、依頼書「既存資産の再利用」の精神に沿うと判断
+# した——追加のLLM呼び出し・追加のレイテンシ・追加のコストを、一切
+# 発生させない。
+#
+# 過検知(無関係な質問でも注入してしまう)・見逃し(表現の違いで検知
+# できない)の両方がありうるヒューリスティックであることは、Safety-3・
+# Self-1が採用してきた同種の設計と同じ前提を踏襲する。
+_SELF_CAPABILITY_KEYWORDS: tuple[str, ...] = (
+    "ツイート",
+    "つぶやく",
+    "X(旧twitter)",
+    "自分の機能",
+    "自分にできる",
+    "自分ができる",
+    "あなたの機能",
+    "あなたにできる",
+    "あなたができる",
+    "シグマリスの機能",
+    "シグマリスにできる",
+    "何ができる",
+    "なにができる",
+    "できること",
+    "得意なこと",
+    "どんなことができ",
+    "どういうことができ",
+)
+
+
+def detect_capability_question(text: str) -> bool:
+    """ユーザーの最新発話が、"自分は何ができるか"に関連する、自己参照的な
+    質問かどうかを、軽量なキーワード一致で判定する(新しいLLM呼び出しは
+    追加しない、判断根拠はモジュールdocstring参照)。"""
+    if not text:
+        return False
+    lowered = text.lower()
+    return any(keyword.lower() in lowered for keyword in _SELF_CAPABILITY_KEYWORDS)
+
+
 async def generate_capability_summaries(backend_root: Path) -> list[CapabilitySummary]:
     """Self-1のスキャン結果をグループ化し、グループごとに1回、nano-tier
     LLM呼び出しで一人称の日本語要約を生成する(DBへの保存はここでは
