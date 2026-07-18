@@ -83,7 +83,7 @@ def _build_oauth_header(
 
 class BasePublisher(ABC):
     @abstractmethod
-    async def post_tweet(self, text: str) -> str | None:
+    async def post_tweet(self, text: str, *, in_reply_to_tweet_id: str | None = None) -> str | None:
         """成功時は投稿のtweet_id、失敗時はNoneを返す。
 
         【Phase H-2追記(docs/sigmaris/phase_h_report.md)】返信検知には、
@@ -92,7 +92,17 @@ class BasePublisher(ABC):
         またはNone)へ変更した。既存の呼び出し元(`if posted:`という
         真偽値チェック)は、非空文字列=truthy・None=falsyという性質上、
         コードの変更なしに引き続き正しく動作する(判断根拠、レポート
-        参照)。"""
+        参照)。
+
+        【Phase H-3追記】in_reply_to_tweet_id(既定None)を追加した。
+        依頼書は「既存のpost_tweet()を使うこと」としていたが、Noneの
+        ままでは、投稿がXの返信スレッドとして相手の投稿に繋がらず、
+        無関係な独立ツイートになってしまう(=「返信」という機能が
+        実質的に成立しない)。既存の全呼び出し元(_categorized_x_post_
+        check()等、H-1由来の独り言投稿)はin_reply_to_tweet_idを渡さない
+        ため、既定値Noneにより、それらの挙動は一切変わらない——後方
+        互換な、追加のキーワード専用引数として拡張した(判断根拠、
+        レポート参照)。"""
         ...
 
     @abstractmethod
@@ -125,7 +135,7 @@ class XPublisher(BasePublisher):
         self._access_token = access_token
         self._access_token_secret = access_token_secret
 
-    async def post_tweet(self, text: str) -> str | None:
+    async def post_tweet(self, text: str, *, in_reply_to_tweet_id: str | None = None) -> str | None:
         auth_header = _build_oauth_header(
             "POST",
             _TWITTER_API_V2_TWEET,
@@ -135,6 +145,9 @@ class XPublisher(BasePublisher):
             access_token=self._access_token,
             access_token_secret=self._access_token_secret,
         )
+        body: dict[str, Any] = {"text": text}
+        if in_reply_to_tweet_id:
+            body["reply"] = {"in_reply_to_tweet_id": in_reply_to_tweet_id}
         try:
             async with httpx.AsyncClient(timeout=httpx.Timeout(15.0)) as client:
                 r = await client.post(
@@ -143,7 +156,7 @@ class XPublisher(BasePublisher):
                         "Authorization": auth_header,
                         "Content-Type": "application/json",
                     },
-                    json={"text": text},
+                    json=body,
                 )
                 if r.is_error:
                     logger.error("X post failed HTTP %s: %s", r.status_code, r.text[:200])
@@ -222,8 +235,11 @@ class XPublisher(BasePublisher):
 class LogPublisher(BasePublisher):
     """Fallback publisher that logs instead of posting."""
 
-    async def post_tweet(self, text: str) -> str | None:
-        logger.info("[X fallback] would post: %s", text)
+    async def post_tweet(self, text: str, *, in_reply_to_tweet_id: str | None = None) -> str | None:
+        if in_reply_to_tweet_id:
+            logger.info("[X fallback] would post as reply to %s: %s", in_reply_to_tweet_id, text)
+        else:
+            logger.info("[X fallback] would post: %s", text)
         return f"log-{uuid.uuid4().hex[:12]}"
 
     async def get_own_user_id(self) -> str | None:
