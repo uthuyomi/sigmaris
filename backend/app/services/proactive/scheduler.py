@@ -356,6 +356,64 @@ async def _safety_governance_scan() -> None:
         logger.exception("Safety governance scan job raised unexpectedly")
 
 
+# ── Self-1〜3「自己認識の自動更新」(docs/sigmaris/self_awareness_report.md)
+# Self-1(コードベースの機能洗い出し)・Self-2(一人称の日本語要約)を、
+# 週次でまとめて再実行する。
+#
+# 【依頼書2章「頻度は、機能が頻繁に追加される日々の開発のペースと
+# コストのバランスを考慮し、提案すること」への対応】週1回(日曜)を
+# 選んだ判断根拠:
+#   1. 新しいPhaseの完了は、このセッションの実績を見ても数日〜1週間に
+#      1件程度のペースであり、毎日再スキャンしても差分がほとんど無い
+#      日が大半になる。一方、月1回では「今日、何ができるか」との乖離が
+#      1か月近く放置されうる。既存のexperience_analyze・decision_
+#      analyze・knowledge_graph_extract等、Phase Rの週次バッチ群と
+#      同じ「振り返り系は週次」という、このコードベース既存の頻度
+#      規約にも合致する。
+#   2. コスト面: Self-2のLLM呼び出しは、nano tierで1回あたり8ドメイン
+#      分(現時点)——毎日実行しても軽微ではあるが、「頻繁な開発ペースに
+#      対して、過剰でも過少でもない」バランスとして、既存の週次バッチと
+#      同じ頻度に揃える方が、運用上の一貫性・説明のしやすさで勝ると判断
+#      した。
+#
+# 【時間帯の判断根拠(既存ジョブとの重複回避)】日曜早朝バッチ
+# (4:00 experience_analyze 〜 5:45 safety_governance_scan)の直後、
+# 6:15のcuriosity_searchより前という、既存の空き時間帯(5:45〜6:15の
+# 30分)に、5:55として配置した——safety_governance_scanから10分の余裕、
+# curiosity_searchまで20分の余裕を残す。
+async def _self_awareness_update() -> None:
+    from pathlib import Path  # noqa: PLC0415
+    from app.services.capability_summary import generate_capability_summaries  # noqa: PLC0415
+    from app.services.capability_summary_store import record_capability_summary  # noqa: PLC0415
+    from app.services.orchestrator.service import invalidate_capability_summary_cache  # noqa: PLC0415
+    try:
+        backend_root = Path(__file__).resolve().parents[3]  # proactive/ -> services/ -> app/ -> backend/
+        summaries = await generate_capability_summaries(backend_root)
+        recorded = 0
+        for summary in summaries:
+            row_id = await record_capability_summary(
+                domain=summary.domain,
+                summary_text=summary.summary_text,
+                file_count=summary.file_count,
+                wired_file_count=summary.wired_file_count,
+                unwired_file_count=summary.unwired_file_count,
+                source_files=summary.source_files,
+            )
+            if row_id:
+                recorded += 1
+        # Self-3: invalidate the orchestrator's long-TTL(24h)in-process
+        # cache immediately, so the next matching turn in this same running
+        # process picks up the freshly-regenerated summaries without
+        # waiting for the TTL to lapse naturally.
+        invalidate_capability_summary_cache()
+        logger.info(
+            "Self-awareness update job done: domains=%d recorded=%d",
+            len(summaries), recorded,
+        )
+    except Exception:
+        logger.exception("Self-awareness update job raised unexpectedly")
+
+
 # ── 旧X投稿システムの廃止、及び、新7カテゴリシステムへの実際の接続
 # (docs/sigmaris/phase_h_report.md)。旧proactive/actions.py::
 # _try_smart_x_post()(should_post_todayの固定スロット判定でX投稿を
@@ -493,6 +551,12 @@ def startup_scheduler() -> None:
     _scheduler.add_job(_cycle_health_measure, CronTrigger(hour=3, minute=20, timezone=tz), id="cycle_health_measure", replace_existing=True)
     _scheduler.add_job(_grounding_health_measure, CronTrigger(day_of_week="sun", hour=5, minute=40, timezone=tz), id="grounding_health_measure", replace_existing=True)
     _scheduler.add_job(_safety_governance_scan, CronTrigger(day_of_week="sun", hour=5, minute=45, timezone=tz), id="safety_governance_scan", replace_existing=True)
+
+    # Self-1〜3「自己認識の自動更新」(docs/sigmaris/self_awareness_report.md
+    # 参照、_self_awareness_update()のコメントに時間帯・頻度の判断根拠を
+    # 記載済み)。日曜早朝バッチの末尾、safety_governance_scan(5:45)の
+    # 10分後・curiosity_search(6:15)の20分前に配置。
+    _scheduler.add_job(_self_awareness_update, CronTrigger(day_of_week="sun", hour=5, minute=55, timezone=tz), id="self_awareness_update", replace_existing=True)
 
     # 旧X投稿システムの廃止、及び、新7カテゴリシステムへの実際の接続
     # (docs/sigmaris/phase_h_report.md)。1日4回、朝・昼・夕方・夜の

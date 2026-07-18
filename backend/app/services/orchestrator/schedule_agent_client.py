@@ -68,10 +68,29 @@ def _build_system_override(
     goal_alignment_context: str | None = None,
     persona_context: str | None = None,
     relationship_duration_context: str | None = None,
+    capability_context: str | None = None,
 ) -> str:
     parts = []
     if persona_context:
         parts.append(persona_context)
+    # Self-3(docs/sigmaris/self_awareness_report.md): placed immediately
+    # after persona_context, ahead of user_profile_context/self_model_
+    # context — capability_context only ever changes when the weekly
+    # Self-1/Self-2 scheduler job regenerates it (proactive/scheduler.py's
+    # self_awareness_update job), making it *more* cache-stable than
+    # self_model_context (daily reflection) or preference_patterns_context
+    # (weekly batch, but still more volatile turn-to-turn since it's
+    # fetched fresh every call). Per Phase A2's "stable content first"
+    # ordering principle, this belongs as close to the front of this
+    # dynamic block as persona_context itself, not mixed in with the
+    # per-turn-volatile blocks further down. It is also only ever present
+    # at all on turns where capability_summary.detect_capability_question()
+    # matched (selective injection, see that function's docstring) — so on
+    # most turns this line is simply absent, which does not by itself
+    # shrink the cache-stable prefix any more than persona_context's own
+    # occasional absence would.
+    if capability_context:
+        parts.append(capability_context)
     if user_profile_context:
         parts.append(user_profile_context)
     if self_model_context:
@@ -156,6 +175,7 @@ def _build_payload(
     goal_alignment_context: str | None = None,
     persona_context: str | None = None,
     relationship_duration_context: str | None = None,
+    capability_context: str | None = None,
     persist_thread: bool = False,
     new_user_message: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
@@ -172,7 +192,7 @@ def _build_payload(
         "system_override": _build_system_override(
             user_profile_context, self_model_context, preference_patterns_context,
             topic_context, goal_alignment_context, persona_context,
-            relationship_duration_context,
+            relationship_duration_context, capability_context,
         ),
         "context": {
             "reason": reason,
@@ -205,6 +225,7 @@ async def call_schedule_agent(
     goal_alignment_context: str | None = None,
     persona_context: str | None = None,
     relationship_duration_context: str | None = None,
+    capability_context: str | None = None,
     persist_thread: bool = False,
     new_user_message: dict[str, Any] | None = None,
 ) -> ScheduleAgentResult:
@@ -226,6 +247,7 @@ async def call_schedule_agent(
         goal_alignment_context=goal_alignment_context,
         persona_context=persona_context,
         relationship_duration_context=relationship_duration_context,
+        capability_context=capability_context,
         persist_thread=persist_thread,
         new_user_message=new_user_message,
     )
@@ -274,6 +296,7 @@ async def call_schedule_agent_stream(
     goal_alignment_context: str | None = None,
     persona_context: str | None = None,
     relationship_duration_context: str | None = None,
+    capability_context: str | None = None,
     persist_thread: bool = False,
     new_user_message: dict[str, Any] | None = None,
 ) -> AsyncGenerator[ScheduleAgentStreamEvent, None]:
@@ -296,6 +319,7 @@ async def call_schedule_agent_stream(
         goal_alignment_context=goal_alignment_context,
         persona_context=persona_context,
         relationship_duration_context=relationship_duration_context,
+        capability_context=capability_context,
         persist_thread=persist_thread,
         new_user_message=new_user_message,
     )

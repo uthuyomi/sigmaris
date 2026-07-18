@@ -64,6 +64,19 @@ _recently_surfaced_goal_flag_ids: set[str] = set()
 
 _cache: dict[str, tuple[float, Any]] = {}  # key → (timestamp, value)
 
+# Self-3(docs/sigmaris/self_awareness_report.md): capability summaries only
+# change when the weekly self_awareness_update scheduler job (proactive/
+# scheduler.py) regenerates them via Self-1/Self-2 — a "quasi-fixed" cadence
+# far slower than the 5-minute TTL above, which exists for data that can
+# genuinely change within a single conversation (facts, active trends,
+# etc.). A single process-wide key is used (not per-user) because capability
+# summaries describe Sigmaris itself, not any one user's data.
+_CAPABILITY_CACHE_KEY = "capability_summaries"
+_CAPABILITY_CACHE_TTL = 86400.0  # 24 hours — an upper bound; the scheduler
+# job also calls invalidate_capability_summary_cache() right after writing
+# fresh rows, so a running process picks up new summaries immediately
+# rather than waiting for this TTL to lapse.
+
 
 @dataclass(frozen=True)
 class OrchestratorStreamEvent:
@@ -77,9 +90,9 @@ class OrchestratorStreamEvent:
     tool_event: dict[str, Any] | None = None
 
 
-def _cache_get(key: str) -> tuple[bool, Any]:
+def _cache_get(key: str, *, ttl: float = _CACHE_TTL) -> tuple[bool, Any]:
     entry = _cache.get(key)
-    if entry and (time.monotonic() - entry[0] < _CACHE_TTL):
+    if entry and (time.monotonic() - entry[0] < ttl):
         return True, entry[1]
     return False, None
 
@@ -343,6 +356,58 @@ def _format_freshness_note(last_reflected_at: Any) -> str:
     if days_elapsed >= 7:
         note += " — 古い情報である可能性が高いため、現在進行中の出来事であるかのように話さないこと"
     return note + ")"
+
+
+# Self-3(docs/sigmaris/self_awareness_report.md): Self-1(コードベースの
+# 洗い出し)・Self-2(一人称の日本語要約)が生成した`sigmaris_capability_
+# summaries`を、応答生成へ選択的に注入する。他の`_build_*_context`関数
+# 群と同じ「既に取得済みのデータを整形するだけ」という設計を踏襲しつ
+# つ、本関数だけは非同期のDB読み取り(キャッシュ経由)も担う——
+# 理由は、選択的注入(capability_summary.detect_capability_question()が一致した
+# ときのみ)を行うには、「まず判定し、一致した場合にのみ取得する」という
+# 順序が必要であり、他の場所で先に無条件フェッチしてから本関数へ
+# 渡す設計にすると、無関係なターンでも毎回DBアクセスが発生してしまうため。
+async def _cached_capability_summaries() -> list[dict[str, Any]]:
+    hit, value = _cache_get(_CAPABILITY_CACHE_KEY, ttl=_CAPABILITY_CACHE_TTL)
+    if hit:
+        return value
+    from app.services.capability_summary_store import get_capability_summaries  # noqa: PLC0415
+
+    summaries = await get_capability_summaries()
+    _cache_set(_CAPABILITY_CACHE_KEY, summaries)
+    return summaries
+
+
+def invalidate_capability_summary_cache() -> None:
+    """proactive/scheduler.pyのself_awareness_updateジョブ呼び出し専用。
+    週次でSelf-1/Self-2が新しい要約をDBへ書き込んだ直後に呼ばれ、
+    _CAPABILITY_CACHE_TTL(24時間)の経過を待たず、次のターンから
+    新しい要約が反映されるようにする。"""
+    _cache.pop(_CAPABILITY_CACHE_KEY, None)
+
+
+def _build_capability_context(summaries: list[dict[str, Any]]) -> str | None:
+    if not summaries:
+        return None
+    lines = ["[シグマリス自身の機能一覧(自己認識)]"]
+    for row in summaries:
+        text = str(row.get("summary_text") or "").strip()
+        if text:
+            lines.append(f"- {text}")
+    return "\n".join(lines) if len(lines) > 1 else None
+
+
+async def _maybe_build_capability_context(messages: list[dict[str, str]]) -> str | None:
+    """最新のユーザー発話が"自分は何ができるか"に関連する質問だった場合
+    にのみ、capability_context(能力要約)を取得・整形して返す(選択的
+    注入、判断根拠はcapability_summary.detect_capability_question()の
+    docstring参照)。無関係なターンでは、DBアクセス自体を一切行わない。"""
+    from app.services.capability_summary import detect_capability_question  # noqa: PLC0415
+
+    if not detect_capability_question(_latest_user_content(messages)):
+        return None
+    summaries = await _cached_capability_summaries()
+    return _build_capability_context(summaries)
 
 
 def _build_self_model_context(model: dict | None) -> str | None:
@@ -1331,6 +1396,9 @@ async def run_orchestrator_chat(
     relationship_duration_context = _build_relationship_duration_context(
         await _cached_relationship_origin_date(jwt)
     )
+    # Self-3: selective injection — see _maybe_build_capability_context's
+    # docstring. None on most turns (no DB access at all in that case).
+    capability_context = await _maybe_build_capability_context(messages)
     # Context-fabrication / message-order fix (docs/sigmaris/
     # phase_ba4_report.md): messages here is this call's own caller-
     # supplied turn, not session_messages' cross-thread window — exactly
@@ -1357,6 +1425,7 @@ async def run_orchestrator_chat(
             goal_alignment_context=goal_alignment_context,
             persona_context=persona_context,
             relationship_duration_context=relationship_duration_context,
+            capability_context=capability_context,
             persist_thread=persist_thread,
             new_user_message=new_user_message,
         )
@@ -1608,6 +1677,8 @@ async def run_orchestrator_chat_stream(
     relationship_duration_context = _build_relationship_duration_context(
         await _cached_relationship_origin_date(jwt)
     )
+    # Self-3: see run_orchestrator_chat's identical block.
+    capability_context = await _maybe_build_capability_context(messages)
     # Context-fabrication / message-order fix: see run_orchestrator_chat's
     # identical block for the full rationale.
     new_user_message = _to_storable_new_user_message(
@@ -1638,6 +1709,7 @@ async def run_orchestrator_chat_stream(
             goal_alignment_context=goal_alignment_context,
             persona_context=persona_context,
             relationship_duration_context=relationship_duration_context,
+            capability_context=capability_context,
             persist_thread=persist_thread,
             new_user_message=new_user_message,
         ):
