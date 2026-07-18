@@ -1,18 +1,11 @@
 from __future__ import annotations
 
 import logging
-from typing import Awaitable, Callable, TypeVar
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
 
 from app.config import settings
-from app.services.proactive.actions import (
-    ActionResult,
-    run_evening_checkin,
-    run_morning_briefing,
-    run_weekly_review,
-)
 from app.services.heartbeat import heartbeat_tick
 from app.services.research_agent import run_research
 from app.services.proactive.jwt_manager import get_sigmaris_jwt
@@ -20,14 +13,6 @@ from app.services.proactive.jwt_manager import get_sigmaris_jwt
 logger = logging.getLogger(__name__)
 
 _scheduler: AsyncIOScheduler | None = None
-
-
-async def _safe(fn: Callable[[], Awaitable[ActionResult]], name: str) -> None:
-    try:
-        result = await fn()
-        logger.info("Proactive job %s done: ok=%s notified=%s", name, result.ok, result.notified)
-    except Exception:
-        logger.exception("Proactive job %s raised unexpectedly", name)
 
 
 async def _heartbeat() -> None:
@@ -43,67 +28,6 @@ async def _research() -> None:
         logger.info("Research job done: %s", result)
     except Exception:
         logger.exception("Research job raised unexpectedly")
-
-
-# ── ブリーフィング頻度の見直し(固定スケジュールから、Executive Gateの
-# 動的判断へ)。運用者から「毎回の通知がうっとうしい」というフィードバック
-# があったことへの対応。朝ブリーフィング・夕方チェックイン・週次レビュー
-# 自体(内容生成ロジック、proactive/actions.py)は一切変更していない——
-# 変更したのは「呼び出される条件」のみである。
-#
-# 【設計判断】cronの発火時刻(8:00/22:00/日20:00)自体は変更していない。
-# categorized_x_post_check(x_post_category_selector.py)が「1日4回、
-# 決まった時刻に"今投稿してよいか確認する"機会を作るだけで、実際に投稿
-# するかどうかは毎回Executive Gate/Drive Stateが動的に判定する」という
-# 設計になっているのと、全く同じパターンをそのまま踏襲した——cronの
-# 役割を「必ず実行する合図」から「実行してよいか確認する機会」へ変えた、
-# という意味で「固定スケジュールを廃止した」と位置づけている(cronの
-# 登録時刻そのものを削除する設計は採らなかった。判断根拠は
-# phase_s_report.md参照)。
-# 実際にevaluate_executive_gate()を呼ぶのは、既存のX投稿選定
-# (x_post_category_selector.py::select_post_category())と全く同じ
-# S-1の関数であり、新しい判定ロジックは一切追加していない。
-async def _briefing_check(
-    action_name: str, run_fn: Callable[[], Awaitable[ActionResult]]
-) -> None:
-    from app.services.executive_gate import evaluate_executive_gate  # noqa: PLC0415
-
-    try:
-        jwt = await get_sigmaris_jwt()
-    except RuntimeError:
-        logger.exception("Briefing check %s: failed to obtain jwt", action_name)
-        return
-
-    try:
-        gate = await evaluate_executive_gate(jwt)
-    except Exception:
-        logger.exception("Briefing check %s: executive gate evaluation raised unexpectedly", action_name)
-        return
-
-    if not gate.may_speak:
-        logger.info(
-            "Briefing check %s: skipped (blocked_by=%s reason=%s)",
-            action_name, gate.blocked_by, gate.reason,
-        )
-        return
-
-    logger.info(
-        "Briefing check %s: executive gate approved (triggering_drives=%s)",
-        action_name, gate.triggering_drives,
-    )
-    await _safe(run_fn, action_name)
-
-
-async def _morning() -> None:
-    await _briefing_check("morning_briefing", run_morning_briefing)
-
-
-async def _evening() -> None:
-    await _briefing_check("evening_checkin", run_evening_checkin)
-
-
-async def _weekly() -> None:
-    await _briefing_check("weekly_review", run_weekly_review)
 
 
 async def _memory_validate() -> None:
@@ -548,13 +472,6 @@ def startup_scheduler() -> None:
     _scheduler.add_job(_memory_validate, CronTrigger(hour=6,  minute=30,                 timezone=tz), id="memory_validate", replace_existing=True)
     _scheduler.add_job(_health_data_sync,CronTrigger(hour=6,  minute=45,                 timezone=tz), id="health_sync",     replace_existing=True)
     _scheduler.add_job(_trend_analyze,   CronTrigger(day_of_week="mon", hour=6, minute=0, timezone=tz), id="trend_analyze",  replace_existing=True)
-    # ブリーフィング頻度の見直し(_briefing_check()のコメント参照): 以下
-    # 3件は「必ずこの時刻に実行する」合図ではなく、「この時刻にExecutive
-    # Gateへ実行してよいか確認する機会」に意味が変わっている
-    # (categorized_x_post_checkと同じパターン)。
-    _scheduler.add_job(_morning,         CronTrigger(hour=8,  minute=0,                  timezone=tz), id="morning_briefing",replace_existing=True)
-    _scheduler.add_job(_evening,         CronTrigger(hour=22, minute=0,                  timezone=tz), id="evening_checkin", replace_existing=True)
-    _scheduler.add_job(_weekly,             CronTrigger(day_of_week="sun", hour=20, minute=0,  timezone=tz), id="weekly_review",      replace_existing=True)
     _scheduler.add_job(_narrative_generate, CronTrigger(day_of_week="sun", hour=5,  minute=0,  timezone=tz), id="narrative_generate", replace_existing=True)
     _scheduler.add_job(_curiosity_search,     CronTrigger(hour=6,  minute=15,                    timezone=tz), id="curiosity_search",     replace_existing=True)
     _scheduler.add_job(_experience_analyze,   CronTrigger(day_of_week="sun", hour=4,  minute=0,  timezone=tz), id="experience_analyze",   replace_existing=True)
@@ -580,7 +497,9 @@ def startup_scheduler() -> None:
     # 旧X投稿システムの廃止、及び、新7カテゴリシステムへの実際の接続
     # (docs/sigmaris/phase_h_report.md)。1日4回、朝・昼・夕方・夜の
     # 時間帯に分散させ、既存の全ジョブと重ならない時刻を選んだ
-    # (8:00 morning_briefing・22:00 evening_checkinの間に収まる)。
+    # (当時存在した8:00 morning_briefing・22:00 evening_checkinの間に
+    # 収まっていた——両ジョブはPhase S-6で完全廃止済みだが、この4時刻
+    # 自体を変更する理由はないため、時刻決定の経緯としてそのまま残す)。
     # 4回はあくまで"確認の機会"であり、実際に投稿するかどうかは毎回
     # Executive Gateとselect_post_category()が動的に判定する
     # (_categorized_x_post_check()のdocstring参照、固定スケジュールでは
@@ -593,7 +512,9 @@ def startup_scheduler() -> None:
     # Phase H-2「返信の検知、及び、フィルタリング」(docs/sigmaris/
     # phase_h_report.md)。categorized_x_post_check(9:30/13:30/17:30/
     # 21:30)と30分ずらし、既存の全ジョブと重ならない4時刻に配置した
-    # (22:15は22:00のevening_checkinと15分の余裕を持たせた)。
+    # (22:15は、当時存在した22:00のevening_checkinと15分の余裕を持たせた
+    # ——同ジョブはPhase S-6で完全廃止済みだが、この時刻自体を変更する
+    # 理由はないため、時刻決定の経緯としてそのまま残す)。
     _scheduler.add_job(_x_reply_detection_check, CronTrigger(hour=10, minute=0,  timezone=tz), id="x_reply_detection_check_1", replace_existing=True)
     _scheduler.add_job(_x_reply_detection_check, CronTrigger(hour=14, minute=0,  timezone=tz), id="x_reply_detection_check_2", replace_existing=True)
     _scheduler.add_job(_x_reply_detection_check, CronTrigger(hour=18, minute=0,  timezone=tz), id="x_reply_detection_check_3", replace_existing=True)

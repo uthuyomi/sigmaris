@@ -206,8 +206,8 @@ Agent レスポンス: (要約)
 **現在の実装:**
 - ✅ スケジュール Agent 呼び出し: `schedule_agent_client.py`
 - ✅ X 投稿実行: `x_publisher.py`（X_ENABLED=true 時）
-- ✅ プッシュ通知送信: `proactive/actions.py`
 - ✅ Audit Log 記録: `orchestrator/audit.py`
+- ❌ プッシュ通知送信(朝ブリーフィング・夕方チェックイン・週次レビュー) — Phase S-6で機能自体を完全廃止済み(`proactive/actions.py`は削除済み)
 
 ---
 
@@ -316,16 +316,11 @@ gantt
     section Observe / Understand
     research (07:00)           :active, 07:00, 30m
 
-    section Act
-    morning_briefing (08:00)   :active, 08:00, 5m
-
-    section Act
-    evening_checkin (22:00)    :active, 22:00, 5m
-
     section Sleep (週次)
     narrative_generate 日曜 (05:00) :done, 05:00, 15m
-    weekly_review 日曜 (20:00)      :active, 20:00, 5m
 ```
+
+Phase S-6(docs/sigmaris/phase_s_report.md参照)で朝ブリーフィング(08:00)・夕方チェックイン(22:00)・週次レビュー(日曜20:00)を機能自体として完全廃止したため、上図から削除した。
 
 ---
 

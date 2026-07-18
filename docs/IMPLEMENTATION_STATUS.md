@@ -133,7 +133,7 @@
 | `GET` | `/api/agent/facts/items` | エージェント＋JWT | 事実アイテム一覧（category絞り込み可） |
 | `POST` | `/api/agent/facts/items` | エージェント＋JWT | 事実アイテムのupsert |
 | `GET` | `/api/agent/facts/unknown` | エージェント＋JWT | 未記録フィールド一覧 |
-| `POST` | `/api/agent/proactive/trigger` | JWTのみ | プロアクティブアクション手動トリガー（morning_briefing/evening_checkin/weekly_review） |
+| `POST` | `/api/agent/proactive/trigger` | JWTのみ | プロアクティブアクション手動トリガー（research のみ。Phase S-6でmorning_briefing/evening_checkin/weekly_reviewは機能自体を廃止済み） |
 | `GET` | `/api/agent/self/model` | エージェント | 自己モデル取得 |
 | `POST` | `/api/agent/self/model` | エージェント | 自己モデル更新 |
 | `POST` | `/api/agent/self/discrepancy` | エージェント | 行動乖離の記録 |
@@ -293,7 +293,6 @@
 ### 動作確認が必要な箇所
 
 - **プロアクティブスケジューラ**: `SIGMARIS_USER_JWT` と `SIGMARIS_REFRESH_TOKEN` の両方を設定しないとJWT取得で失敗する。`PROACTIVE_ENABLED=true` でも実際の通知はPushoverキー設定が必要。
-- **X投稿の朝ブリーフィング統合**: `run_morning_briefing()` 成功後にX投稿を試みるが、`X_ENABLED=false` の場合はLogPublisherがログ出力のみ行う。本番でX投稿を有効にする前に必ずテスト投稿で確認すること。
 - **ヘルスデータ同期**: `X-Google-Access-Token` ヘッダーにFitness APIスコープを持つトークンが必要。現在のOAuthフロー（`google_api.py`）がFitnessスコープを含むか確認すること。
 
 ### 設定が必要な環境変数（本番稼働前）
