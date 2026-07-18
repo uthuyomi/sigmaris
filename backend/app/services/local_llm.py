@@ -131,6 +131,18 @@ class TaskType(str, enum.Enum):
     # X投稿テキスト)・出力形状(3種の判定を同時に返す)のいずれも異なる、
     # 別の契約であるため。
     X_REPLY_FILTER = "x_reply_filter"
+    # Self-2(docs/sigmaris/self_awareness_report.md): Self-1が洗い出した
+    # 能力候補(1グループ=関連ファイル群)を、シグマリスが一人称で語る
+    # 2〜3文の日本語説明へ要約する。入力(ファイルパス・関数名・配線状態
+    # の一覧)・出力形状(短い一人称の説明文、JSONではなくプレーンテキスト)
+    # のいずれも、既存のTaskType.SUMMARIZE(research_agent.py、Web検索結果
+    # 1件の要約)とは異なる契約であるため、「one TaskType per distinct
+    # classification concern」の前例に従い専用の型とした。依頼書「既存の
+    # nano-tierの軽量なLLM呼び出しを使うこと。新しいモデル階層は追加しない
+    # こと」に対応し、SUMMARIZEと同じnano tierをそのまま踏襲する(下記
+    # _LOCAL_TASK_TYPES・_openai_model_for_task両方に、SUMMARIZEと同じ扱いで
+    # 追加)。
+    CAPABILITY_SUMMARIZATION = "capability_summarization"
 
 
 _LOCAL_TASK_TYPES = {
@@ -151,6 +163,7 @@ _LOCAL_TASK_TYPES = {
     TaskType.CITATION_AUDIT,
     TaskType.HYPOTHESIS_CRITIQUE,
     TaskType.X_REPLY_FILTER,
+    TaskType.CAPABILITY_SUMMARIZATION,
 }
 
 
@@ -264,6 +277,7 @@ def _openai_model_for_task(task: TaskType) -> str:
         TaskType.CITATION_AUDIT,
         TaskType.HYPOTHESIS_CRITIQUE,
         TaskType.X_REPLY_FILTER,
+        TaskType.CAPABILITY_SUMMARIZATION,
     }:
         return settings.openai_nano_model
     return settings.openai_model
