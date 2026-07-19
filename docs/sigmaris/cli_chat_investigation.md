@@ -399,3 +399,61 @@ git diffで、`scripts/sigmaris_chat_autostart.sh`以外のファイルには一
 1. **`tty[0-9][0-9]`のパターンは、tty10〜tty99を許容しており、Linuxの実際の物理コンソール上限(通常tty63まで)より、やや広い。** 実害は無い(tty64以降が物理コンソールとして存在すること自体が非現実的なため)が、より厳密なパターン(`tty([1-9]|[1-5][0-9]|6[0-3])`等)にすることも可能——今回は、依頼書の「tty1〜tty6のような名前」という例示から、可読性を優先し、単純な桁数ベースのパターンにとどめた(判断根拠)。
 2. **将来、サーバーにGUIデスクトップ環境を追加した場合、ローカルの端末エミュレータ(GNOME端末等)からのログインシェルも`pts/N`になり、SSH環境変数も設定されないため、本スクリプトの判定では「物理コンソールではない」と扱われ、自動起動しなくなる。** 現状はヘッドレスUbuntu Server運用のため、この構成変更は想定されていないが、将来そのような変更があった場合は、判定ロジックの見直しが必要になることを申し送る。
 3. **実際のサーバー上での動作確認(SSH接続・物理コンソールログインの両方)は、本タスクでは実施できていない**(サーバーへのアクセス権が無いため)。1.2節のテストは、Git Bash上で`tty`・環境変数を模擬したものであり、実際のUbuntu Server + sshd + gettyの組み合わせでの、最終的な動作確認を推奨する。
+
+---
+
+# 修正報告: `sigmaris_chat_autostart.sh`のCHAT_SCRIPTパス解決の不具合修正
+
+**作業ブランチ:** `fix-autostart-chat-script-path`(mainから新規作成)
+**範囲:** `scripts/sigmaris_chat_autostart.sh`のみを修正。運用者からの報告(「CLI: /home/sigmaris/sigmaris_chat_v2.py」「SIGMARIS_CHAT_SCRIPT: (見つからない)」というエラーが出るが、実際のファイルは`/home/sigmaris/shift-pilot-ai/scripts/sigmaris_chat_v2.py`にある)を受けて、`CHAT_SCRIPT`の既定パスの決定方法を修正した。
+
+## 経緯・パス決定方法の確認結果(依頼事項「ハードコードされているのか、何らかの変数から組み立てられているのか」への回答)
+
+修正前のコード(該当箇所、`scripts/sigmaris_chat_autostart.sh`旧82行目)は、以下の通りだった。
+
+```bash
+CHAT_SCRIPT="${SIGMARIS_CHAT_SCRIPT:-$HOME/sigmaris_chat_v2.py}"
+```
+
+**結論: `$HOME/sigmaris_chat_v2.py`という、ハードコードされた既定値だった。** `$HOME`という変数こそ使われているが、これは単に「ログインユーザーのホームディレクトリ」に展開されるだけであり、実際のファイルの所在(リポジトリチェックアウト内の`scripts/`ディレクトリ)からは独立した、決め打ちのパスだった。
+
+**この既定値の前提**: 前回のタスク(バックエンド連動の自動起動の実装)で、`~/sigmaris_chat_v2.py`という、リポジトリ内の実体(`~/shift-pilot-ai/scripts/sigmaris_chat_v2.py`)へのシンボリックリンクを、ホームディレクトリ直下に作成することを、運用者への申し送り事項として案内していた。**今回の不具合は、このシンボリックリンクが(`sigmaris_chat_autostart.sh`自身のシンボリックリンクとは異なり)実際には作成されなかったために発生した**、と考えられる——`SIGMARIS_CHAT_SCRIPT: (見つからない)`というエラーメッセージ自体が、まさにこの、存在しないシンボリックリンク先を指し示していたことと、整合する。
+
+## 修正内容
+
+シンボリックリンクの作成という、運用者側の追加作業に依存し続けるのではなく、**`sigmaris_chat_autostart.sh`自身が実際に置かれているディレクトリを基準に、既定パスを動的に組み立てる**方式に変更した。
+
+```bash
+SCRIPT_REAL_PATH="$(readlink -f "${BASH_SOURCE[0]}" 2>/dev/null || echo "${BASH_SOURCE[0]}")"
+SCRIPT_DIR="$(dirname "$SCRIPT_REAL_PATH")"
+CHAT_SCRIPT="${SIGMARIS_CHAT_SCRIPT:-$SCRIPT_DIR/sigmaris_chat_v2.py}"
+```
+
+**判断根拠**: `sigmaris_chat_autostart.sh`と`sigmaris_chat_v2.py`は、リポジトリの`scripts/`ディレクトリに、常に同じ場所に存在する(1つのリポジトリの1コミットとして管理されている)。`readlink -f`で、`sigmaris_chat_autostart.sh`自身のシンボリックリンクを実体のパスまで解決してから(`${BASH_SOURCE[0]}`は、シンボリックリンク経由で呼ばれた場合、そのシンボリックリンク自体のパスを返すため、解決が必要)、そのディレクトリ(`dirname`)を基準に`sigmaris_chat_v2.py`を探すようにすれば、以下のいずれの配置方法でも、常に正しいパスを指す。
+
+- `sigmaris_chat_autostart.sh`が、シンボリックリンク経由(`~/sigmaris_chat_autostart.sh -> ~/shift-pilot-ai/scripts/sigmaris_chat_autostart.sh`)で呼ばれた場合(前回のタスクで推奨した、現在の運用方法)
+- シンボリックリンクを介さず、リポジトリのチェックアウトから直接呼ばれた場合
+
+これにより、`sigmaris_chat_v2.py`自身を、別途ホームディレクトリへシンボリックリンクする必要が、そもそも無くなった——**運用者に追加のシンボリックリンク作成を求める必要が無い、より頑健な解決方法**になったと判断している。`SIGMARIS_CHAT_SCRIPT`環境変数による明示的な上書きは、従来通りそのまま機能する(この既定値の変更は、明示的に指定していない場合のみ影響する)。
+
+## テスト結果
+
+実際のLinuxシンボリックリンクを、この開発環境(Windows)で作成しようとしたところ、管理者権限が必要で失敗した(`New-Item -ItemType SymbolicLink`が"Administrator privilege required"で失敗することを確認)。そのため、`readlink -f`自体の偽実装(fakebin、既存の`systemctl`・`tmux`のスタブと同じ手法)を用意し、「本スクリプトが、実際の設置場所とは異なる場所から呼ばれた場合に、`readlink -f`が実体のパスへ正しく解決した場合、`CHAT_SCRIPT`の組み立てロジックが、その解決結果を正しく使う」ことを検証した(`readlink -f`自体がシンボリックリンクを解決する、というOS標準機能自体は、GNU coreutilsの確立された挙動であり、検証対象はあくまで、その解決結果を本スクリプトが正しく利用する部分)。
+
+| ケース | 検証内容 | 結果 |
+|---|---|---|
+| シンボリックリンク経由を模擬(readlink実装差し替え) | 呼び出し元とは別ディレクトリに配置した`sigmaris_chat_v2.py`が、正しく発見・起動されること | ✅ 確認済み(tmuxへ渡される引数が、実体側のパスになっていることを確認) |
+| リポジトリから直接起動(実際の`readlink`使用) | シンボリックリンクを介さない場合も、同じディレクトリ内の`sigmaris_chat_v2.py`が発見されること | ✅ 確認済み |
+| `SIGMARIS_CHAT_SCRIPT`の明示的な上書き | 新しい既定値ロジックより、環境変数による指定が優先されること(既存の挙動が壊れていないこと) | ✅ 確認済み |
+| 前回実装済みの、物理コンソール判定(A・B・C・F、4パターン) | 本修正が、無関係な既存ロジックに影響していないこと | ✅ 全て再確認済み、regressionなし |
+
+```
+bash -n scripts/sigmaris_chat_autostart.sh   → 構文エラー無し
+backend/tests/(16件)                          → 全て成功(回帰なし。本修正はシェルスクリプトのみの変更のため対象外だが確認した)
+```
+
+## 気づいた懸念点
+
+1. **`sigmaris_chat_v2.py`自身をホームディレクトリへ別途シンボリックリンクする、という前回の申し送り事項は、本修正により不要になった。** 運用者は、`sigmaris_chat_autostart.sh`のシンボリックリンクさえ維持していれば(既に対応済みと推測される)、追加の作業は不要である。ただし、`sigmaris_chat.py`(v1)・`sigmaris_chat_v2.py`を、運用者が手動で直接起動する場合(`SIGMARIS_CHAT_SCRIPT`を介さない、単独起動)は、引き続きそれぞれ個別にシンボリックリンクするか、リポジトリの実パスを直接指定する必要がある——これは自動起動の対象外の話であり、本修正の範囲外。
+2. **`readlink -f`は、GNU coreutils(Ubuntu Serverには標準搭載)の拡張機能であり、BSD系やmacOSの標準`readlink`には無い場合がある。** 本番環境はUbuntu Server(`docs/infrastructure.md`で確認済み)であるため、実害は無いと判断したが、念のため明記する。
+3. **実際のサーバー上(シンボリックリンクが実在する環境)での、最終的な動作確認は、本タスクでは実施できていない**(サーバーへのアクセス権が無いため)。次にサーバーへ反映する際、`git pull`後、自動起動が正しく`~/shift-pilot-ai/scripts/sigmaris_chat_v2.py`を発見・起動することを、確認することを推奨する。

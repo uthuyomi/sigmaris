@@ -23,7 +23,9 @@
 # 設定(環境変数で上書き可能。既定値は本番サーバーの構成を想定):
 #   SIGMARIS_BACKEND_SERVICE  — 確認対象のsystemdサービス名(既定: sigmaris-backend)
 #   SIGMARIS_CHAT_SCRIPT      — 起動するCLIチャットの実行ファイル
-#                               (既定: ~/sigmaris_chat_v2.py)
+#                               (既定: 本スクリプト自身の実体があるディレクトリ内の
+#                               sigmaris_chat_v2.py。symlink経由で呼ばれた場合も、
+#                               readlink -fで解決した実ディレクトリを基準にする)
 #   SIGMARIS_TMUX_SESSION     — tmuxセッション名(既定: sigmaris-chat)
 #
 # 判断根拠(依頼書「tmuxを使い、SSH切断でもセッションが継続する、という
@@ -79,7 +81,18 @@ case "$_current_tty" in
 esac
 
 BACKEND_SERVICE="${SIGMARIS_BACKEND_SERVICE:-sigmaris-backend}"
-CHAT_SCRIPT="${SIGMARIS_CHAT_SCRIPT:-$HOME/sigmaris_chat_v2.py}"
+# CHAT_SCRIPTの既定値は、$HOME直下への決め打ち("$HOME/sigmaris_chat_v2.py"、
+# ~/sigmaris_chat_v2.py というシンボリックリンクが存在する前提)だったが、
+# そのシンボリックリンクが実際には作成されず、本体が
+# ~/shift-pilot-ai/scripts/sigmaris_chat_v2.py にしか存在しない環境で、
+# 「見つからない」エラーになる不具合が判明した。本スクリプト自身の実体の
+# あるディレクトリ(readlink -fでシンボリックリンクを解決した上でdirname)
+# を基準に、同じディレクトリ内のsigmaris_chat_v2.pyを既定値にすることで、
+# 本スクリプトがシンボリックリンク経由・リポジトリ直接参照のいずれで
+# 呼ばれても、常に実体の隣にある正しいパスを指すようにした。
+SCRIPT_REAL_PATH="$(readlink -f "${BASH_SOURCE[0]}" 2>/dev/null || echo "${BASH_SOURCE[0]}")"
+SCRIPT_DIR="$(dirname "$SCRIPT_REAL_PATH")"
+CHAT_SCRIPT="${SIGMARIS_CHAT_SCRIPT:-$SCRIPT_DIR/sigmaris_chat_v2.py}"
 TMUX_SESSION="${SIGMARIS_TMUX_SESSION:-sigmaris-chat}"
 
 # ─── 1. バックエンドの起動状態を確認する ───────────────────────────────────
