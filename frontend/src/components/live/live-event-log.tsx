@@ -1,77 +1,73 @@
-"use client";
+// 役割: Sigmaris Live-3(docs/sigmaris/sigmaris_live_report.md)。ログ表示
+// (依頼書2章「時刻・処理名・簡単な結果が見やすく並ぶログ表示」)。
+//
+// Live-2からの変更点: 本コンポーネント自体がSSE接続を持つ設計から、
+// events(既に受信済みの配列)をpropsで受け取るだけの、データソースを
+// 知らない純粋な表示コンポーネントへ変更した(依頼書4章「表示ロジックと
+// データソースが疎結合な設計」への対応、判断根拠はlive-dashboard.tsx
+// 参照)。実際のSSE接続はuse-live-events.ts(LiveDashboardのみが呼ぶ)
+// が担う。
 
-// 役割: Sigmaris Live-2(docs/sigmaris/sigmaris_live_report.md)。
-// 「イベントが正しく配信されているか」を確認するための、最小限の
-// テキストログ表示。本格的なSigmaris Live画面(点灯・メトリクス等)は、
-// 本タスクでは実装しない(依頼書「最小限の簡易な表示で十分」)。
+import { PARSE_ERROR_EVENT } from "./use-live-events";
+import type { LiveEvent } from "./types";
 
-import { useEffect, useRef, useState } from "react";
-
-type LiveEvent = {
-  event: string;
-  invocation_id: string;
-  timestamp: number;
-  [key: string]: unknown;
+const EVENT_LABELS: Record<string, string> = {
+  intent_classification_started: "意図分類 ・ 開始",
+  intent_classification_finished: "意図分類 ・ 終了",
+  [PARSE_ERROR_EVENT]: "受信エラー",
 };
 
-type LogLine = {
-  id: number;
-  receivedAt: string;
-  raw: LiveEvent | { error: string };
-};
+function formatResult(evt: LiveEvent): string {
+  if (evt.event === PARSE_ERROR_EVENT) {
+    return "配信データの解析に失敗しました";
+  }
+  if (evt.event === "intent_classification_started") {
+    return "実行中...";
+  }
+  if (evt.event === "intent_classification_finished") {
+    const intent = typeof evt.intent === "string" ? evt.intent : "unknown";
+    const source = evt.source === "llm" ? "LLM判定" : "即時判定";
+    const needsSearch = evt.needs_search ? "・検索要" : "";
+    const elapsed = typeof evt.elapsed_ms === "number" ? `${evt.elapsed_ms}ms` : "—";
+    return `${intent}(${source}${needsSearch}) ・ ${elapsed}`;
+  }
+  return "—";
+}
 
-export function LiveEventLog() {
-  const [lines, setLines] = useState<LogLine[]>([]);
-  const [status, setStatus] = useState<"connecting" | "open" | "error">("connecting");
-  const nextId = useRef(0);
-
-  useEffect(() => {
-    const source = new EventSource("/api/live/stream");
-
-    source.onopen = () => setStatus("open");
-    source.onerror = () => setStatus("error");
-    source.onmessage = (message) => {
-      let parsed: LiveEvent | { error: string };
-      try {
-        parsed = JSON.parse(message.data) as LiveEvent;
-      } catch {
-        parsed = { error: `JSON解析に失敗しました: ${message.data}` };
-      }
-      setLines((prev) => [
-        ...prev.slice(-199), // 直近200件のみ保持(確認用途のため無制限には貯めない)
-        { id: nextId.current++, receivedAt: new Date().toLocaleTimeString(), raw: parsed },
-      ]);
-    };
-
-    return () => source.close();
-  }, []);
+export function LiveEventLog({ events }: { events: LiveEvent[] }) {
+  // 新しいものを上に表示する(ログとして自然な順序)。
+  const rows = [...events].reverse();
 
   return (
-    <div className="flex flex-col gap-3">
-      <p className="text-sm text-[#8e8ea0]">
-        接続状態:{" "}
-        <span
-          className={
-            status === "open"
-              ? "text-emerald-400"
-              : status === "error"
-                ? "text-red-400"
-                : "text-[#8e8ea0]"
-          }
-        >
-          {status === "open" ? "接続中" : status === "error" ? "エラー" : "接続試行中..."}
-        </span>
-      </p>
-      <p className="text-xs text-[#8e8ea0]">
-        チャット画面(/chat)で会話すると、classify_chat_intent()の開始・終了イベントがここに表示されます。
-      </p>
-      <div className="max-h-[70vh] overflow-y-auto rounded-lg border border-white/10 bg-black/40 p-3 font-mono text-xs">
-        {lines.length === 0 && <p className="text-[#8e8ea0]">まだイベントを受信していません。</p>}
-        {lines.map((line) => (
-          <div key={line.id} className="border-b border-white/5 py-1 text-[#ececec]">
-            [{line.receivedAt}] {JSON.stringify(line.raw)}
-          </div>
-        ))}
+    <div className="rounded-3xl border border-white/10 bg-[#2a2a2a] p-4 shadow-[0_18px_60px_-45px_rgba(0,0,0,0.75)] sm:p-5">
+      <div className="mb-4">
+        <h2 className="text-base font-semibold text-[#ececec] sm:text-lg">ログ</h2>
+        <p className="mt-1 text-sm leading-6 text-[#8e8ea0]">
+          時刻・処理名・結果を、新しい順に表示します(直近{events.length}件)。
+        </p>
+      </div>
+      <div className="max-h-[50vh] overflow-y-auto rounded-2xl border border-white/10 bg-[#212121]">
+        {rows.length === 0 ? (
+          <p className="p-4 text-sm text-[#8e8ea0]">
+            まだイベントを受信していません。/chatで会話すると、ここに表示されます。
+          </p>
+        ) : (
+          <table className="w-full border-collapse text-sm">
+            <tbody>
+              {rows.map((evt, idx) => (
+                <tr key={`${evt.invocation_id}-${evt.event}-${idx}`} className="border-b border-white/5 last:border-0">
+                  <td className="whitespace-nowrap px-3 py-2 align-top font-mono text-xs text-[#8e8ea0]">
+                    {new Date(evt.timestamp * 1000).toLocaleTimeString()}
+                  </td>
+                  <td className="whitespace-nowrap px-3 py-2 align-top text-[#ececec]">
+                    {EVENT_LABELS[evt.event] ?? evt.event}
+                  </td>
+                  <td className="px-3 py-2 align-top text-[#8e8ea0]">{formatResult(evt)}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        )}
       </div>
     </div>
   );
