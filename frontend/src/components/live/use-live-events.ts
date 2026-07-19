@@ -8,11 +8,15 @@
 // LiveProcessFlow・LiveMetrics・LiveEventLog(いずれも本タスクで実装)は、
 // このフックを直接呼ばず、events配列をpropsとして受け取るだけの、純粋な
 // 表示コンポーネントにした。データソースを知っているのは、このフックと、
-// それを呼ぶLiveDashboard(live-dashboard.tsx)だけである。将来のLive-7
-// (個人情報を含まない模擬データでの表示)では、同じ{events, status}の
-// 形を返す別のフック(例: useMockLiveEvents())を用意し、LiveDashboard側
-// で呼び分けるだけで対応できる——3つの表示コンポーネントは無変更で
-// 動作する設計にした。
+// それを呼ぶLiveDashboard(live-dashboard.tsx)だけである。
+//
+// 【Live-7(デモモード)での拡張】
+// Live-3時点の予告通り、同じ{events, status}の形を返す別のフック
+// (use-mock-live-events.ts::useMockLiveEvents())を用意し、LiveDashboard
+// 側で呼び分けるだけで、デモモードに対応した——3つの表示コンポーネントは
+// 無変更のまま動作する。本フック自身への変更は、デモモード中に無駄な
+// 実SSE接続を張らないための`enabled`オプションの追加のみ(既定値true、
+// 呼び出し方を変えない限り、既存の挙動から一切変わらない)。
 
 import { useEffect, useState } from "react";
 import type { LiveConnectionStatus, LiveEvent } from "./types";
@@ -31,11 +35,22 @@ export type UseLiveEventsResult = {
   status: LiveConnectionStatus;
 };
 
-export function useLiveEvents(streamUrl: string = "/api/live/stream"): UseLiveEventsResult {
+export type UseLiveEventsOptions = {
+  /** falseの場合、EventSourceを一切開かない(デモモード中、実SSE接続を
+   * 無駄に張らないために、LiveDashboardがdemoMode時にfalseを渡す)。 */
+  enabled?: boolean;
+};
+
+export function useLiveEvents(
+  streamUrl: string = "/api/live/stream",
+  { enabled = true }: UseLiveEventsOptions = {},
+): UseLiveEventsResult {
   const [events, setEvents] = useState<LiveEvent[]>([]);
   const [status, setStatus] = useState<LiveConnectionStatus>("connecting");
 
   useEffect(() => {
+    if (!enabled) return;
+
     const source = new EventSource(streamUrl);
 
     source.onopen = () => setStatus("open");
@@ -56,7 +71,7 @@ export function useLiveEvents(streamUrl: string = "/api/live/stream"): UseLiveEv
     };
 
     return () => source.close();
-  }, [streamUrl]);
+  }, [streamUrl, enabled]);
 
   return { events, status };
 }
