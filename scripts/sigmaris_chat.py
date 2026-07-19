@@ -1,10 +1,16 @@
 #!/home/sigmaris/shift-pilot-ai/backend/.venv/bin/python3
 """
 Sigmaris Terminal Chat Client
-デプロイ先: /home/sigmaris/sigmaris_chat.py
+デプロイ先: シンボリックリンクを推奨(以前は直接コピーする運用だったが、
+    git pull後もリポジトリの更新が反映されなくなる問題があったため、
+    docs/sigmaris/cli_chat_investigation.md「運用上の課題への対応」節の
+    通り、シンボリックリンクへの切り替えを推奨する。この変更は、
+    docstring(手順の案内)のみで、スクリプト自体の動作は変更していない)。
+        ln -sf ~/shift-pilot-ai/scripts/sigmaris_chat.py ~/sigmaris_chat.py
 
-依存ライブラリ:
-    pip install rich httpx --break-system-packages
+依存ライブラリ: rich・httpx(backend/pyproject.tomlに記載済み。以前は
+    未記載で手動インストールのみだったため、venv再構築時に抜け落ちる
+    リスクがあったが、この点も対応済み)
 
 設定読み込み:
     /home/sigmaris/shift-pilot-ai/backend/.env
