@@ -21,8 +21,24 @@
 import { LiveDashboard } from "@/components/live/live-dashboard";
 import { requireUser } from "@/lib/supabase/auth";
 
-export default async function LivePage() {
+// Sigmaris Live-7(デモモード): ?demo=1 で、実際のSSE接続の代わりに、
+// 個人情報を一切含まない架空のシナリオを再生する(X発信・動画撮影用)。
+// サーバーコンポーネント側でsearchParamsを読み、真偽値へ変換した上で
+// LiveDashboard(クライアントコンポーネント)へpropsとして渡す設計にした
+// ——LiveDashboard側でuseSearchParams()を直接呼ぶ選択肢も検討したが、
+// App RouterでuseSearchParams()を使うクライアントコンポーネントは
+// Suspense境界で包む必要があり、既存のページ構成に余計な変更が
+// 必要になる。searchParamsは、このページ(サーバーコンポーネント)が
+// 既に受け取れる情報のため、propsとして1回渡すだけで済む、こちらの
+// 方法を選んだ(判断根拠)。
+type LivePageProps = {
+  searchParams?: Promise<{ demo?: string }>;
+};
+
+export default async function LivePage({ searchParams }: LivePageProps) {
   await requireUser("/live");
+  const params = searchParams ? await searchParams : undefined;
+  const demoMode = params?.demo === "1" || params?.demo === "true";
 
   return (
     <main className="min-h-screen bg-[#212121] px-3 py-4 text-[#ececec] sm:px-5 lg:px-6">
@@ -41,7 +57,7 @@ export default async function LivePage() {
           </div>
         </section>
 
-        <LiveDashboard />
+        <LiveDashboard demoMode={demoMode} />
       </div>
     </main>
   );
