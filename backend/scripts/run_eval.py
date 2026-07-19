@@ -32,7 +32,7 @@ import json
 import sys
 from pathlib import Path
 
-# Windows端末でのcp932による日本語文字化け対策(sigmaris_chat.pyと同じ対応)。
+# Windows端末でのcp932による日本語文字化け対策。
 if sys.stdout.encoding and sys.stdout.encoding.lower() != "utf-8":
     sys.stdout.reconfigure(encoding="utf-8")
 
