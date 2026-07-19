@@ -34,8 +34,49 @@
 #   構造的に向かない。ログインシェルからの起動+tmuxによるセッション
 #   永続化の組み合わせが、既存の実装を変更せずに「SSH切断でも継続する」を
 #   実現できる、唯一の現実的な方式だと判断した。
+#
+# 【物理コンソール限定への修正(判断根拠、docs/sigmaris/
+# cli_chat_investigation.md「物理コンソール判定」節に検証結果を詳述)】
+#   Ubuntu Serverはヘッドレス構成のため、対話的なログインシェルの
+#   制御端末(controlling terminal)は、以下の2種類しかありえない。
+#     - /dev/tty1〜/dev/tty63 等: getty/loginがサーバーに直結された
+#       モニター・キーボードのために立ち上げる、物理コンソール
+#     - /dev/pts/N: 疑似端末(pseudo-terminal)。sshd経由のリモート
+#       ログインは、必ずこちらになる(tmux/screen内のシェルも同様に
+#       pts扱いになるが、これは.bashrc側の既存のTMUXガード
+#       (scripts/sigmaris_chat_login_snippet.sh)で別途対処済みであり、
+#       本スクリプト自身が判定すべき対象ではない)。
+#   `tty`コマンドの出力(制御端末のパス)に加え、sshdが必ず設定する
+#   環境変数(SSH_CONNECTION・SSH_TTY・SSH_CLIENT)のいずれかが1つでも
+#   設定されていれば、tty名の判定結果によらず「物理コンソールではない」
+#   と扱う——依頼書「SSH経由での自動起動を確実に防ぐことを最優先する」
+#   への対応として、2つの独立した判定方法のうち、どちらか一方でも
+#   「SSH的である」と判定すれば、安全側(起動しない)に倒す設計にした。
+#   物理コンソールでないと判定された場合は、メッセージを一切出さず、
+#   即座に終了する(依頼書2章「物理コンソールでは、ない、と判定された
+#   場合は、何も、せず、即座に、終了する」)——SSH経由のあらゆるログイン
+#   シェルの起動のたびに、無関係な出力が.bashrc経由で表示されることを
+#   避けるため、この判定結果自体は非表示にし、既存の「バックエンドの
+#   起動状態」の確認(2.以降、既存ロジックを維持)だけが、引き続き
+#   メッセージを出す設計を保った。
 
 set -u
+
+# ─── 0. 物理コンソールからのログインであることを確認する ───────────────────
+
+if [ -n "${SSH_CONNECTION:-}" ] || [ -n "${SSH_TTY:-}" ] || [ -n "${SSH_CLIENT:-}" ]; then
+    exit 0
+fi
+
+_current_tty="$(tty 2>/dev/null)" || exit 0
+
+case "$_current_tty" in
+    /dev/tty[0-9]|/dev/tty[0-9][0-9])
+        ;; # 物理コンソール(tty1〜tty63) — 起動処理を続行する
+    *)
+        exit 0
+        ;;
+esac
 
 BACKEND_SERVICE="${SIGMARIS_BACKEND_SERVICE:-sigmaris-backend}"
 CHAT_SCRIPT="${SIGMARIS_CHAT_SCRIPT:-$HOME/sigmaris_chat_v2.py}"
