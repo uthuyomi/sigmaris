@@ -38,6 +38,7 @@ from app.services.dissent import (
 )
 from app.services.goal_alignment import mark_pending_surfaced
 from app.services.knowledge_graph import build_entity_hint
+from app.services.live_events import emit_live_event
 from app.services.memory_confidence import classify_confidence_tier, confidence_guidance_note
 from app.services.memory_compression import compress_memories_if_needed
 from app.services.memory_snapshot import get_memory_snapshot
@@ -814,6 +815,21 @@ def _build_diary_events_context(date_from_iso: str, events: list[dict[str, Any]]
     return "\n".join(lines)
 
 
+# Sigmaris Live(docs/sigmaris/sigmaris_live_report.md、他の処理への拡大):
+# memory_search_finished イベントのペイロード(Live-1、2.2節で設計済み)を
+# 組み立てるために、_build_memory_context() が既に内部で計算している値
+# (検索件数・B7のクエリ分解有無・B11の確信度層・日記検索の発火有無)を、
+# 呼び出し元へ持ち帰るためだけの、副作用の無いデータクラス。新しい計測
+# ロジックは一切追加していない——いずれも、この関数がこれまで内部でしか
+# 使っていなかった、既存の中間結果をそのまま外へ出しているだけである。
+@dataclass(frozen=True)
+class MemorySearchSummary:
+    result_count: int = 0
+    was_decomposed: bool = False
+    confidence_tier: str | None = None
+    diary_search_triggered: bool = False
+
+
 async def _build_memory_context(
     *,
     jwt: str,
@@ -827,7 +843,7 @@ async def _build_memory_context(
     threshold_adjustment: float = 0.0,
     entities: list[dict[str, Any]] | None = None,
     relations: list[dict[str, Any]] | None = None,
-) -> str | None:
+) -> tuple[str | None, MemorySearchSummary]:
     profile_context = build_profile_context(fact_profile)
     if profile_context and len(profile_context) > 200:
         profile_context = profile_context[:200] + "窶ｦ"
@@ -873,6 +889,10 @@ async def _build_memory_context(
     # through to the exact same single-query call this used to make
     # directly — see multihop_search.py's module docstring.
     relevant_context = None
+    result_count = 0
+    was_decomposed = False
+    confidence_tier: str | None = None
+    diary_search_triggered = False
     latest_user_text = _latest_user_content(messages)
     if latest_user_text:
         try:
@@ -890,6 +910,7 @@ async def _build_memory_context(
                 recent_topic_labels=recent_topic_labels,
                 entity_hint=entity_hint,
             )
+            result_count = len(relevant)
             # Phase B11: calibrated abstention — reuses B7's/B8's already-
             # computed multihop/time-sensitive judgments and each result's
             # own similarity field, at zero additional LLM calls (see
@@ -904,6 +925,7 @@ async def _build_memory_context(
                 is_time_sensitive=time_sensitive,
                 threshold_adjustment=threshold_adjustment,
             )
+            confidence_tier = tier
             # Phase B15: record that this thread just received a hedged
             # answer so the next turn's fire-and-forget cognitive layer
             # (_cognitive_layer_bg) can classify 海星さん's reply to it —
@@ -938,6 +960,7 @@ async def _build_memory_context(
     if latest_user_text:
         date_range = extract_diary_date_range(latest_user_text, now=datetime.now(UTC))
         if date_range:
+            diary_search_triggered = True
             try:
                 date_from, date_to = date_range
                 events = await get_events_in_date_range(jwt, date_from=date_from, date_to=date_to)
@@ -946,7 +969,13 @@ async def _build_memory_context(
                 logger.exception("orchestrator: diary date-range search failed")
 
     parts = [part for part in (profile_context, diary_context, relevant_context) if part]
-    return "\n\n".join(parts) if parts else None
+    summary = MemorySearchSummary(
+        result_count=result_count,
+        was_decomposed=was_decomposed,
+        confidence_tier=confidence_tier,
+        diary_search_triggered=diary_search_triggered,
+    )
+    return ("\n\n".join(parts) if parts else None), summary
 
 
 # ─── Session continuity: cross-thread recent-log window (Phase A1) ───────────
@@ -1357,7 +1386,16 @@ async def run_orchestrator_chat(
     # already-mentioned events (Temporal Layer Step 2) — the B1 relevant_
     # context built further inside this same function is untouched by that
     # filtering (search_with_decomposition() below never sees it).
-    profile_context = await _build_memory_context(
+    #
+    # Sigmaris Live(他の処理への拡大): classify_chat_intent()と全く同じ
+    # fire-and-forgetパターン(emit_live_event()自体が内部で例外を握り
+    # つぶすため、呼び出し元でtry/exceptを重ねる必要はない、Live-2で
+    # 確立済みの規約をそのまま踏襲)。記憶検索(B1)は一括で結果が確定する
+    # バッチ処理であるため(Live-1、5.2節で確認済み)、段階的な演出は
+    # 一切行わず、started→(実際の所要時間)→finishedの二値のみを送る。
+    _live_memory_search_started_at = time.perf_counter()
+    emit_live_event("memory_search_started", invocation_id)
+    profile_context, memory_search_summary = await _build_memory_context(
         jwt=jwt,
         user_id=user_id,
         messages=messages,
@@ -1369,6 +1407,15 @@ async def run_orchestrator_chat(
         threshold_adjustment=threshold_adjustment,
         entities=entities,
         relations=relations,
+    )
+    emit_live_event(
+        "memory_search_finished",
+        invocation_id,
+        result_count=memory_search_summary.result_count,
+        was_decomposed=memory_search_summary.was_decomposed,
+        confidence_tier=memory_search_summary.confidence_tier,
+        diary_search_triggered=memory_search_summary.diary_search_triggered,
+        elapsed_ms=int((time.perf_counter() - _live_memory_search_started_at) * 1000),
     )
 
     call_name = extract_call_name(fact_profile) or _user_display_name(user)
@@ -1640,7 +1687,12 @@ async def run_orchestrator_chat_stream(
     # built inside _build_memory_context() itself, not here. fact_items=
     # below is memory_context_fact_items for the same Temporal Layer Step 2
     # reason documented on run_orchestrator_chat's identical call.
-    profile_context = await _build_memory_context(
+    #
+    # Sigmaris Live: see run_orchestrator_chat's identical block for the
+    # full rationale.
+    _live_memory_search_started_at = time.perf_counter()
+    emit_live_event("memory_search_started", invocation_id)
+    profile_context, memory_search_summary = await _build_memory_context(
         jwt=jwt,
         user_id=user_id,
         messages=messages,
@@ -1652,6 +1704,15 @@ async def run_orchestrator_chat_stream(
         threshold_adjustment=threshold_adjustment,
         entities=entities,
         relations=relations,
+    )
+    emit_live_event(
+        "memory_search_finished",
+        invocation_id,
+        result_count=memory_search_summary.result_count,
+        was_decomposed=memory_search_summary.was_decomposed,
+        confidence_tier=memory_search_summary.confidence_tier,
+        diary_search_triggered=memory_search_summary.diary_search_triggered,
+        elapsed_ms=int((time.perf_counter() - _live_memory_search_started_at) * 1000),
     )
 
     call_name = extract_call_name(fact_profile) or _user_display_name(user)

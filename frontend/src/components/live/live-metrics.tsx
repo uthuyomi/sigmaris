@@ -1,9 +1,16 @@
-// 役割: Sigmaris Live-3(docs/sigmaris/sigmaris_live_report.md)。「簡単な
-// メトリクス」の表示(依頼書2章3節)。既存のイベントデータ(metrics.ts)
-// から算出するのみで、新しいデータ収集は一切行わない。データソースを
-// 知らない、純粋な表示コンポーネント。
+// 役割: Sigmaris Live-3/他の処理への拡大(docs/sigmaris/
+// sigmaris_live_report.md)。「簡単なメトリクス」の表示(依頼書2章3節)。
+// 既存のイベントデータ(metrics.ts)から算出するのみで、新しいデータ収集は
+// 一切行わない。データソースを知らない、純粋な表示コンポーネント。
+//
+// 【他の処理への拡大タスクでの改良(要件5への対応)】
+// 即時判定/LLM判定カードは、config.sourceBreakdownLabel(process-
+// steps.ts)が設定されているステップのみ表示する——記憶検索・応答生成には
+// この内訳の概念自体が無いため(意図分類だけがヒューリスティック/LLMの
+// 二択を持つ)、component側でconfig.idによる分岐をせず、config自身が
+// 持つデータの有無だけで表示要否を判断する形にした。
 
-import { computeStepMetrics } from "./metrics";
+import { computeStepMetrics, computeToolCallMetrics } from "./metrics";
 import { PROCESS_STEPS } from "./process-steps";
 import type { LiveEvent } from "./types";
 
@@ -14,9 +21,9 @@ type MetricCardData = {
 };
 
 function buildCards(events: readonly LiveEvent[]): MetricCardData[] {
-  return PROCESS_STEPS.flatMap((config) => {
+  const stepCards = PROCESS_STEPS.flatMap((config) => {
     const m = computeStepMetrics(events, config);
-    return [
+    const cards: MetricCardData[] = [
       {
         key: `${config.id}-last`,
         label: `${config.label}・直近の所要時間`,
@@ -27,18 +34,35 @@ function buildCards(events: readonly LiveEvent[]): MetricCardData[] {
         label: `${config.label}・平均(直近${m.sampleCount}件)`,
         value: m.averageElapsedMs === null ? "—" : `${m.averageElapsedMs}ms`,
       },
-      {
-        key: `${config.id}-heuristic`,
-        label: `${config.label}・即時判定`,
-        value: `${m.heuristicCount}件`,
-      },
-      {
-        key: `${config.id}-llm`,
-        label: `${config.label}・LLM判定`,
-        value: `${m.llmCount}件`,
-      },
     ];
+    if (config.sourceBreakdownLabel) {
+      cards.push(
+        {
+          key: `${config.id}-heuristic`,
+          label: `${config.label}・${config.sourceBreakdownLabel.heuristic}`,
+          value: `${m.heuristicCount}件`,
+        },
+        {
+          key: `${config.id}-llm`,
+          label: `${config.label}・${config.sourceBreakdownLabel.llm}`,
+          value: `${m.llmCount}件`,
+        },
+      );
+    }
+    return cards;
   });
+
+  const toolCall = computeToolCallMetrics(events);
+  const toolCallCards: MetricCardData[] =
+    toolCall.callCount > 0
+      ? [
+          { key: "tool_call-count", label: "ツール実行・件数", value: `${toolCall.callCount}件` },
+          { key: "tool_call-success", label: "ツール実行・成功", value: `${toolCall.successCount}件` },
+          { key: "tool_call-failure", label: "ツール実行・失敗", value: `${toolCall.failureCount}件` },
+        ]
+      : [];
+
+  return [...stepCards, ...toolCallCards];
 }
 
 function MetricCard({ label, value }: { label: string; value: string }) {

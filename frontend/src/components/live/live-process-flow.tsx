@@ -1,17 +1,26 @@
 "use client";
 
-// 役割: Sigmaris Live-3(docs/sigmaris/sigmaris_live_report.md)。
-// 「処理の流れ」の視覚化(依頼書1章)。PROCESS_STEPS(process-steps.ts)を
-// 走査するだけの、データソースを知らない純粋な表示コンポーネント。
+// 役割: Sigmaris Live-3/他の処理への拡大(docs/sigmaris/
+// sigmaris_live_report.md)。「処理の流れ」の視覚化(依頼書1章)。
+// PROCESS_STEPS(process-steps.ts)を走査するだけの、データソースを
+// 知らない純粋な表示コンポーネント。
 //
 // 【「本物のリアルタイム性」と「演出」の境界線(依頼書の重要な制約)】
 // activeの間は、実際に`_started`イベントを受信してから`_finished`
 // イベントを受信するまでの、実時間だけスピナーを表示する——一定時間で
-// 100%に到達するような疑似プログレスバーは実装していない(classify_
-// chat_intent()は「候補を絞り込んでいく」ような段階的処理ではなく、
+// 100%に到達するような疑似プログレスバーは実装していない。記憶検索は
 // Live-1、5.2節が確認した通り一括で完了するバッチ処理であるため、
-// 段階的な進捗という演出の材料がそもそも存在しない)。doneになった
-// 瞬間、要約結果を一度に表示する。
+// 段階的な進捗という演出の材料がそもそも存在しない。応答生成は逆に
+// 本物のstreamingであるが、Live-1、4.2節のプライバシー方針により応答
+// 本文自体はイベントに含めていないため、doneになるまでの実時間の長さ
+// そのものが「本物のリアルタイム性」の表現になる(判断根拠、報告書に
+// 詳述)。doneになった瞬間、要約結果を一度に表示する。
+//
+// 【他の処理への拡大タスクでの改良(要件5への対応)】
+// 各ステップの結果要約は、config.summarizeResult()(process-steps.ts)を
+// 呼ぶだけになった——本コンポーネントには、特定の処理名やイベント
+// フィールドへの言及が一切無い。新しい処理を追加する際、このファイルは
+// 一切変更する必要がない。
 
 import { CheckIcon, LoaderCircleIcon } from "lucide-react";
 import { computeStepStates, PROCESS_STEPS, type ProcessStepState } from "./process-steps";
@@ -41,20 +50,8 @@ function StepDot({ status }: { status: ProcessStepState["status"] }) {
 }
 
 function resultSummary(state: ProcessStepState): string | null {
-  const evt = state.lastFinishedEvent;
-  if (!evt) return null;
-  // 意図分類固有のフィールド(intent/source/needs_search)を要約する。
-  // 将来processが増えた場合は、ここにconfig.id別の分岐を追加する
-  // (現時点ではintent_classificationのみのため、汎用化はまだ行っていない
-  // ——1件のために抽象化を先取りしないという判断、報告書に明記)。
-  if (state.config.id === "intent_classification") {
-    const intent = typeof evt.intent === "string" ? evt.intent : "unknown";
-    const source = evt.source === "llm" ? "LLM判定" : "即時判定";
-    const needsSearch = evt.needs_search ? "・検索要" : "";
-    const elapsed = typeof evt.elapsed_ms === "number" ? `${evt.elapsed_ms}ms` : null;
-    return `${intent}(${source}${needsSearch})${elapsed ? ` ・ ${elapsed}` : ""}`;
-  }
-  return "完了";
+  if (!state.lastFinishedEvent) return null;
+  return state.config.summarizeResult(state.lastFinishedEvent);
 }
 
 export function LiveProcessFlow({ events }: { events: LiveEvent[] }) {
@@ -65,7 +62,7 @@ export function LiveProcessFlow({ events }: { events: LiveEvent[] }) {
       <div className="mb-4">
         <h2 className="text-base font-semibold text-[#ececec] sm:text-lg">処理の流れ</h2>
         <p className="mt-1 text-sm leading-6 text-[#8e8ea0]">
-          今、シグマリスの内部でどの処理が動いているかを表示します。現時点では意図分類のみが対象です(今後、記憶検索等が追加される予定です)。
+          今、シグマリスの内部でどの処理が動いているかを表示します(意図分類・記憶検索・応答生成)。
         </p>
       </div>
       <div className="flex flex-wrap items-center gap-3">
@@ -87,9 +84,9 @@ export function LiveProcessFlow({ events }: { events: LiveEvent[] }) {
             </div>
           </div>
         ))}
-        {/* 将来の処理(記憶検索・Evidence検索・応答生成等)は、
-            PROCESS_STEPS(process-steps.ts)へ1エントリ追加するだけで、
-            この横並びのフローに自然に追加される。 */}
+        {/* 将来の処理(Evidence検索等)は、PROCESS_STEPS(process-steps.ts)
+            へ1エントリ追加するだけで、この横並びのフローに自然に追加
+            される。 */}
       </div>
     </div>
   );

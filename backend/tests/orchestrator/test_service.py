@@ -9,7 +9,11 @@ from app.services.orchestrator.schedule_agent_client import (
     ScheduleAgentResult,
     ScheduleAgentStreamEvent,
 )
-from app.services.orchestrator.service import run_orchestrator_chat, run_orchestrator_chat_stream
+from app.services.orchestrator.service import (
+    MemorySearchSummary,
+    run_orchestrator_chat,
+    run_orchestrator_chat_stream,
+)
 
 
 def _close_background_coro(coro, *, name: str | None = None):  # noqa: ARG001
@@ -82,7 +86,10 @@ class OrchestratorServiceTests(unittest.IsolatedAsyncioTestCase):
             )
         )
         stack.enter_context(
-            patch("app.services.orchestrator.service._build_memory_context", new=AsyncMock(return_value="memory"))
+            patch(
+                "app.services.orchestrator.service._build_memory_context",
+                new=AsyncMock(return_value=("memory", MemorySearchSummary())),
+            )
         )
         stack.enter_context(patch("app.services.orchestrator.service.asyncio.create_task", _close_background_coro))
         mocks["take_pending_inquiry_question"] = stack.enter_context(

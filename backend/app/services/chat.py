@@ -1162,6 +1162,19 @@ async def stream_chat_completion_ui(
     previous_response_id: str | None = None
     final_text = ""
 
+    # Sigmaris Live(docs/sigmaris/sigmaris_live_report.md、他の処理への
+    # 拡大): 応答生成は、他の処理(記憶検索・意図分類)と異なり、既に
+    # 本物のstreamingでユーザーへ届いている(Live-1、5.1節)。そのため
+    # ここでは、既存のtext-delta streaming自体を可視化用に転用するのでは
+    # なく(応答本文をSigmaris Liveの観測者向けイベントに含めないという
+    # Live-1、4.2節のプライバシー方針は変更していない)、started/finished
+    # の二値のみを、実際の生成開始・終了の実時間に忠実に送る——「実行中」
+    # の表示期間が、本物の生成時間と正確に一致すること自体が、この処理
+    # における「本物のリアルタイム性」の実装である(判断根拠、報告書に
+    # 詳述)。
+    _live_response_generation_started_at = time.perf_counter()
+    emit_live_event("response_generation_started", message_id)
+
     for _ in range(8):
         logger.info(
             "chat stream model request thread_id=%s previous_response_id=%s input_items=%s tools=%s",
@@ -1245,6 +1258,12 @@ async def stream_chat_completion_ui(
                     function_call.name,
                 )
                 tool_call_id = str(getattr(function_call, "call_id", "") or uuid.uuid4())
+                # Sigmaris Live: same fire-and-forget pattern as intent
+                # classification/memory search/response generation above.
+                # tool_name only (Live-1, 2.2節) — arguments can contain
+                # location/calendar content and are never included.
+                _live_tool_call_started_at = time.perf_counter()
+                emit_live_event("tool_call_started", message_id, tool_name=function_call.name)
                 try:
                     tool_result = await asyncio.wait_for(
                         execute_tool(
@@ -1285,6 +1304,13 @@ async def stream_chat_completion_ui(
                         "ok": False,
                         "reason": str(error),
                     }
+                emit_live_event(
+                    "tool_call_finished",
+                    message_id,
+                    tool_name=function_call.name,
+                    ok=bool(tool_result.get("ok")),
+                    elapsed_ms=int((time.perf_counter() - _live_tool_call_started_at) * 1000),
+                )
                 tool_parts.append(
                     _build_tool_ui_part(
                         tool_call_id=tool_call_id,
@@ -1338,6 +1364,13 @@ async def stream_chat_completion_ui(
             "delta": final_text,
         }
         yield f"data: {json.dumps(payload, ensure_ascii=False)}\n\n".encode("utf-8")
+
+    emit_live_event(
+        "response_generation_finished",
+        message_id,
+        response_length=len(final_text),
+        elapsed_ms=int((time.perf_counter() - _live_response_generation_started_at) * 1000),
+    )
 
     if evidence:
         # Phase G-3/G-4: advisory-only in the streaming path -- deltas have
