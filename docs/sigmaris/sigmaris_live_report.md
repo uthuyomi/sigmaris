@@ -588,3 +588,209 @@ ALL PASSED (16/16)
 4. **ナビゲーションへの正式な導線は、意図的に追加していない(page.tsxのコメントに判断根拠を明記済み)。** `AppShell`の`navItems`は固定5項目で、`/live`を追加するにはナビゲーション全体のレイアウト変更が必要になり、本タスクの範囲(`classify_chat_intent()`の表示のみ)を大きく超えると判断した。Sigmaris Liveが複数処理をカバーする、より恒久的な機能になった段階で、改めて検討する価値がある。
 5. **観察者(Sigmaris Liveを見ている人)が、実際にチャットしている人と異なりうる、というLive-1、3.4節の想定に対し、本タスクのUIは特に何も配慮していない。** 現状は「今アクティブな1つの処理の状態」を表示するのみで、複数の会話が同時に進行した場合(例えば将来的に複数ユーザーが同時に使う場合)にイベントが混在して表示される可能性がある——`invocation_id`によるターンの区別自体はデータ上可能だが、UI側で「どのターンの一連の流れか」を視覚的に分離する設計は、本タスクでは行っていない(現状の単一ユーザー運用では実害が無いと判断し、優先度を下げた)。
 6. **次タスクへの提案**: Live-1、6.2節の優先順位(応答生成→記憶検索→Evidence検索/ツール呼び出し)を踏襲しつつ、`PROCESS_STEPS`に次の処理を1件追加し、実際にフロー・メトリクス・ログの3つに自然に反映されることを確認しながら進めることを推奨する。特に応答生成(streaming)は、Live-1、6.2節が指摘した通り「演出ではなく本物のstreaming中継そのもの」という性質上、本タスクの`started`/`finished`二値モデルとは異なる表現(文字が実際に流れ込む速度そのものの可視化)が必要になる可能性が高く、`ProcessStepConfig`の設計を、この一様でない性質に対応できる形に拡張する必要が生じる可能性がある。
+
+---
+
+# Sigmaris Live Live-4 実施報告: 他の処理への、イベント発行の、拡大
+
+**作業ブランチ:** `sigmaris-live-4-process-expansion`(mainから新規作成)
+**範囲:** Live-1が設計した、残りのトップレベルイベント(2.1節)のうち、記憶検索(`memory_search_*`)・応答生成(`response_generation_*`)・ツール呼び出し(`tool_call_*`)へ、イベント発行を拡大した。Evidence検索(`evidence_search_*`)は、20章1節で述べる理由により、本タスクの対象外とした。フロントエンドは、`PROCESS_STEPS`への追加と、Live-3の懸念点2(18章2点目)で申し送られていた課題への対応(結果要約ロジックの設定への移設)を行った。
+
+## 19. 前提として確認したこと
+
+着手前に、以下を実際のコードで確認した。
+
+- `docs/sigmaris/sigmaris_live_report.md`(Live-1〜Live-3、1〜18章)。特にLive-1、2.1節(イベント一覧・発生源の行番号)・5章(リアルタイム性と演出の境界線)・6.2節(優先順位の初期提案)、Live-3、18章2点目(`resultSummary()`の`intent_classification`専用ハードコード問題)。
+- `backend/app/services/orchestrator/service.py`: `_build_memory_context()`(当時741-873行目、現836-1006行目付近、B7〜B12・Temporal Layerの日記検索を内包)の戻り値が、単なる`str | None`であり、呼び出し元(2箇所)が検索件数・確信度層等の中間結果を一切受け取れない構造になっていることを確認した——イベントペイロード(2.2節設計)を組み立てるには、まずこの関数自体に戻り値の拡張が必要だと判明した。
+- `backend/app/services/chat.py`の`stream_chat_completion_ui()`: `response_generation`に相当する`client.responses.create(..., stream=True)`のループ(当時`chat.py:1130-`)の開始・終了位置、および`execute_tool()`の呼び出し箇所(ツールごとに最大8回ループ内)を再確認した。
+- `CONFIRMATION_REQUIRED_TOOLS`(`chat.py:54`付近): `create_google_calendar_events`・`create_app_events`・`delete_google_calendar_events`・`delete_google_calendar_events_in_range`・`save_travel_plan_for_event`の5種は、確認要求の分岐へ回され`execute_tool()`に到達しないことを確認した(21.3節のテストで、この分岐を踏まえたツール名選定が必要だった)。
+
+## 20. 対象とした処理の一覧と、優先順位の判断根拠
+
+### 20.1 今回拡大した処理と、見送った処理
+
+| 処理 | 対応 | 判断根拠 |
+|---|---|---|
+| `memory_search_started`/`finished` | **実装した** | 依頼書が明示的に例示し、かつLive-1、6.2節が「次点で着手する価値が高い」と位置づけていた処理。`_build_memory_context()`という単一の関数の入出力を挟むだけで実現でき、影響範囲が閉じている。 |
+| `response_generation_started`/`finished` | **実装した** | 既存のstreamingループ(BA4で確立済み)の開始・終了を挟むのみで、ループ内部のロジック(トークン中継・ツール呼び出し処理)には一切触れずに済む。依頼書が特に慎重な扱いを求めた処理だが、影響範囲を「ループの前後2行」に限定することで、リスクを最小化できると判断した。 |
+| `tool_call_started`/`finished` | **実装した(判断根拠は独自追加)** | Live-1、2.1節の12種のイベントリストに元々含まれていた(#10)。応答生成ループを触るタイミングで、同じループ内にある`execute_tool()`呼び出しも合わせて計装する方が、同じ関数を2回に分けて変更するより差分が追いやすく、レビューコストも低いと判断し、今回まとめて対応した。 |
+| `evidence_search_started`/`finished` | **見送った** | Live-1、2.1節・6.2節がいずれも「発生頻度が低い(条件付き)ため優先度が低い」と位置づけていた処理。今回は「リスクが低く価値の高いものから」という依頼書の方針に照らし、発生頻度が高く(=可視化の効用が大きい)、かつ影響範囲が閉じている3処理を優先した。次点候補として22章6点目に申し送る。 |
+| `context_prepared_finished` / `request_started` / `request_finished` | **見送った** | Live-1、2.1節で設計はされているが、依頼書が「記憶検索・応答生成等」と名指しした処理ではなく、また`request_finished`は`OrchestratorStreamEvent(done=True)`という既存の完了シグナルと意味的に重複するため、今回の「他の処理への拡大」という主旨からは優先度が低いと判断した。 |
+
+### 20.2 実装順序とリスクの考え方
+
+依頼書「リスクが低く価値の高いものから順に拡大する」に対応し、以下の順序で実装・検証を進めた。
+
+1. **記憶検索**: 影響範囲が`_build_memory_context()`という1関数の戻り値拡張+呼び出し元2箇所(非streaming・streaming)に閉じており、応答生成のような「ユーザーが直接体感する速度」に関わる箇所ではない(記憶検索はユーザーには元々不可視の処理)。最もリスクが低いと判断し、最初に着手した。
+2. **応答生成**: 依頼書が「既存の応答速度に悪影響を与えないことを最優先すること」と明示的に強調した処理。記憶検索での実装・計測パターンが確立してから着手する方が、応答生成特有の懸念(ループ内でのオーバーヘッド蓄積等)に集中して検証できると考え、2番目にした。
+3. **ツール呼び出し**: 応答生成のループ内に既にある処理であり、20.1節の通り同じ変更のまとまりとして対応するのが合理的だったため、応答生成と同時に実装した。
+
+## 21. 各処理へのイベント発行の実装詳細
+
+### 21.1 記憶検索(`memory_search_started`/`finished`)
+
+`_build_memory_context()`(`orchestrator/service.py:833-`)自体は、既に検索件数・B7のクエリ分解有無・B11の確信度層・Temporal Layerの日記検索発火有無を、関数内部の局所変数として計算済みだった。**新しい計測ロジックは一切追加せず、既にある中間結果を、呼び出し元へ持ち帰るためだけの`@dataclass(frozen=True) class MemorySearchSummary`(`service.py:826-831`)を新設し、戻り値を`str | None`から`tuple[str | None, MemorySearchSummary]`へ変更した。**
+
+呼び出し元は2箇所(`run_orchestrator_chat()`・`run_orchestrator_chat_stream()`)存在し、いずれも既に`invocation_id`(監査ログ用、`start_invocation()`が返す真のID)をこの時点で保持しているため、Live-2で申し送られていた「`chat.py`側は`message_id`しか持たない」という制約(11章1点目)には該当しない——記憶検索は`orchestrator/service.py`内で発生する処理であるため、最初から真の`invocation_id`をそのまま使える。
+
+```python
+_live_memory_search_started_at = time.perf_counter()
+emit_live_event("memory_search_started", invocation_id)
+profile_context, memory_search_summary = await _build_memory_context(
+    jwt=jwt, user_id=user_id, messages=messages, fact_profile=fact_profile,
+    fact_items=memory_context_fact_items, active_trends=active_trends,
+    recent_topic_labels=_topic_labels_for_hint(current_topic, previous_topic),
+    thread_id=effective_thread_id, threshold_adjustment=threshold_adjustment,
+    entities=entities, relations=relations,
+)
+emit_live_event(
+    "memory_search_finished", invocation_id,
+    result_count=memory_search_summary.result_count,
+    was_decomposed=memory_search_summary.was_decomposed,
+    confidence_tier=memory_search_summary.confidence_tier,
+    diary_search_triggered=memory_search_summary.diary_search_triggered,
+    elapsed_ms=int((time.perf_counter() - _live_memory_search_started_at) * 1000),
+)
+```
+(`run_orchestrator_chat()`側: `service.py:1397-1419`付近、`run_orchestrator_chat_stream()`側: `service.py:1694-1716`付近。2箇所は完全に同一パターン。)
+
+**「演出禁止」の遵守(依頼書の最重要制約への対応)**: Live-1、5.2節が「記憶検索は、複数件の記憶が時間差で1件ずつ見つかるという実装にはそもそもなっていない(vector検索RPCが1回で一括して返す)」とコードで確認済みだったことを踏襲し、`started`と`finished`の二値のみを発行した。`finished`のペイロードにも、個々の記憶の内容や、件数の内訳を段階的に見せるような設計は一切含めていない——`result_count`(件数)・`was_decomposed`(分解の有無)・`confidence_tier`(確信度層のラベル)・`diary_search_triggered`(日記検索の発火有無)という、Live-1、2.2節がそのまま設計していた4フィールドのみを、追加の計測や演出なしにそのまま渡した。
+
+### 21.2 応答生成(`response_generation_started`/`finished`)
+
+`stream_chat_completion_ui()`(`chat.py`)内、応答生成の本体である`for _ in range(8):`ループの直前に`response_generation_started`を、ループを抜けた直後(フォールバック処理を含む、`chat.py:1368-1373`)に`response_generation_finished`を発行した。
+
+```python
+_live_response_generation_started_at = time.perf_counter()
+emit_live_event("response_generation_started", message_id)
+
+for _ in range(8):
+    ...
+
+emit_live_event(
+    "response_generation_finished", message_id,
+    response_length=len(final_text),
+    elapsed_ms=int((time.perf_counter() - _live_response_generation_started_at) * 1000),
+)
+```
+
+**「本物のリアルタイム表示」の実現方法についての判断根拠(依頼書の重要な制約への対応)**: 依頼書は「既存のストリーミング応答(BA4)の仕組みをそのまま活用し、本物のリアルタイム表示として実装すること」を求めていたが、Live-1、4.2節が既に「応答本文そのものは、外部観測用イベントに含めない」という、覆すべきでないプライバシー方針を確立していた。この2つの要求は、一見すると緊張関係にあるように見えたため、以下のように整理した。
+
+- 応答本文そのものをLive側のイベントに載せる(=Live-1、4.2節の方針を覆す)ことはしない。本人向けの画面には、既存の`/api/agent/chat/stream`が既にトークン単位でstreamingしており、情報が失われるわけではない。
+- 代わりに、「`_started`を受信してから`_finished`を受信するまでの実時間の長さそのもの」を、"本物のリアルタイム性"の表現とした。記憶検索・意図分類とは異なり、応答生成中は`active`状態が**実際にトークンが生成され続けている、正味の時間**だけ継続する(ループの前後を挟んだだけなので、疑似的な進捗表示を追加する余地がそもそも無い)。5.3節が提案していた「文字が実際に届いた分だけ画面に追記される」というタイピング風表示は、今回は実装していない(次項で理由を述べる)。
+- **今回、文字送り表示までは実装しなかった判断根拠**: そのためには、`response_generation`用に新しいイベント種別(例: `response_generation_delta`、トークンが届くたびに発行)を追加する必要があるが、これは「既存のfire-and-forgetパターン・ペイロード設計をそのまま適用する」という依頼書の制約(=新しい設計をしない)と衝突する。既存の`classify_chat_intent()`のパターンは`started`/`finished`の二値のみであり、トークン単位の高頻度イベントという新しい種類の発行パターンは、依頼書が明示的に禁じた「新しい設計」に該当すると判断した。また、トークンごとに`emit_live_event()`を呼ぶと(23章の実測から)呼び出し回数が数十〜数百倍に増え、依頼書「既存の応答速度に悪影響を与えないことを最優先すること」との整合性を、まず`started`/`finished`の二値で安全に確認してから検討すべきと考えた。この点は22章6点目に次タスクへの申し送りとして明記する。
+
+### 21.3 ツール呼び出し(`tool_call_started`/`finished`)
+
+応答生成ループ内、`execute_tool()`の呼び出し(タイムアウト・`RefreshError`・その他例外のいずれの経路でも`tool_result`が確定した後に必ず`finished`を発行できるよう、`try/except`ブロック全体を`started`/`finished`で挟む形にした、`chat.py:1265-1315`付近)。
+
+```python
+_live_tool_call_started_at = time.perf_counter()
+emit_live_event("tool_call_started", message_id, tool_name=function_call.name)
+try:
+    tool_result = await asyncio.wait_for(execute_tool(...), timeout=TOOL_EXECUTION_TIMEOUT_SECONDS)
+except TimeoutError:
+    ...
+except RefreshError as error:
+    ...
+except Exception as error:
+    ...
+emit_live_event(
+    "tool_call_finished", message_id,
+    tool_name=function_call.name,
+    ok=bool(tool_result.get("ok")),
+    elapsed_ms=int((time.perf_counter() - _live_tool_call_started_at) * 1000),
+)
+```
+
+`tool_name`・`ok`(成功可否)・`elapsed_ms`のみを含み、ツールの引数(位置情報・カレンダー内容等、Live-1、2.2節が既に「除外する情報」として明記していた項目)・実行結果の内容は一切含めていない。
+
+### 21.4 非streaming経路(`run_chat_completion()`)には、引き続き手を加えていない
+
+Live-2、7.2節の判断根拠1(streaming経路のみを対象とする)を、そのまま踏襲した。応答生成・ツール呼び出しの計装は`stream_chat_completion_ui()`にのみ行い、`run_chat_completion()`(WearOS等、非streaming用)には一切触れていない——Sigmaris Liveを見ながら使うという利用形態が想定されない経路を、対象範囲に含めない方針は、Live-2から一貫している。
+
+## 22. フロントエンドの拡張は、設定の追加のみで実現できたか
+
+### 22.1 検証結果: 部分的に「はい」——`computeStepStates()`は無変更、ただし結果要約ロジックの構造自体を1段深く汎用化する必要があった
+
+**`computeStepStates()`(`process-steps.ts`)自体は、`memory_search`・`response_generation`を`PROCESS_STEPS`に追加した後も、1行も変更していない。** これはLive-3が設計した「イベント名・件数に依存しない汎用的な状態機械」という設計が、実際に機能したことの実証である。
+
+一方、Live-3、18章2点目が申し送っていた通り、`resultSummary()`(旧`live-process-flow.tsx`)は`intent_classification`専用の整形ロジックをハードコードしており、これは「設定の追加のみ」では対応できなかった。今回、以下の2つの選択肢のうち、後者を選んだ。
+
+- (a) `resultSummary()`を`config.id`で分岐する形に拡張する
+- (b) **各`ProcessStepConfig`に、要約整形関数(`summarizeResult: (event: LiveEvent) => string`)自体を持たせる**
+
+**判断根拠**: (a)は、処理が増えるたびに`live-process-flow.tsx`(表示コンポーネント)自身への変更が必要であり続け、「設定の追加のみで対応できる」という依頼書の要件を、根本的には満たせない(表示コンポーネントに手を加える点は変わらないため)。(b)は、表示コンポーネント(`live-process-flow.tsx`・`live-event-log.tsx`)を`config.summarizeResult(event)`を呼ぶだけの、真に汎用的なコードにできる——次に処理が増える際、`process-steps.ts`の`PROCESS_STEPS`配列にエントリを1つ追加するだけで、表示コンポーネントは本当に無変更のまま対応できる。Live-3時点でこの選択を先送りしていた判断(「1つの処理しか無い時点で抽象化を先取りしすぎない」)を、今回2つ目・3つ目の処理を追加する具体的な機会に、実際のニーズに基づいて解消した。
+
+同様に、`LiveMetrics`(`live-metrics.tsx`)の「即時判定/LLM判定」カードも、旧実装は常に表示する前提だったが、この内訳(ヒューリスティック/LLM二択)は`intent_classification`固有の概念であり、記憶検索・応答生成には存在しない。`sourceBreakdownLabel?: { heuristic: string; llm: string }`という省略可能なフィールドを`ProcessStepConfig`に追加し、`LiveMetrics`側は`config.sourceBreakdownLabel`の有無だけで表示要否を判断する(`config.id`による分岐を持たせない)形にした。
+
+### 22.2 `PROCESS_STEPS`に含めなかった処理: `tool_call`
+
+`tool_call_started`/`finished`は、意図的に`PROCESS_STEPS`へ含めなかった。**判断根拠**: `PROCESS_STEPS`が前提とする状態機械(`computeStepStates()`)は、「1ターンにつき、その処理は高々1回しか発生しない」ことを暗黙の前提にしている(`started`受信で`active`、`finished`受信で`done`という単純な二値遷移)。`tool_call`は1ターンに0〜複数回発生しうる、性質の異なるイベントである。これを無理に`PROCESS_STEPS`へ含めると、複数回のツール呼び出しのうち最後の1回しか状態に反映されない、という誤った単純化になる。そのため、ログ(`live-event-log.tsx`)・メトリクス(`metrics.ts`の`computeToolCallMetrics()`)には個別に対応する専用ロジックを追加したが、「処理の流れ」(`LiveProcessFlow`)には表示しない設計とした。この判断はLive-1〜3で明示的に議論されていなかった、本タスクで新たに直面した設計判断であるため、独自の判断根拠として明記する。
+
+### 22.3 結論
+
+「設定の追加のみで新しい処理に対応できる」という依頼書の設計目標は、**`computeStepStates()`という状態遷移ロジックに関しては完全に実証された**が、**表示・整形ロジックに関しては、Live-3時点の実装ではまだ「設定の追加のみ」になっておらず、本タスクでその構造自体を`summarizeResult`/`sourceBreakdownLabel`という形でconfigへ移す追加のリファクタリングが必要だった**、というのが正直な検証結果である。このリファクタリングを経た後の現状であれば、次(4つ目)の処理を追加する際は、真に`process-steps.ts`への追加のみで、表示コンポーネント側は無変更のまま対応できると考える。
+
+## 23. 応答速度への影響の確認結果
+
+Live-2、9章と同じ方法(実装した`emit_live_event()`そのものを直接計測)で、今回追加した3処理分(記憶検索・応答生成・ツール呼び出し、計6回のイベント発行/ターン)を含めて再計測した。
+
+```
+2000イテレーション × 6回/イテレーション(観察者接続なし):
+  1回あたり平均 3.82マイクロ秒
+
+同条件、観察者(SSE購読者)が1つ接続された状態:
+  1回あたり平均 4.44マイクロ秒
+```
+
+Live-2の実測(意図分類のみ、2回/イテレーション、6.79〜7.24マイクロ秒/回)と比べ、イベント発行回数が3倍(2回→6回/ターン)に増えたにもかかわらず、1回あたりのオーバーヘッドは同じマイクロ秒オーダーに留まっており、悪化していない。応答生成(`for _ in range(8):`ループ、数百ミリ秒〜数秒かかりうる処理)に対し、追加した2回分の`emit_live_event()`呼び出し(合計1桁マイクロ秒)は、測定不能なほど小さい。
+
+また、キューが枯渇した場合の`"live_events: subscriber queue full, dropping event"`警告(Live-2、9章末尾で確認済みの既知の挙動)も、今回のベンチマーク(観察者側でキューを消費しない条件)で同様に観測されたが、これはイベント量が3倍になったことによる新しい問題ではなく、既存の既知の挙動がそのまま再現しただけであることを確認した。
+
+**実モデルAPIでの計測は、依頼書の制約により行っていない**(`OPENAI_API_KEY`が利用できない環境のため)。応答生成ループ自体は全てモックであり、実際のトークン生成速度への影響(理論上ゼロのはずだが)は、本番環境での実測を推奨する(25章5点目)。
+
+## 24. テスト結果
+
+### 24.1 バックエンド
+
+`test_sigmaris_live_4_expansion.py`に7件のテストを新設した(スクラッチディレクトリ、リポジトリには追加していない——Live-1〜3までの前例と同じ扱い)。
+
+- `BuildMemoryContextSummaryTests`(3件): `_build_memory_context()`の新しいタプル戻り値が、様々なモック状況(結果あり・ユーザーテキストなし・日記検索発火)で、`result_count`/`was_decomposed`/`confidence_tier`/`diary_search_triggered`を正しく反映することを確認。
+- `OrchestratorMemorySearchEventTests`(1件): `run_orchestrator_chat()`実行時、`memory_search_started`/`finished`が正しい順序・ペイロードで発行されることを確認。
+- `ChatStreamResponseGenerationEventTests`(2件): `response_generation_started`/`finished`が、streamingループ全体を正しく挟み、`response_length`が正しいこと、および**発行された、いずれのイベントのペイロードにも、応答本文が一切含まれないこと**(プライバシー確認)を検証。`tool_call_started`/`finished`についても、`tool_name`/`ok`が正しいこと、ツール引数に含めた模擬的な機密情報(`"秘密の住所123"`)が、いずれのイベントペイロードにも漏れていないことを検証。
+- `LiveEventBusFailureResilienceTests`(1件): `LiveEventBus.publish()`が例外を送出するよう細工した状態でも、`stream_chat_completion_ui()`が正常に完了することを確認(Live-2と同じ検証方法論——`emit_live_event()`自体をモックするのではなく、実際のバスの`publish()`をモックする方が実態に忠実と判断)。
+
+既存テストとあわせて、`backend/tests/`の16件全てが成功した(回帰なし)。`_build_memory_context()`の戻り値をタプルに変更したことに伴い、`test_service.py`の既存モック(`AsyncMock(return_value="memory")`)を`AsyncMock(return_value=("memory", MemorySearchSummary()))`に修正する必要があったが、これは戻り値の形状変更に伴う機械的な追随であり、テストの意図(`_build_memory_context()`の呼び出しをモックして`run_orchestrator_chat*()`の他の挙動を検証する)自体は変えていない。
+
+### 24.2 フロントエンド
+
+```
+npx eslint src/components/live src/app/live   → エラーなし
+npx tsc --noEmit(フロントエンド全体)          → エラーなし
+npx next build                                → 成功(全42ルート、/live・/api/live/streamを含む)
+```
+
+### 24.3 実際にブラウザを起動しての動作確認(Live-3、17.3節と同じ手法)
+
+Live-3と同じく、コミットしない一時的な確認用ルート(`live-preview-test-noauth`)経由で`LiveDashboard`を表示し、`window.EventSource`をフェイク実装に差し替え、Playwright(`chromium`ヘッドレス)でスクリーンショットを取得した。今回は2ターン分(意図分類→記憶検索→応答生成+ツール呼び出し1回、を2回)を模擬発行し、以下を確認した。
+
+- **idle→active→doneの状態遷移**: 記憶検索・応答生成のいずれも、`_started`受信時にスピナー(パルスする紫の円)へ、`_finished`受信時に緑のチェックマーク+要約表示へ、正しく切り替わることをスクリーンショットで確認。応答生成が`active`である間、他の完了済みステップ(意図分類・記憶検索)は`done`のまま維持されることも確認した。
+- **結果要約の内容**: 記憶検索は「記憶3件(確信あり)・複数の観点に分解 ・ 187ms」、応答生成は「128文字を生成 ・ 932ms」のように、22.1節で設計した`summarizeResult()`が、日本語の読みやすいラベルへ正しく変換して表示することを確認した。
+- **メトリクス**: 2ターン分投入後、意図分類・記憶検索・応答生成それぞれの直近値・平均値(直近2件)、およびツール実行の件数・成功・失敗件数(2件中、成功1件・失敗1件)が、正しく算出されて表示されることを確認した。
+- **ログ**: 16件のイベント(2ターン×8イベント)が新しい順に、処理ごとの要約とともに正しく表示されることを確認した。ツール呼び出しの成功/失敗ラベルも正しく区別されていた。
+- **コンソールエラー・ページエラー**: いずれのステップでも0件だった。
+- 確認用の一時ルート・検証スクリプトは、検証後にすべて削除し、`git status`で作業ツリーがLive-4本来の変更のみになっていることを確認した(削除に伴い発生した、Next.jsの型キャッシュ(`.next/dev/types/validator.ts`)が削除済みルートを参照し続ける問題は、`.next`ディレクトリを削除して`tsc --noEmit`を再実行することで解消し、再度エラーなしを確認した)。
+
+### 24.4 line-ending(改行コード)混入の検出・修正
+
+編集作業の過程で、`backend/app/services/orchestrator/service.py`(既存ファイルがCRLF/LF混在)が、Editツールによる編集を経て、ファイル全体がLFのみに変換されてしまう、Self-3等で既知の問題が今回も発生した(`git diff`が2291行の変更として表示される一方、`git diff --ignore-cr-at-eol`では69行のみで、実質的な変更は69行分に過ぎないことを確認して発覚)。既存の対処パターン(pristineな`git show HEAD:`の内容を基準に、変更が無い行は元の改行コードを維持したまま、差分のある行のみ新しい内容で置き換える)を適用し、`git diff`と`git diff --ignore-cr-at-eol`の行数が69行で一致することを確認して修正した。`backend/app/services/chat.py`側では、この問題は発生していなかった(33行で両者が最初から一致)。
+
+## 25. 気づいた懸念点・次のステップに向けた申し送り事項
+
+1. **応答生成の「文字送り表示」は、今回実装していない(21.2節)。** `started`/`finished`の二値モデルでは、`active`状態の継続時間が実時間を正しく反映するが、生成された文字が実際に画面に流れ込む様子までは可視化できていない。トークン単位の高頻度イベント(例: `response_generation_delta`)を追加検討する場合、既存の`classify_chat_intent()`パターン(二値のみ)から意図的に逸脱する新しい設計判断になるため、次タスクでは、まず本タスクの二値モデルを実運用でしばらく観察し、応答生成の`active`状態の継続時間表示だけで十分な価値があるかを確認してから、要否を判断することを推奨する。
+2. **Evidence検索(`evidence_search_*`)は、今回も見送った(20.1節)。** Live-1、6.2節・本タスクの20.1節がいずれも優先度を低く位置づけている通り、発生頻度が低い(条件付き)処理であるため、次に拡大する候補として妥当だが、まだ着手していない。
+3. **`invocation_id`と`message_id`の不一致(Live-2、11章1点目)は、記憶検索・ツール呼び出し・応答生成のいずれの新規イベントでも未解消のまま。** 記憶検索(`orchestrator/service.py`側)は真の`invocation_id`を使えているが、応答生成・ツール呼び出し(`chat.py`側)は引き続き`message_id`を使っている(Live-2からの既存の制約をそのまま継承)。現状、フロントエンドの`computeStepStates()`はイベント種別のみで状態を判定し、`invocation_id`によるターンの相関は行っていないため、実害はないが、将来「同時に複数ターンが進行した場合に、どのターンの記憶検索が、どのターンの応答生成に対応するか」を区別する必要が生じた場合には、この不一致の解消(Live-2、11章1点目が示す`X-Correlation-ID`の受け渡し)が前提になる。
+4. **`tool_call`を`PROCESS_STEPS`に含めない、という設計判断(22.2節)は、次に「1ターンに複数回発生しうる処理」を追加する際の先例になる。** 現状はログ・メトリクスへの個別対応のみだが、将来この種の処理が増えた場合、ログ・メトリクス双方に同種の対応を都度追加するのではなく、共通の抽象化(例えば「多重発生イベント」というもう1つのカテゴリ)を検討する価値が出てくる可能性がある。1種類しか無い現時点では、抽象化を先取りしないことを優先した。
+5. **実モデルAPIでの検証は、依頼書の制約により行っていない(23章末尾)。** 応答生成・ツール呼び出しの計装が、実際のOpenAI API呼び出し・実際のツール実行の所要時間そのものに与える影響(理論上、追加した`emit_live_event()`呼び出し2〜4回分のマイクロ秒オーダーのみのはず)は、本番環境での実測を推奨する。
+6. **次タスクへの提案**: 22.1節で確立した`summarizeResult`/`sourceBreakdownLabel`という、真に設定追加のみで拡張できるフロントエンド設計を活かし、Evidence検索(`evidence_search_*`、上記2点目)、または応答生成の文字送り表示(上記1点目)のいずれかへ拡大することを推奨する。後者に着手する場合は、まず本タスクの実測(23章)を上回るイベント発行頻度になることを踏まえ、オーバーヘッドの再計測を必須の検証項目に含めるべきである。
