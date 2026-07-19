@@ -43,6 +43,7 @@ from app.services.grounding_health_runs_store import get_recent_grounding_health
 from app.services.drive_system import get_current_drive_state
 from app.services.migration_review_queue_store import get_pending_reviews
 from app.services.code_diff_proposal_store import get_pending_diff_proposals
+from app.services.live_event_details import get_live_event_detail
 from app.services.live_events import get_live_event_bus
 
 router = APIRouter(prefix="/api/agent", tags=["agent"])
@@ -695,6 +696,45 @@ async def agent_live_stream(
             bus.unsubscribe(queue)
 
     return StreamingResponse(_generate(), media_type="text/event-stream")
+
+
+# Sigmaris Live「詳細表示、+機密情報のマスキング」タスク:
+#
+# /live/streamの要約データ(要約データのみ、ユーザーJWTなしで配信)とは
+# 異なり、本エンドポイントはマスキング済みとはいえ、記憶検索・ツール
+# 呼び出しの、より個人的な内容を返す。Live-1、4.3節が示した設計方針
+# 「詳細情報は、エージェント認証に加え、海星さん本人のユーザーJWTによる
+# 本人確認も必須にすべき」を、そのまま実装した——/live/streamがJWTを
+# 要求しないのは「要約データのみだから」という前提の上に成り立っており、
+# その前提を壊さないための、意図的な非対称設計である。
+#
+# _require_jwt(authorization)で得たjwtを、そのままget_live_event_detail()
+# 経由でSupabase RESTへ転送するため、行レベルセキュリティ
+# (sigmaris_live_event_details、202608080066マイグレーション、
+# auth.uid() = user_id)が、実際にリクエストしたユーザー本人の権限でのみ
+# 適用される——サービスロールで全ユーザー分を横断的に読めるような実装には
+# 意図的にしていない。
+_LIVE_DETAIL_EVENT_TYPES = frozenset({"memory_search_finished", "tool_call_finished"})
+
+
+@router.get("/live/detail")
+async def agent_live_detail(
+    event_type: str = Query(...),
+    key: str = Query(...),
+    authorization: str | None = Header(default=None),
+    x_agent_id: str | None = Header(default=None),
+    x_agent_secret: str | None = Header(default=None),
+) -> dict[str, Any]:
+    """記憶検索・ツール呼び出し1件分の、マスキング済み詳細情報を返す。
+    まだ永続化が完了していない(fire-and-forgetのため、応答完了直後は
+    間に合わないことがある)、または該当が無い場合は found=False を返す
+    (エラーではない)。"""
+    _verify_agent(x_agent_id, x_agent_secret)
+    jwt = _require_jwt(authorization)
+    if event_type not in _LIVE_DETAIL_EVENT_TYPES:
+        raise HTTPException(status_code=400, detail={"error": f"unsupported event_type: {event_type}"})
+    detail = await get_live_event_detail(jwt, event_type=event_type, detail_key=key)
+    return {"ok": True, "found": detail is not None, "detail": detail}
 
 
 # ─── /api/agent/proactive/ ────────────────────────────────────────────────────
