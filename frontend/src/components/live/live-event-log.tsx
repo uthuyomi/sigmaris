@@ -1,3 +1,5 @@
+"use client";
+
 // 役割: Sigmaris Live-3/他の処理への拡大(docs/sigmaris/
 // sigmaris_live_report.md)。ログ表示(依頼書2章「時刻・処理名・簡単な
 // 結果が見やすく並ぶログ表示」)。
@@ -18,10 +20,18 @@
 // finishedのみ、PROCESS_STEPSに含まれない処理(1ターンに0〜複数回発生
 // しうるため、process-steps.tsのモデルには馴染まないと判断——判断根拠、
 // 報告書に詳述)として、このファイル内で個別に整形する。
+//
+// 【詳細表示、+機密情報のマスキングタスクでの追加】
+// クリックすると展開する、詳細情報パネル(live-event-detail-panel.tsx)を
+// 追加した。detailLookupFor()が対象外と判断した行(memory_search_finished/
+// tool_call_finished以外)は、クリックしても何も起きない(cursor-defaultの
+// まま)——詳細を持たない行にまで、意味のない展開UIを付けないための判断。
 
+import { Fragment, useState } from "react";
 import { PROCESS_STEPS } from "./process-steps";
 import { PARSE_ERROR_EVENT } from "./use-live-events";
 import type { LiveEvent } from "./types";
+import { detailLookupFor, LiveEventDetailPanel } from "./live-event-detail-panel";
 
 const STARTED_LABELS: Record<string, string> = {};
 const FINISHED_LABELS: Record<string, string> = {};
@@ -75,13 +85,14 @@ function formatResult(evt: LiveEvent): string {
 export function LiveEventLog({ events }: { events: LiveEvent[] }) {
   // 新しいものを上に表示する(ログとして自然な順序)。
   const rows = [...events].reverse();
+  const [expandedKey, setExpandedKey] = useState<string | null>(null);
 
   return (
     <div className="rounded-3xl border border-white/10 bg-[#2a2a2a] p-4 shadow-[0_18px_60px_-45px_rgba(0,0,0,0.75)] sm:p-5">
       <div className="mb-4">
         <h2 className="text-base font-semibold text-[#ececec] sm:text-lg">ログ</h2>
         <p className="mt-1 text-sm leading-6 text-[#8e8ea0]">
-          時刻・処理名・結果を、新しい順に表示します(直近{events.length}件)。
+          時刻・処理名・結果を、新しい順に表示します(直近{events.length}件)。記憶検索・ツール実行の行はクリックすると詳細を表示します。
         </p>
       </div>
       <div className="max-h-[50vh] overflow-y-auto rounded-2xl border border-white/10 bg-[#212121]">
@@ -92,15 +103,35 @@ export function LiveEventLog({ events }: { events: LiveEvent[] }) {
         ) : (
           <table className="w-full border-collapse text-sm">
             <tbody>
-              {rows.map((evt, idx) => (
-                <tr key={`${evt.invocation_id}-${evt.event}-${idx}`} className="border-b border-white/5 last:border-0">
-                  <td className="whitespace-nowrap px-3 py-2 align-top font-mono text-xs text-[#8e8ea0]">
-                    {new Date(evt.timestamp * 1000).toLocaleTimeString()}
-                  </td>
-                  <td className="whitespace-nowrap px-3 py-2 align-top text-[#ececec]">{eventLabel(evt)}</td>
-                  <td className="px-3 py-2 align-top text-[#8e8ea0]">{formatResult(evt)}</td>
-                </tr>
-              ))}
+              {rows.map((evt, idx) => {
+                const rowKey = `${evt.invocation_id}-${evt.event}-${idx}`;
+                const detailable = detailLookupFor(evt) !== null;
+                const isExpanded = expandedKey === rowKey;
+                return (
+                  <Fragment key={rowKey}>
+                    <tr
+                      className={`border-b border-white/5 last:border-0 ${detailable ? "cursor-pointer hover:bg-white/[0.03]" : ""}`}
+                      onClick={detailable ? () => setExpandedKey(isExpanded ? null : rowKey) : undefined}
+                    >
+                      <td className="whitespace-nowrap px-3 py-2 align-top font-mono text-xs text-[#8e8ea0]">
+                        {new Date(evt.timestamp * 1000).toLocaleTimeString()}
+                      </td>
+                      <td className="whitespace-nowrap px-3 py-2 align-top text-[#ececec]">
+                        {eventLabel(evt)}
+                        {detailable && <span className="ml-1 text-xs text-[#8e8ea0]">{isExpanded ? "▲" : "▼"}</span>}
+                      </td>
+                      <td className="px-3 py-2 align-top text-[#8e8ea0]">{formatResult(evt)}</td>
+                    </tr>
+                    {isExpanded && (
+                      <tr className="border-b border-white/5 last:border-0">
+                        <td colSpan={3} className="p-3">
+                          <LiveEventDetailPanel event={evt} />
+                        </td>
+                      </tr>
+                    )}
+                  </Fragment>
+                );
+              })}
             </tbody>
           </table>
         )}

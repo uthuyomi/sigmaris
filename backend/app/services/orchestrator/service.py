@@ -6,7 +6,7 @@ import logging
 import time
 import uuid
 from collections.abc import AsyncGenerator
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Any
 from zoneinfo import ZoneInfo
@@ -38,6 +38,8 @@ from app.services.dissent import (
 )
 from app.services.goal_alignment import mark_pending_surfaced
 from app.services.knowledge_graph import build_entity_hint
+from app.services.live_detail_masking import build_masked_memory_preview
+from app.services.live_event_details import persist_live_event_detail_bg
 from app.services.live_events import emit_live_event
 from app.services.memory_confidence import classify_confidence_tier, confidence_guidance_note
 from app.services.memory_compression import compress_memories_if_needed
@@ -828,6 +830,12 @@ class MemorySearchSummary:
     was_decomposed: bool = False
     confidence_tier: str | None = None
     diary_search_triggered: bool = False
+    # Sigmaris Live「詳細表示、+機密情報のマスキング」タスク: 詳細表示用の、
+    # マスキング済みプレビュー(live_detail_masking.py参照)。常にdictを
+    # 持つ(該当が無い場合はitems=[])——呼び出し元は、items が空でない
+    # 場合のみ、live_event_details.pyへ永続化する(不要な書き込みを
+    # 避けるため)。
+    masked_detail: dict[str, Any] = field(default_factory=lambda: {"items": [], "any_masked": False})
 
 
 async def _build_memory_context(
@@ -893,6 +901,8 @@ async def _build_memory_context(
     was_decomposed = False
     confidence_tier: str | None = None
     diary_search_triggered = False
+    memory_detail_items: list[dict[str, Any]] = []
+    memory_detail_any_masked = False
     latest_user_text = _latest_user_content(messages)
     if latest_user_text:
         try:
@@ -941,6 +951,30 @@ async def _build_memory_context(
             compressed_relevant, _was_compressed = compress_memories_if_needed(
                 relevant, query=latest_user_text
             )
+            # Sigmaris Live「詳細表示、+機密情報のマスキング」タスク:
+            # 記憶の生の値(value)は、そのままではLive詳細表示に一切
+            # 使わない——build_masked_memory_preview()(live_detail_
+            # masking.py)で、地名・氏名・日付等をマスキングし、かつ
+            # 160文字に切り詰めた「プレビュー」のみを、呼び出し元
+            # (run_orchestrator_chat*())経由でsigmaris_live_event_details
+            # へ永続化する。category・confidence・similarityは、既存の
+            # 要約イベント(memory_search_finished)と同じ、構造的な情報
+            # としてそのまま含める。検索クエリ自体(=ユーザーの発言)は、
+            # Live-1、4.1節の「ユーザーの発言内容そのものは含めない」
+            # という既存方針をそのまま踏襲し、詳細表示にも一切含めない
+            # (判断根拠、報告書に詳述)。
+            for _item in compressed_relevant:
+                _preview, _item_masked = build_masked_memory_preview(str(_item.get("value") or ""))
+                memory_detail_items.append(
+                    {
+                        "category": _item.get("category") or "",
+                        "value_preview": _preview,
+                        "confidence": _item.get("confidence"),
+                        "similarity": _item.get("similarity"),
+                    }
+                )
+                if _item_masked:
+                    memory_detail_any_masked = True
             relevant_context = _build_relevant_memories_context(compressed_relevant)
             guidance = confidence_guidance_note(tier)
             if guidance:
@@ -974,6 +1008,7 @@ async def _build_memory_context(
         was_decomposed=was_decomposed,
         confidence_tier=confidence_tier,
         diary_search_triggered=diary_search_triggered,
+        masked_detail={"items": memory_detail_items, "any_masked": memory_detail_any_masked},
     )
     return ("\n\n".join(parts) if parts else None), summary
 
@@ -1417,6 +1452,19 @@ async def run_orchestrator_chat(
         diary_search_triggered=memory_search_summary.diary_search_triggered,
         elapsed_ms=int((time.perf_counter() - _live_memory_search_started_at) * 1000),
     )
+    # Sigmaris Live「詳細表示、+機密情報のマスキング」タスク: マスキング
+    # 済みの詳細(0件の場合は永続化自体をスキップし、不要なDB書き込みを
+    # 避ける)を、fire-and-forgetで永続化する。emit_live_event()と同じく
+    # 呼び出し元をブロックしない(persist_live_event_detail_bg()内部で
+    # asyncio.create_task()するのみ)。
+    if memory_search_summary.masked_detail["items"]:
+        persist_live_event_detail_bg(
+            jwt=jwt,
+            user_id=user_id,
+            event_type="memory_search_finished",
+            detail_key=invocation_id,
+            masked_detail=memory_search_summary.masked_detail,
+        )
 
     call_name = extract_call_name(fact_profile) or _user_display_name(user)
     self_model_context = _build_self_model_context(self_model)
@@ -1714,6 +1762,16 @@ async def run_orchestrator_chat_stream(
         diary_search_triggered=memory_search_summary.diary_search_triggered,
         elapsed_ms=int((time.perf_counter() - _live_memory_search_started_at) * 1000),
     )
+    # Sigmaris Live「詳細表示、+機密情報のマスキング」タスク: see
+    # run_orchestrator_chat's identical block for the full rationale.
+    if memory_search_summary.masked_detail["items"]:
+        persist_live_event_detail_bg(
+            jwt=jwt,
+            user_id=user_id,
+            event_type="memory_search_finished",
+            detail_key=invocation_id,
+            masked_detail=memory_search_summary.masked_detail,
+        )
 
     call_name = extract_call_name(fact_profile) or _user_display_name(user)
     self_model_context = _build_self_model_context(self_model)

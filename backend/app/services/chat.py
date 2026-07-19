@@ -42,6 +42,8 @@ from app.services.chat_routing import (
     tool_names_for_intent,
 )
 from app.services.citation_audit import persist_citation_audit, run_verification_checks, verify_response
+from app.services.live_detail_masking import mask_tool_arguments
+from app.services.live_event_details import persist_live_event_detail_bg_from_jwt
 from app.services.live_events import emit_live_event
 from app.services.evidence_search import build_evidence_context, gather_search_evidence
 
@@ -1262,8 +1264,17 @@ async def stream_chat_completion_ui(
                 # classification/memory search/response generation above.
                 # tool_name only (Live-1, 2.2節) — arguments can contain
                 # location/calendar content and are never included.
+                # tool_call_id is included so that Live-5's masked-detail
+                # lookup can disambiguate multiple calls to the same tool
+                # within one turn (message_id alone is shared by the whole
+                # turn — see live_detail_masking.py's module docstring).
                 _live_tool_call_started_at = time.perf_counter()
-                emit_live_event("tool_call_started", message_id, tool_name=function_call.name)
+                emit_live_event(
+                    "tool_call_started",
+                    message_id,
+                    tool_name=function_call.name,
+                    tool_call_id=tool_call_id,
+                )
                 try:
                     tool_result = await asyncio.wait_for(
                         execute_tool(
@@ -1308,8 +1319,27 @@ async def stream_chat_completion_ui(
                     "tool_call_finished",
                     message_id,
                     tool_name=function_call.name,
+                    tool_call_id=tool_call_id,
                     ok=bool(tool_result.get("ok")),
                     elapsed_ms=int((time.perf_counter() - _live_tool_call_started_at) * 1000),
+                )
+                # Sigmaris Live「詳細表示、+機密情報のマスキング」タスク:
+                # 引数は、このアプリではほぼ全てがカレンダー・旅行計画等の
+                # 自由記述であるため、mask_tool_arguments()(live_detail_
+                # masking.py)が、文字列値を全てマスキングし、キー名
+                # (=依頼書の「引数の種類」)と数値・真偽値のみ残す。
+                # detail_keyはtool_call_id(1ターン中の複数回呼び出しを
+                # 区別するため、message_id単体ではなくこちらを使う)。
+                _masked_arguments, _tool_args_masked = mask_tool_arguments(arguments)
+                persist_live_event_detail_bg_from_jwt(
+                    jwt=jwt,
+                    event_type="tool_call_finished",
+                    detail_key=tool_call_id,
+                    masked_detail={
+                        "tool_name": function_call.name,
+                        "arguments": _masked_arguments,
+                        "any_masked": _tool_args_masked,
+                    },
                 )
                 tool_parts.append(
                     _build_tool_ui_part(
