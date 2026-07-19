@@ -14,6 +14,13 @@ dependencies = [
   "google-api-python-client>=2.179.0",
   "tzdata>=2025.2",
   "apscheduler>=3.10.0,<4.0",
+  # FastAPIアプリ本体は使わないが、scripts/sigmaris_chat.py・
+  # scripts/sigmaris_chat_v2.py(サーバー上でbackend/.venvを再利用する、
+  # ターミナルチャットクライアント)が使う。以前はここに記載されず、
+  # サーバー上で手動インストールされたのみだったため、venv再構築時に
+  # 抜け落ちるリスクがあった(docs/sigmaris/cli_chat_investigation.md、
+  # 1.4節)。
+  "rich>=13.7.0",
 ]
 
 [build-system]
