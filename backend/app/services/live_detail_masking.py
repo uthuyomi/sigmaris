@@ -86,29 +86,32 @@ _ALL_PATTERNS: tuple[re.Pattern[str], ...] = (
 _MAX_PREVIEW_LENGTH = 160
 
 
-def mask_sensitive_text(text: str) -> tuple[str, bool]:
-    """textのうち、機密性が高い可能性のある箇所をMASK_TOKENに置換する。
+# ─── マスキングの撤廃(Sigmaris Live Redesign-1) ──────────────────────
+# 運用方針: /chat は JWT 認証が必須で、Sigmaris Live の詳細表示も海星さん
+# 本人にしか届かない(本人限定)。そのため、詳細表示のマスキングは不要と
+# 判断し、以下の3関数は「原文をそのまま返す(any_masked は常に False)」
+# パススルーに変更した。上部の正規表現群(_DATE_RE 等)・MASK_TOKEN は、
+# 将来マスキングを再度有効化する場合の参照として残置している(現在はどの
+# 関数からも使われない)。
+#
+# 【重要】この変更は Sigmaris Live の詳細表示のみに関わる。X 投稿向けの
+# プライバシー保護(x_privacy_filter.py 等)には一切触れていない——別
+# モジュール・別用途(公開の場での発信)であり、そちらのマスキング/フィルタは
+# そのまま維持される。
 
-    戻り値: (マスク後の文字列, 1箇所以上マスクしたか)。
-    """
-    masked = text
-    any_masked = False
-    for pattern in _ALL_PATTERNS:
-        masked, count = pattern.subn(MASK_TOKEN, masked)
-        if count > 0:
-            any_masked = True
-    return masked, any_masked
+
+def mask_sensitive_text(text: str) -> tuple[str, bool]:
+    """マスキング撤廃(上記)。原文をそのまま返す。"""
+    return text, False
 
 
 def build_masked_memory_preview(value: str) -> tuple[str, bool]:
-    """記憶(user_fact_itemsのvalue)1件分を、詳細表示用に、マスキング
-    +切り詰めした、プレビュー文字列にする。マスキングを先に行い、その後に
-    切り詰める(切り詰めを先に行うと、パターンが境界で分断され、検出漏れが
-    増える可能性があるため)。"""
-    masked, any_masked = mask_sensitive_text(value)
-    if len(masked) > _MAX_PREVIEW_LENGTH:
-        masked = masked[:_MAX_PREVIEW_LENGTH] + "…"
-    return masked, any_masked
+    """記憶(user_fact_itemsのvalue)1件分の、詳細表示用プレビュー文字列。
+    マスキングは撤廃(上記)。表示長のための切り詰め(_MAX_PREVIEW_LENGTH)
+    のみ維持し、内容自体はそのまま返す。"""
+    if len(value) > _MAX_PREVIEW_LENGTH:
+        return value[:_MAX_PREVIEW_LENGTH] + "…", False
+    return value, False
 
 
 # ツール呼び出しの引数は、このアプリでは、ほぼ全てがカレンダー・旅行計画等の
@@ -119,24 +122,6 @@ def build_masked_memory_preview(value: str) -> tuple[str, bool]:
 # そのまま表示する、という、より単純で安全側に倒した方針にした(判断根拠、
 # 報告書に詳述)。
 def mask_tool_arguments(arguments: dict[str, object]) -> tuple[dict[str, object], bool]:
-    """ツール呼び出しの引数を、詳細表示用にマスキングする。
-
-    戻り値: (マスク後の引数dict、1つ以上マスキングしたか)。
-    """
-    masked: dict[str, object] = {}
-    any_masked = False
-    for key, value in arguments.items():
-        if isinstance(value, str):
-            if value.strip():
-                masked[key] = MASK_TOKEN
-                any_masked = True
-            else:
-                masked[key] = value
-        elif isinstance(value, (int, float, bool)) or value is None:
-            masked[key] = value
-        else:
-            # list/dict等のネストした構造は、自由記述を含みうるため、
-            # 安全側に倒し、丸ごとマスキングする。
-            masked[key] = MASK_TOKEN
-            any_masked = True
-    return masked, any_masked
+    """ツール呼び出しの引数を、詳細表示用に返す。マスキングは撤廃(上記)の
+    ため、実際の引数をそのまま(浅いコピーで)返す。"""
+    return dict(arguments), False

@@ -107,6 +107,86 @@ function logResult(evt: LiveEvent): string {
   return "—";
 }
 
+// ─── 段階的な大きなテキスト(Redesign-1・主役) ───────────────────────
+//
+// メッセージ送信後の「今、何が起きているか」を、実データを埋め込んだ英語の
+// 短い行として、大きく表示する。実際に発生したイベントを"順番に"見せている
+// だけであり、演出的な遅延・疑似プログレスは一切足していない(Live-1「演出の
+// 禁止」の原則を厳守)。段階が進むと、前の行が小さく薄くなり、最新の行が
+// 主役(最下部・最大)になる——"覗いている"感覚を狙った構成。
+//
+// マスキング撤廃(バックエンド live_detail_masking.py)により、記憶検索の
+// ヒット件数・ツール名等は実データがそのまま流れてくる(本人限定=/chatは
+// JWT必須のため)。
+function stageLine(evt: LiveEvent): string | null {
+  const num = (v: unknown) => (typeof v === "number" ? v : null);
+  const str = (v: unknown) => (typeof v === "string" ? v : null);
+  switch (evt.event) {
+    case "intent_classification_started":
+      return "Classifying intent…";
+    case "intent_classification_finished":
+      return `Intent → ${str(evt.intent) ?? "unknown"}`;
+    case "memory_search_started":
+      return "Searching memory…";
+    case "memory_search_finished": {
+      const count = num(evt.result_count) ?? 0;
+      return `Memory → ${count} hit${count === 1 ? "" : "s"}`;
+    }
+    case "response_generation_started":
+      return "Generating response…";
+    case "response_generation_finished": {
+      const len = num(evt.response_length);
+      return len !== null ? `Response → ${len} chars` : "Response ready";
+    }
+    case "tool_call_started":
+      return `Running ${str(evt.tool_name) ?? "tool"}…`;
+    case "tool_call_finished":
+      return `${str(evt.tool_name) ?? "tool"} → ${evt.ok === true ? "done" : "failed"}`;
+    default:
+      return null; // 受信エラー・未知イベントは大きな表示には出さない
+  }
+}
+
+function LiveStageDisplay({ events }: { events: LiveEvent[] }) {
+  const lines: { key: string; text: string }[] = [];
+  events.forEach((evt, idx) => {
+    const text = stageLine(evt);
+    if (text) lines.push({ key: `${evt.invocation_id}-${evt.event}-${idx}`, text });
+  });
+  const recent = lines.slice(-4); // 直近4段階のみ主役エリアに残す
+
+  return (
+    <div className="flex min-h-[7rem] flex-col justify-end gap-1.5 rounded-2xl border border-white/[0.06] bg-white/[0.02] px-4 py-5">
+      {recent.length === 0 ? (
+        <p className="font-mono text-sm text-[#5c5c66]">Waiting for activity…</p>
+      ) : (
+        recent.map((line, i) => {
+          const fromBottom = recent.length - 1 - i; // 0 = 最新(主役)
+          const cls =
+            fromBottom === 0
+              ? "text-xl font-semibold text-[#ececec]"
+              : fromBottom === 1
+                ? "text-base text-[#ececec]/60"
+                : fromBottom === 2
+                  ? "text-sm text-[#8e8ea0]/60"
+                  : "text-xs text-[#8e8ea0]/35";
+          return (
+            <p
+              key={line.key}
+              className={cn(
+                "font-mono leading-tight tracking-tight transition-all duration-300",
+                cls,
+              )}
+            >
+              {line.text}
+            </p>
+          );
+        })
+      )}
+    </div>
+  );
+}
+
 // ─── 小さなセクション見出し ──────────────────────────────────────────
 function SectionHeading({ children }: { children: React.ReactNode }) {
   return (
@@ -319,8 +399,10 @@ export function LiveSidebarPanel({
       </header>
 
       <div className="min-h-0 flex-1 space-y-6 overflow-y-auto overscroll-contain px-4 py-4 pb-[calc(1rem+env(safe-area-inset-bottom))]">
-        <p className="text-xs leading-5 text-[#8e8ea0]">
-          /chatでメッセージを送ると、その処理(意図分類・記憶検索・応答生成)がここにリアルタイムで表示されます。
+        {/* 主役: 段階的な大きなテキスト(Redesign-1)。実イベントを順番に見せる。 */}
+        <LiveStageDisplay events={events} />
+        <p className="-mt-3 text-[11px] leading-5 text-[#5c5c66]">
+          /chatでメッセージを送ると、その処理が上に大きく表示されます。以下は補助情報です。
         </p>
 
         <section>

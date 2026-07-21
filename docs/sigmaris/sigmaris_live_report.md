@@ -1223,3 +1223,57 @@ HTTP/1.1 401 Unauthorized
 
 - 上記「運用者に確認・対応してほしいこと」の通り、Sigmaris Live のイベントが実際に流れるには、**本番バックエンドに `routes/agent.py` の `/live/stream`・`/live/detail` が反映されている必要がある**（未反映だと `/api/live/stream` が 404 になり、サイドバーも「接続状態: エラー」になる）。サイドバーのリアルタイム表示を確認する前に、まず本番バックエンドの反映状況（既知ルートの疎通）を確認すること。
 - `/chat` ヘッダー右の Live トグルで開閉できること、開いた状態でメッセージ送信→処理がリアルタイム表示されること、閉時に SSE 接続が張られないこと（Network タブで確認）、light テーマでも `/chat`・パネルがダークのままであること。
+
+---
+
+## Redesign-1: マスキング撤廃 ＋ 段階的な大きなテキスト表示（2026-07-21）
+
+`/chat` の右サイドバーの Sigmaris Live を、「開いて読む」ダッシュボードから「覗いている感覚」の表示へ作り直す最初の段階。運用者の方針: (1) マスキング不要（`/chat` は JWT 認証必須で本人限定）、(2)「理解できなくても格好いいギリギリ」、(3) 段階的に切り替わる大きなテキスト。**対象はサイドバー版のみ**（`/live` 独立ページ・葉コンポーネントは不変更）。
+
+### 1. マスキング撤廃の実装方法
+
+- **`backend/app/services/live_detail_masking.py` の3関数をパススルーに変更**（呼び出し元 `chat.py::mask_tool_arguments`／`orchestrator/service.py::build_masked_memory_preview` はそのまま。単一ファイルで両経路のマスキングを無効化）:
+  - `mask_sensitive_text(text)` → `(text, False)`。
+  - `build_masked_memory_preview(value)` → **表示長の切り詰め（`_MAX_PREVIEW_LENGTH`=160）のみ維持**し、内容はそのまま。マスキングなし・`any_masked=False`。
+  - `mask_tool_arguments(arguments)` → 実引数を浅いコピーでそのまま返す・`any_masked=False`。
+  - 上部の正規表現群・`MASK_TOKEN` は、将来の再有効化のため残置（現在は未使用）。
+- これにより、`/api/live/detail`（記憶検索アイテムの `value_preview`・ツール引数）が**実データのまま**返る（要件1）。
+- **`x_privacy_filter.py` 等の X 投稿向けプライバシー保護には一切触れていない**（別モジュール・別用途、公開の場での発信）。
+- 注記: 共有の `live-event-detail-panel.tsx`（/live も使用）は不変更のため、詳細パネル末尾の一般注記（「…マスキングして表示します…」）は文言上残るが、`any_masked` は常に False になり「マスキング済み」の強い注記は出なくなる。文言更新は /live 共有ファイルへの変更になるため本タスクでは見送り（§申し送り）。
+
+### 2. 段階的な大きなテキスト表示の実装詳細
+
+- **`components/live/live-sidebar-panel.tsx` に `LiveStageDisplay` を追加**し、パネル最上部の**主役**に配置。
+- **文言の生成（`stageLine(evt)`）**: 各イベントを、実データを埋め込んだ英語の短い行に変換する（「理解できなくても格好いい」＝英語 monospace の技術的な語）。実データ埋め込みの例:
+  - `intent_classification_finished` → `Intent → {evt.intent}`
+  - `memory_search_started` → `Searching memory…` ／ `memory_search_finished` → `Memory → {evt.result_count} hits`
+  - `response_generation_finished` → `Response → {evt.response_length} chars`
+  - `tool_call_started` → `Running {evt.tool_name}…` ／ `tool_call_finished` → `{evt.tool_name} → {done|failed}`
+  - 受信エラー・未知イベントは大きな表示には出さない（`null`）。
+- **段階遷移**: 直近4段階を、最下部＝最新（`text-xl` 主役）→ 上へ行くほど小さく薄く（`text-base/60`→`text-sm/60`→`text-xs/35`）並べ、`transition-all duration-300` で、新イベント到着時に前の行が縮んで薄くなる遷移を付けた。**イベントを順番に見せているだけで、演出的な遅延・疑似プログレスは一切足していない**（要件3・「演出の禁止」厳守）。無イベント時は `Waiting for activity…`。
+- モデルのティア・safety validation 等の**追加項目は次段（依頼書の「4」）扱い**で、本タスクでは現行イベント（意図分類・記憶検索・応答生成・ツール実行）のみを対象にした。
+
+### 3. 既存コンポーネントとの関係・構成の判断根拠
+
+- **既存の「処理の流れ／メトリクス／ログ」を置き換えず、大きなテキストを主役として最上部に追加し、その下に補助情報として残した**（依頼書の構成）。サイドバー版のこれらは、前タスク（Live サイドバー デザイン修正）で既にカードからリスト/テキストの流れに組み直し済みで、補助情報として自然に収まる。判断根拠: 主役の大きなテキストは「今この瞬間の段階」を格好よく見せることに特化し、時系列の詳細・計測値・過去ログは"覗いた先の補助情報"として下に置くと、情報の役割分担が明確になるため。
+- **`/live`・葉コンポーネント（`live-process-flow`/`live-metrics`/`live-event-log`）・`live-event-detail-panel` は不変更**。`LiveStageDisplay` は共有の `LiveEvent` 型と、既存の `useLiveEvents`（ChatWorkspace で1回呼び）から渡る `events` のみを使う。
+
+### 4. テスト結果
+
+| 検証 | 結果 |
+|---|---|
+| `npx eslint .` | 0 件 |
+| `npx next build` | 成功（`/live` 含む全ルート健在） |
+| `python -m compileall live_detail_masking.py` | OK |
+| `pytest tests/`（backend 16件） | 16 passed |
+| `/live`・葉コンポーネント・`x_privacy_filter.py` の不変更 | 差分なし（`git status` で確認） |
+| 実ブラウザ・実SSE での目視 | 未実施（実データ・SSE が必要）。段階表示の実データ反映・遷移は本番で要確認 |
+
+**変更ファイル**: `backend/app/services/live_detail_masking.py`、`frontend/src/components/live/live-sidebar-panel.tsx` の2ファイルのみ。
+
+### 5. 気づいた懸念点・次ステップ（Redesign-2: 常時ログの密度向上）への申し送り
+
+1. **実ブラウザ目視が未実施**。段階的な大きなテキストの実データ反映・遷移の見え方、マスキング撤廃後の詳細表示（生の value_preview・ツール引数）は、本番反映後に実機確認を推奨。加えて、Live のイベントが流れるには本番バックエンドに `/live/stream`・`/live/detail` が反映済みである必要がある（未反映だと 404）。
+2. **共有 `live-event-detail-panel.tsx` の注記文言**が、マスキング撤廃後は実態と合わない（「…マスキングして表示します…」）。/live も使う共有ファイルのため本タスクでは触れていない。Redesign 系のどこかで、/live への影響を確認の上、注記を「本人限定のため生データを表示」等へ更新する余地がある。
+3. **`stageLine` の文言はサイドバー内に局所定義**。将来モデルティア・safety validation 等の段階（依頼書「4」）を足す際は、`process-steps.ts`（/live 共有）に手を入れず、まずはこの `stageLine`（サイドバー専用）へ追記する形が /live 非影響で安全。
+4. **Redesign-2（常時ログの密度向上）に向けて**: 現状、補助情報の「ログ」は直近200件（`MAX_EVENTS`）のうち受信分を新しい順に全件表示。密度・スクロール挙動・古いイベントの間引き等は Redesign-2 で扱う想定。段階表示（主役）とログ（補助）の情報の重複感が出る場合は、ログ側を「1ターン単位のグルーピング」等でまとめると、覗いている感覚と詳細ログの両立がしやすい。
