@@ -95,6 +95,23 @@ const MODEL_TIER_LABELS: Record<string, string> = {
   advanced: "高度モデル",
 };
 
+// ツール名(chat_tool_definitions.py の function 名) → 平易な日本語(Redesign-4)。
+// 内部の関数名をそのまま出さず、何をしたかが分かる表現にする(Redesign-2 の
+// 平易化の原則の継続)。未知のツール名はそのまま表示(捏造しない)。
+const TOOL_NAME_LABELS: Record<string, string> = {
+  list_google_calendar_events: "カレンダー確認",
+  create_google_calendar_events: "カレンダー登録",
+  create_app_events: "予定の作成",
+  delete_google_calendar_events: "カレンダー削除",
+  delete_google_calendar_events_in_range: "カレンダー一括削除",
+  read_google_sheet: "シート読み取り",
+  search_app_events: "予定の検索",
+  list_app_events: "予定の一覧",
+  read_home_context: "自宅情報の参照",
+  plan_google_route: "経路の計算",
+  save_travel_plan_for_event: "移動予定の保存",
+};
+
 type CategoryRow = { key: string; label: string; value: string; detailEvent?: LiveEvent };
 
 // 1ターン(同一 invocation_id)のイベント群から、区分ごとの平易な行を導出する。
@@ -162,12 +179,22 @@ function deriveTurnRows(events: LiveEvent[]): CategoryRow[] {
     if (parts.length > 0) rows.push({ key: "safety", label: "安全", value: parts.join("・") });
   }
 
-  // Tools(ツール): 1ターンに0〜複数回
+  // Tools(ツール): 1ターンに0〜複数回。複数呼び出しは1件ずつ別の行として
+  // 区別表示する(Redesign-4: 読みやすいツール名＋成否＋所要時間。クリックで
+  // 引数の詳細を展開)。
   const toolsFinished = events.filter((e) => e.event === "tool_call_finished");
   toolsFinished.forEach((t, i) => {
-    const tool = _str(t.tool_name) ?? "ツール";
+    const raw = _str(t.tool_name);
+    const tool = raw ? (TOOL_NAME_LABELS[raw] ?? raw) : "ツール";
     const ok = t.ok === true;
-    rows.push({ key: `tool-${i}`, label: "ツール", value: `${tool}(${ok ? "成功" : "失敗"})`, detailEvent: t });
+    const ms = _num(t.elapsed_ms);
+    const elapsed = ms !== null ? `・${ms}ms` : "";
+    rows.push({
+      key: `tool-${i}`,
+      label: "ツール",
+      value: `${tool}(${ok ? "成功" : "失敗"})${elapsed}`,
+      detailEvent: t,
+    });
   });
   if (toolsFinished.length === 0 && has("tool_call_started")) {
     rows.push({ key: "tool-run", label: "ツール", value: "実行中…" });
@@ -468,6 +495,38 @@ function LiveTurnLog({ events }: { events: LiveEvent[] }) {
   );
 }
 
+// ─── 折りたたみ可能なセクション(Redesign-4) ────────────────────────
+// 「一時停止しても情報量が豊富」を狙いつつ、狭幅で崩れないよう、二次的な
+// 情報(数値メトリクス等)は既定で畳んでおき、必要な人だけ展開できるように
+// する(依頼書「常に全て開いた状態にする必要はない」)。主役(段階表示)・
+// 処理の流れ・ターンごとのログ(＝メモリ/文脈/モデル/Drive/Safety/ツールの
+// 一望＝このターンのTimeline)は常時表示のまま。
+function CollapsibleSection({
+  title,
+  defaultOpen = false,
+  children,
+}: {
+  title: string;
+  defaultOpen?: boolean;
+  children: React.ReactNode;
+}) {
+  const [open, setOpen] = useState(defaultOpen);
+  return (
+    <section>
+      <button
+        type="button"
+        onClick={() => setOpen((o) => !o)}
+        aria-expanded={open}
+        className="mb-2 flex w-full items-center justify-between text-xs font-semibold uppercase tracking-wider text-[#8e8ea0] transition hover:text-[#ececec]"
+      >
+        <span>{title}</span>
+        <span className="text-[10px]">{open ? "▲" : "▼"}</span>
+      </button>
+      {open ? children : null}
+    </section>
+  );
+}
+
 // ─── パネル本体 ──────────────────────────────────────────────────────
 export function LiveSidebarPanel({
   events,
@@ -501,27 +560,29 @@ export function LiveSidebarPanel({
         ) : null}
       </header>
 
-      <div className="min-h-0 flex-1 space-y-6 overflow-y-auto overscroll-contain px-4 py-4 pb-[calc(1rem+env(safe-area-inset-bottom))]">
+      <div className="min-h-0 flex-1 space-y-5 overflow-y-auto overscroll-contain px-4 py-4 pb-[calc(1rem+env(safe-area-inset-bottom))]">
         {/* 主役: 段階的な大きなテキスト(Redesign-1)。実イベントを順番に見せる。 */}
         <LiveStageDisplay events={events} />
-        <p className="-mt-3 text-[11px] leading-5 text-[#5c5c66]">
-          /chatでメッセージを送ると、その処理が上に大きく表示されます。以下は補助情報です。
+        <p className="-mt-2.5 text-[11px] leading-5 text-[#5c5c66]">
+          /chatでメッセージを送ると、その処理が上に大きく表示されます。以下は各処理の内訳です。
         </p>
 
+        {/* 常時表示(一時停止しても読める中核): 処理の流れ ＋ ターンごとの内訳
+            (メモリ/文脈/モデル/Drive/Safety/ツール＝このターンのTimeline)。 */}
         <section>
           <SectionHeading>処理の流れ</SectionHeading>
           <ProcessFlowList events={events} />
         </section>
 
         <section>
-          <SectionHeading>メトリクス</SectionHeading>
-          <MetricsList events={events} />
-        </section>
-
-        <section>
           <SectionHeading>ログ（ターンごと）</SectionHeading>
           <LiveTurnLog events={events} />
         </section>
+
+        {/* 二次情報: 数値メトリクスは既定で畳む(展開で所要時間等を確認)。 */}
+        <CollapsibleSection title="メトリクス（所要時間）">
+          <MetricsList events={events} />
+        </CollapsibleSection>
       </div>
     </aside>
   );
