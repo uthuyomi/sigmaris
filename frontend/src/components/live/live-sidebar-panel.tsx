@@ -1,45 +1,291 @@
 "use client";
 
-// 役割: Sigmaris Live を /chat の右サイドバーとして表示するための、
-// データソースを知らない純粋な表示コンポーネント(デザイン統一 第五段階、
-// docs/sigmaris/sigmaris_live_report.md / frontend_design_unification_report.md)。
+// 役割: Sigmaris Live を /chat の右サイドバーとして表示する、データソースを
+// 知らない純粋な表示コンポーネント(デザイン統一・Live サイドバー デザイン
+// 全面修正、docs/sigmaris/frontend_design_unification_report.md)。
 //
-// 【コード共有・非重複の判断根拠】
-// Live-3 で確立した「1つのデータソース(events配列)を複数の表示コンポーネント
-// へ配る」設計(live-dashboard.tsx のコメント参照)をそのまま踏襲する。実 SSE
-// 接続(useLiveEvents)は呼び出し元(ChatWorkspace)が1回だけ行い、その結果を
-// events/status として本パネルへ props で渡す。本パネルは、既存の
-// LiveProcessFlow・LiveMetrics・LiveEventLog を"そのまま"縦積みで再利用する
-// のみで、新しい表示ロジック・新しいイベント設計は一切持たない(依頼書の制約
-// 「既存実装をそのまま再利用」「新しいイベント設計を行わない」への対応)。
-// /live の LiveDashboard(フルスクリーン・デモモード対応)とは、同じ3つの葉
-// コンポーネントを別レイアウトで composе するだけで、葉コンポーネント自体の
-// 重複実装は無い。
+// 【この版の設計方針(狭幅前提での組み直し・判断根拠)】
+// 第五段階の初版は、/live(フルスクリーン)用の葉コンポーネント
+// (LiveProcessFlow/LiveMetrics/LiveEventLog)を、そのまま幅だけ狭めて
+// 縦積みしていた。その結果、メトリクスが「カードがびっしり並ぶ」ダッシュ
+// ボード的な見た目になり、長いラベルが不自然に折り返されて読みにくかった。
+// 本版では、サイドバー(実装上の幅 ≒ 400px)を前提に、UI を「カード」から
+// 「連続したリスト/テキストの流れ」へ根本的に組み直す:
+//   - メトリクス: カード群を廃止し、1行1指標の簡潔なリストに。ラベルは
+//     「意図分類・直近の所要時間」→「意図分類」のように短縮。狭幅に全情報を
+//     詰め込まず、直近所要時間+平均+ツール実行の要約に絞る。
+//   - 処理の流れ: 横並びのカードから、縦並びの簡潔なリスト(点+ラベル+状態)へ。
+//   - ログ: 罫線の濃いテーブルから、区切り線の薄い縦リストへ(時刻・処理名・
+//     結果を積み、クリックで詳細を展開)。
 //
-// 【/chat の既存デザイン・常時ダーク保護との整合】
-// 配色は /chat 左サイドバー(SigmarisSidebar)と同じダーク基調(bg-[#171717])。
-// 本パネルは ChatWorkspace の .dark サブツリー内に描画されるため、第二段階の
-// 常時ダーク保護に自然に乗り、light テーマでもダークのまま。
+// 【/live を変更しないための判断】
+// 葉コンポーネント(LiveProcessFlow/LiveMetrics/LiveEventLog)・
+// live-event-detail-panel は /live(LiveDashboard)が使うため一切変更しない。
+// 本パネルは、それらの表示ではなく、共有の"計算ロジック"(computeStepStates/
+// computeStepMetrics/computeToolCallMetrics/PROCESS_STEPS)と詳細パネル
+// (LiveEventDetailPanel)だけを再利用し、サイドバー専用の list/text-flow を
+// 独自に描画する。ログの処理名ラベル整形は、PROCESS_STEPS から導出する
+// 小さなヘルパを本ファイル内に持つ(葉コンポーネント側の未export な整形関数を
+// 共有するために /live 用ファイルへ手を入れることを避けるための、意図的な
+// 局所化——判断根拠、報告書に記載)。
+//
+// 【/chat の常時ダーク保護との整合】
+// 配色は /chat 左サイドバーと同じダーク基調(bg-[#171717])。ChatWorkspace の
+// .dark サブツリー内に描画されるため、light テーマでもダークのまま。
 
-import { XIcon } from "lucide-react";
-import { LiveEventLog } from "./live-event-log";
-import { LiveMetrics } from "./live-metrics";
-import { LiveProcessFlow } from "./live-process-flow";
+import { CheckIcon, LoaderCircleIcon, XIcon } from "lucide-react";
+import { Fragment, useState } from "react";
+import {
+  detailLookupFor,
+  LiveEventDetailPanel,
+} from "./live-event-detail-panel";
+import { computeStepMetrics, computeToolCallMetrics } from "./metrics";
+import {
+  computeStepStates,
+  PROCESS_STEPS,
+  type ProcessStepState,
+} from "./process-steps";
 import type { LiveConnectionStatus, LiveEvent } from "./types";
+import { PARSE_ERROR_EVENT } from "./use-live-events";
 import { cn } from "@/lib/utils";
 
+// ─── 接続状態 ────────────────────────────────────────────────────────
 const STATUS_LABEL: Record<LiveConnectionStatus, string> = {
   connecting: "接続試行中...",
   open: "接続中",
   error: "エラー",
 };
-
 const STATUS_COLOR: Record<LiveConnectionStatus, string> = {
   connecting: "text-[#8e8ea0]",
   open: "text-emerald-400",
   error: "text-red-400",
 };
 
+// ─── ログの処理名整形(PROCESS_STEPS から導出。/live 用ファイルを触らない
+//      ための局所ヘルパ) ─────────────────────────────────────────────
+const STARTED_LABELS: Record<string, string> = {};
+const FINISHED_LABELS: Record<string, string> = {};
+for (const step of PROCESS_STEPS) {
+  STARTED_LABELS[step.startedEvent] = `${step.label}・開始`;
+  FINISHED_LABELS[step.finishedEvent] = `${step.label}・終了`;
+}
+const TOOL_CALL_LABELS: Record<string, string> = {
+  tool_call_started: "ツール・開始",
+  tool_call_finished: "ツール・終了",
+};
+const FINISHED_SUMMARIZERS: Record<string, (evt: LiveEvent) => string> = {};
+for (const step of PROCESS_STEPS) {
+  FINISHED_SUMMARIZERS[step.finishedEvent] = step.summarizeResult;
+}
+
+function logLabel(evt: LiveEvent): string {
+  if (evt.event === PARSE_ERROR_EVENT) return "受信エラー";
+  return (
+    STARTED_LABELS[evt.event] ??
+    FINISHED_LABELS[evt.event] ??
+    TOOL_CALL_LABELS[evt.event] ??
+    evt.event
+  );
+}
+
+function toolCallSummary(evt: LiveEvent): string {
+  const toolName = typeof evt.tool_name === "string" ? evt.tool_name : "unknown";
+  if (evt.event === "tool_call_started") return `${toolName} を実行中...`;
+  const ok = evt.ok === true;
+  const elapsed = typeof evt.elapsed_ms === "number" ? ` ・ ${evt.elapsed_ms}ms` : "";
+  return `${toolName}(${ok ? "成功" : "失敗"})${elapsed}`;
+}
+
+function logResult(evt: LiveEvent): string {
+  if (evt.event === PARSE_ERROR_EVENT) return "配信データの解析に失敗しました";
+  if (evt.event in STARTED_LABELS) return "実行中...";
+  const summarize = FINISHED_SUMMARIZERS[evt.event];
+  if (summarize) return summarize(evt);
+  if (evt.event === "tool_call_started" || evt.event === "tool_call_finished") {
+    return toolCallSummary(evt);
+  }
+  return "—";
+}
+
+// ─── 小さなセクション見出し ──────────────────────────────────────────
+function SectionHeading({ children }: { children: React.ReactNode }) {
+  return (
+    <h3 className="mb-2 text-xs font-semibold uppercase tracking-wider text-[#8e8ea0]">
+      {children}
+    </h3>
+  );
+}
+
+// ─── 処理の流れ(縦リスト) ───────────────────────────────────────────
+function StepDot({ status }: { status: ProcessStepState["status"] }) {
+  if (status === "active") {
+    return (
+      <span className="relative flex size-6 shrink-0 items-center justify-center rounded-full bg-[#9b59b6] text-white">
+        <span className="absolute inline-flex size-full animate-ping rounded-full bg-[#9b59b6] opacity-40" />
+        <LoaderCircleIcon className="relative size-3 animate-spin" />
+      </span>
+    );
+  }
+  if (status === "done") {
+    return (
+      <span className="flex size-6 shrink-0 items-center justify-center rounded-full border border-emerald-400/40 bg-emerald-500/15 text-emerald-300">
+        <CheckIcon className="size-3.5" />
+      </span>
+    );
+  }
+  return (
+    <span className="flex size-6 shrink-0 items-center justify-center rounded-full border border-white/10 text-[10px] text-[#5c5c66]">
+      •
+    </span>
+  );
+}
+
+function ProcessFlowList({ events }: { events: LiveEvent[] }) {
+  const steps = computeStepStates(events, PROCESS_STEPS);
+  return (
+    <ul className="space-y-2.5">
+      {steps.map((state) => {
+        const statusText =
+          state.status === "active" ? "実行中…" : state.status === "done" ? "完了" : "待機中";
+        return (
+          <li key={state.config.id} className="flex items-center gap-2.5">
+            <StepDot status={state.status} />
+            <span
+              className={cn(
+                "text-sm",
+                state.status === "idle" ? "text-[#8e8ea0]" : "text-[#ececec]",
+              )}
+            >
+              {state.config.label}
+            </span>
+            <span className="ml-auto shrink-0 text-xs text-[#8e8ea0]">{statusText}</span>
+          </li>
+        );
+      })}
+    </ul>
+  );
+}
+
+// ─── メトリクス(1行1指標のリスト) ──────────────────────────────────
+type MetricRow = { key: string; label: string; value: string; sub?: string };
+
+function buildMetricRows(events: LiveEvent[]): MetricRow[] {
+  const rows: MetricRow[] = [];
+  for (const config of PROCESS_STEPS) {
+    const m = computeStepMetrics(events, config);
+    if (m.lastElapsedMs === null) continue; // データのある処理のみ(狭幅に全部詰め込まない)
+    rows.push({
+      key: config.id,
+      label: config.label,
+      value: `${m.lastElapsedMs}ms`,
+      sub: m.averageElapsedMs !== null ? `平均 ${m.averageElapsedMs}ms・直近${m.sampleCount}件` : undefined,
+    });
+  }
+  const tool = computeToolCallMetrics(events);
+  if (tool.callCount > 0) {
+    rows.push({
+      key: "tool_call",
+      label: "ツール実行",
+      value: `${tool.callCount}件`,
+      sub: `成功 ${tool.successCount}・失敗 ${tool.failureCount}`,
+    });
+  }
+  return rows;
+}
+
+function MetricsList({ events }: { events: LiveEvent[] }) {
+  const rows = buildMetricRows(events);
+  if (rows.length === 0) {
+    return (
+      <p className="text-sm text-[#8e8ea0]">
+        まだ計測データがありません。会話するとここに表示されます。
+      </p>
+    );
+  }
+  return (
+    <dl className="space-y-2">
+      {rows.map((row) => (
+        <div key={row.key}>
+          <div className="flex items-baseline justify-between gap-3">
+            <dt className="text-sm text-[#ececec]">{row.label}</dt>
+            <dd className="shrink-0 font-mono text-sm tabular-nums text-[#d8d8de]">{row.value}</dd>
+          </div>
+          {row.sub ? <p className="mt-0.5 text-xs text-[#8e8ea0]">{row.sub}</p> : null}
+        </div>
+      ))}
+    </dl>
+  );
+}
+
+// ─── ログ(区切り線の薄い縦リスト) ─────────────────────────────────
+function LogList({ events }: { events: LiveEvent[] }) {
+  const rows = [...events].reverse(); // 新しい順
+  const [expandedKey, setExpandedKey] = useState<string | null>(null);
+
+  if (rows.length === 0) {
+    return (
+      <p className="text-sm text-[#8e8ea0]">
+        まだイベントを受信していません。/chatで会話すると表示されます。
+      </p>
+    );
+  }
+
+  return (
+    <ul className="divide-y divide-white/[0.06]">
+      {rows.map((evt, idx) => {
+        const rowKey = `${evt.invocation_id}-${evt.event}-${idx}`;
+        const detailable = detailLookupFor(evt) !== null;
+        const isExpanded = expandedKey === rowKey;
+        const time = new Date(evt.timestamp * 1000).toLocaleTimeString();
+        return (
+          <Fragment key={rowKey}>
+            <li>
+              <div
+                className={cn(
+                  "py-2",
+                  detailable && "-mx-1 cursor-pointer rounded-lg px-1 hover:bg-white/[0.03]",
+                )}
+                onClick={detailable ? () => setExpandedKey(isExpanded ? null : rowKey) : undefined}
+                role={detailable ? "button" : undefined}
+                tabIndex={detailable ? 0 : undefined}
+                onKeyDown={
+                  detailable
+                    ? (event) => {
+                        if (event.key === "Enter" || event.key === " ") {
+                          event.preventDefault();
+                          setExpandedKey(isExpanded ? null : rowKey);
+                        }
+                      }
+                    : undefined
+                }
+              >
+                <div className="flex items-baseline justify-between gap-2">
+                  <span className="text-sm text-[#ececec]">
+                    {logLabel(evt)}
+                    {detailable ? (
+                      <span className="ml-1 text-xs text-[#8e8ea0]">{isExpanded ? "▲" : "▼"}</span>
+                    ) : null}
+                  </span>
+                  <span className="shrink-0 font-mono text-[11px] text-[#8e8ea0]">{time}</span>
+                </div>
+                <p className="mt-0.5 break-words text-xs leading-5 text-[#8e8ea0]">
+                  {logResult(evt)}
+                </p>
+              </div>
+              {isExpanded ? (
+                <div className="pb-2">
+                  <LiveEventDetailPanel event={evt} />
+                </div>
+              ) : null}
+            </li>
+          </Fragment>
+        );
+      })}
+    </ul>
+  );
+}
+
+// ─── パネル本体 ──────────────────────────────────────────────────────
 export function LiveSidebarPanel({
   events,
   status,
@@ -72,13 +318,25 @@ export function LiveSidebarPanel({
         ) : null}
       </header>
 
-      <div className="min-h-0 flex-1 space-y-3 overflow-y-auto overscroll-contain p-3 pb-[calc(0.75rem+env(safe-area-inset-bottom))]">
-        <p className="px-1 text-xs leading-5 text-[#8e8ea0]">
+      <div className="min-h-0 flex-1 space-y-6 overflow-y-auto overscroll-contain px-4 py-4 pb-[calc(1rem+env(safe-area-inset-bottom))]">
+        <p className="text-xs leading-5 text-[#8e8ea0]">
           /chatでメッセージを送ると、その処理(意図分類・記憶検索・応答生成)がここにリアルタイムで表示されます。
         </p>
-        <LiveProcessFlow events={events} />
-        <LiveMetrics events={events} />
-        <LiveEventLog events={events} />
+
+        <section>
+          <SectionHeading>処理の流れ</SectionHeading>
+          <ProcessFlowList events={events} />
+        </section>
+
+        <section>
+          <SectionHeading>メトリクス</SectionHeading>
+          <MetricsList events={events} />
+        </section>
+
+        <section>
+          <SectionHeading>ログ（直近{events.length}件）</SectionHeading>
+          <LogList events={events} />
+        </section>
       </div>
     </aside>
   );
