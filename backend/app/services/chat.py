@@ -49,6 +49,19 @@ from app.services.evidence_search import build_evidence_context, gather_search_e
 
 logger = logging.getLogger(__name__)
 TOOL_EXECUTION_TIMEOUT_SECONDS = 45
+
+
+def _model_tier(model: str) -> str:
+    """Sigmaris Live の Model 表示用に、モデル名を config の各ティアと突き合わせて
+    「標準/軽量/高度」を返す(local_llm.py::_openai_model_for_task と同じ区分)。
+    実データのみ・捏造なし——一致しない場合は "other" を返す。"""
+    if model == settings.openai_advanced_model:
+        return "advanced"
+    if model == settings.openai_nano_model:
+        return "nano"
+    if model == settings.openai_model:
+        return "standard"
+    return "other"
 CONFIRMATION_MARKER_RE = re.compile(
     r"<!--\s*shiftpilot-confirmation\s+([\s\S]*?)\s*-->",
     re.DOTALL,
@@ -1400,6 +1413,15 @@ async def stream_chat_completion_ui(
         message_id,
         response_length=len(final_text),
         elapsed_ms=int((time.perf_counter() - _live_response_generation_started_at) * 1000),
+        # Model(Redesign-3): 応答生成で実際に使ったモデルと、そのティアを、
+        # イベントにそのまま含める(捏造なし)。応答生成は settings.openai_model
+        # を直接使う(1189行 client.responses.create(model=settings.openai_model))
+        # ため、ここで確定している実値をそのまま載せるだけ——新しい判定ロジック・
+        # 重い処理は追加していない。ティアは config の各モデル設定との一致で
+        # 導出する(local_llm.py の _openai_model_for_task と同じ「標準/軽量/高度」
+        # の区分)。
+        model=settings.openai_model,
+        model_tier=_model_tier(settings.openai_model),
     )
 
     if evidence:

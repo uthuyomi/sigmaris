@@ -88,6 +88,13 @@ const TIER_ADOPTION: Record<string, string> = {
   abstain: "参照なし(該当なし扱い)",
 };
 
+// model_tier(バックエンドが載せる実ティア) → 平易な日本語(Redesign-3)。
+const MODEL_TIER_LABELS: Record<string, string> = {
+  nano: "軽量モデル",
+  standard: "標準モデル",
+  advanced: "高度モデル",
+};
+
 type CategoryRow = { key: string; label: string; value: string; detailEvent?: LiveEvent };
 
 // 1ターン(同一 invocation_id)のイベント群から、区分ごとの平易な行を導出する。
@@ -107,6 +114,16 @@ function deriveTurnRows(events: LiveEvent[]): CategoryRow[] {
     rows.push({ key: "intent", label: "意図", value: "判定中…" });
   }
 
+  // Model(応答生成に使ったモデルのティア、Redesign-3)。バックエンドが実値を
+  // 載せる(model_tier: nano/standard/advanced)。専門的なモデル名ではなく
+  // 平易なティア表現へ変換する。
+  const genForModel = find("response_generation_finished");
+  if (genForModel) {
+    const tier = _str(genForModel.model_tier);
+    const plain = tier ? (MODEL_TIER_LABELS[tier] ?? _str(genForModel.model) ?? tier) : null;
+    if (plain) rows.push({ key: "model", label: "モデル", value: plain });
+  }
+
   // Memory(記憶) ＋ Context(文脈: 選別・採用)
   const memEvt = find("memory_search_finished");
   if (memEvt) {
@@ -120,6 +137,29 @@ function deriveTurnRows(events: LiveEvent[]): CategoryRow[] {
     }
   } else if (has("memory_search_started")) {
     rows.push({ key: "memory", label: "記憶", value: "検索中…" });
+  }
+
+  // Drive(内発的動機、Redesign-3): S-2(Goal Proposal)由来の自発的な行動の
+  // ターンのみ表示する。通常の受動的な会話では is_proactive=false のため、
+  // この行は出ない(該当なし)。現状 goal_proposal は未配線のため実質常に非表示
+  // (backend 側コメント参照)。
+  const memForDrive = find("memory_search_finished");
+  if (memForDrive?.is_proactive === true) {
+    rows.push({ key: "drive", label: "動機", value: "自発的な行動" });
+  }
+
+  // Safety(安全機構の痕跡、Redesign-3): 実際に安全機構が働いた場合のみ表示。
+  // バックエンドが safety_check を emit するのは発火時だけ(呼び名の統一・
+  // 事実整合ガードの検出)なので、何も働かなかった通常ターンでは行は出ない。
+  const safetyEvt = find("safety_check");
+  if (safetyEvt) {
+    const parts: string[] = [];
+    if (safetyEvt.name_replaced === true) parts.push("呼び名を統一");
+    if (safetyEvt.fact_check_flagged === true) {
+      const n = _num(safetyEvt.fact_check_violation_count) ?? 0;
+      parts.push(`事実確認で要注意${n > 0 ? `(${n}件)` : ""}`);
+    }
+    if (parts.length > 0) rows.push({ key: "safety", label: "安全", value: parts.join("・") });
   }
 
   // Tools(ツール): 1ターンに0〜複数回

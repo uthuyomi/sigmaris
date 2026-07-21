@@ -1451,6 +1451,17 @@ async def run_orchestrator_chat(
         confidence_tier=memory_search_summary.confidence_tier,
         diary_search_triggered=memory_search_summary.diary_search_triggered,
         elapsed_ms=int((time.perf_counter() - _live_memory_search_started_at) * 1000),
+        # Drive(Redesign-3): このターンが S-2(Goal Proposal)由来の自発的な
+        # 行動か否かを、既に算出済みの is_proactive(_is_proactive_call の結果)
+        # としてそのまま載せる(新規の判定・追加処理なし)。Phase S-6 以降
+        # proactive/actions.py の呼び出し元が撤去され、_is_proactive_call は
+        # 常に False を返すため、現状のすべての受動的な会話ターンでは
+        # is_proactive=False = Drive「該当なし」になる(捏造せず正直に扱う)。
+        # 将来 goal_proposal(S-2)が配線され proactive ターンが発生すれば、
+        # このフラグが True になり、フロントの Drive 区分が「自発的な行動」を
+        # 表示する。どの Drive(Knowledge Gap/Mastery/Coherence)が働いたかの
+        # 特定は goal_proposal 側の配線が前提のため、次段へ申し送る(報告書)。
+        is_proactive=is_proactive,
     )
     # Sigmaris Live「詳細表示、+機密情報のマスキング」タスク: マスキング
     # 済みの詳細(0件の場合は永続化自体をスキップし、不要なDB書き込みを
@@ -1761,6 +1772,17 @@ async def run_orchestrator_chat_stream(
         confidence_tier=memory_search_summary.confidence_tier,
         diary_search_triggered=memory_search_summary.diary_search_triggered,
         elapsed_ms=int((time.perf_counter() - _live_memory_search_started_at) * 1000),
+        # Drive(Redesign-3): このターンが S-2(Goal Proposal)由来の自発的な
+        # 行動か否かを、既に算出済みの is_proactive(_is_proactive_call の結果)
+        # としてそのまま載せる(新規の判定・追加処理なし)。Phase S-6 以降
+        # proactive/actions.py の呼び出し元が撤去され、_is_proactive_call は
+        # 常に False を返すため、現状のすべての受動的な会話ターンでは
+        # is_proactive=False = Drive「該当なし」になる(捏造せず正直に扱う)。
+        # 将来 goal_proposal(S-2)が配線され proactive ターンが発生すれば、
+        # このフラグが True になり、フロントの Drive 区分が「自発的な行動」を
+        # 表示する。どの Drive(Knowledge Gap/Mastery/Coherence)が働いたかの
+        # 特定は goal_proposal 側の配線が前提のため、次段へ申し送る(報告書)。
+        is_proactive=is_proactive,
     )
     # Sigmaris Live「詳細表示、+機密情報のマスキング」タスク: see
     # run_orchestrator_chat's identical block for the full rationale.
@@ -1855,6 +1877,21 @@ async def run_orchestrator_chat_stream(
         guard_violations = guard.violations
         if not guard.passed:
             logger.warning("unified streamed response tool-fact guard failed: %s", guard.violations)
+        # Safety(Redesign-3): 安全機構が"実際に働いた"痕跡のみを、fire-and-forget
+        # でイベント化する(既存の emit_live_event パターンをそのまま踏襲。応答
+        # deltaは既に配信済みで、この emit はブロックしない=応答速度に影響しない。
+        # 新しい重い処理・判定は追加していない——既に算出済みの guard 結果と、
+        # 呼び名置換の有無を載せるだけ)。捏造せず、実際に発火した場合のみ emit
+        # する(何も働かなかった通常ターンでは Safety 区分を出さない)。
+        _name_replaced = response_text != schedule_text
+        if _name_replaced or not guard.passed:
+            emit_live_event(
+                "safety_check",
+                invocation_id,
+                name_replaced=_name_replaced,
+                fact_check_flagged=not guard.passed,
+                fact_check_violation_count=len(guard_violations),
+            )
         used_fallback = False
 
     except Exception as error:

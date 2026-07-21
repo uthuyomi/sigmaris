@@ -1332,3 +1332,63 @@ Redesign-1 の「段階的な大きなテキスト（主役）」の下にある
 2. **文脈（Context）の「採用件数」**: 現状 `confidence_tier` からの定性的な採用状況で表現している（「〇件採用」という明示的な数はイベントに無い）。厳密な採用件数を出すには、記憶の選別（rerank/compression 後の採用数）を backend がイベントに載せる必要がある（Redesign-3 候補）。
 3. **実ブラウザ目視が未実施**。ターン分割の粒度（1ターンに複数の同種イベントがある場合の見え方）・区分の並び・平易化の妥当性は、本番反映後に実機確認を推奨。
 4. **共有 `live-event-detail-panel.tsx` の注記文言**（Redesign-1 申し送り）は引き続き未対応（マスキング撤廃後、実態と不一致）。/live 共有ファイルのため、Redesign-3 で /live への影響を確認の上まとめて更新するのが安全。
+
+---
+
+## Redesign-3: Model・Drive・Safety の痕跡（バックエンドのイベント拡張、2026-07-21）
+
+Redesign-2 で「対応データが無い」として次段送りにした3区分（Model / Drive / Safety）を、**既存の `emit_live_event`（fire-and-forget）ペイロードにフィールドを追加するだけ**で実装した。**新しい配信の仕組み・新しい重い処理・LLM呼び出し・DBアクセスは一切追加していない。実データのみ・捏造なし**（データが無い場合は「該当なし」＝表示省略）。**対象はサイドバー版のみ**（`/live`・葉コンポーネント・`LiveStageDisplay`（Redesign-1）・`x_privacy_filter.py` は不変更）。
+
+### 1. `Model`（モデルのティア）の実装詳細
+
+- **`chat.py::stream_chat_completion_ui`** の `response_generation_finished` イベントに、`model` と `model_tier` を追加。応答生成は `settings.openai_model` を直接使う（`client.responses.create(model=settings.openai_model, …)`）ため、**その場で確定している実値をそのまま載せるだけ**。
+- ティア判定 `_model_tier(model)`（新規・純粋関数）は、`config` の各モデル設定と突き合わせて `advanced`/`nano`/`standard`/`other` を返す（`local_llm.py::_openai_model_for_task` と同じ区分。新しい判定ロジックではなく既存の区分の再利用）。
+- フロント（`deriveTurnRows`）で `MODEL_TIER_LABELS` により `軽量モデル`/`標準モデル`/`高度モデル` へ平易化。ログの区分「**モデル**」として表示。
+- 補足: 意図分類（`classify_chat_intent`）は nano ティア相当（heuristic 時はモデル未使用）だが、応答生成モデルこそが「使用したモデルのティア」の主眼のため、Model 区分は **応答生成モデル** を採用した（意図分類側への `model_tier` 付与は、表示の重複を避けるため見送り。判断根拠）。
+
+### 2. `Drive`（Drive State との関連）の実装詳細
+
+- **`orchestrator/service.py`** の `memory_search_finished` イベント（stream/非stream 両方）に、**既に算出済みの `is_proactive`（`_is_proactive_call()` の結果）** をそのまま追加。新しい判定・`get_current_drive_state()` の呼び出し等は追加していない（＝ホットパスに新規処理ゼロ）。
+- フロントは `is_proactive === true`（＝S-2 由来の自発的な行動のターン）のときのみ「**動機: 自発的な行動**」を表示。**通常の受動的な会話では `is_proactive=false` → 表示しない（該当なし）**。
+- **現状の重要な事実**: Phase S-6 以降 `proactive/actions.py` の呼び出し元が撤去され、`_is_proactive_call()` は**常に False** を返す（`goal_proposal`（S-2）も未配線）。したがって**現時点では全ターンで Drive は「該当なし」**であり、これは捏造を避けた正直な状態である。将来 S-2 が配線され proactive ターンが発生すれば、このフラグが True になり Drive 区分が表示される。**どの Drive（Knowledge Gap/Mastery/Coherence）が働いたかの特定は goal_proposal 側の配線が前提**のため、次段へ申し送り（§6）。
+
+### 3. `Safety`（Constitution・安全機構の痕跡）の実装詳細
+
+- **`orchestrator/service.py`（stream パス）** で、応答ガードの結果が確定した直後に、**安全機構が"実際に働いた"場合のみ** `safety_check` イベントを emit（fire-and-forget）:
+  - **呼び名ガード**: `replace_forbidden_assistant_names()` が禁止名を実際に置換した（`response_text != schedule_text`）→ `name_replaced=true`。
+  - **事実整合ガード**: `compare_response_to_tool_outputs()` が違反を検出した（`not guard.passed`）→ `fact_check_flagged=true` ＋ `fact_check_violation_count`。
+  - **どちらも発火しなかった通常ターンでは emit しない** → フロントに Safety 区分を出さない（依頼書「省略」方針）。
+- これらは**既に算出済みのガード結果を載せるだけ**で、新しいガード処理は追加していない。emit は応答 delta が全て配信された後（post-stream）に走るため、ユーザー体感の応答速度に影響しない。
+- フロント（`deriveTurnRows`）で `安全: 呼び名を統一` / `安全: 事実確認で要注意(N件)` のように平易表示。
+- 注: 記憶検索の棄権（`confidence_tier` の hedged/abstain）は Redesign-2 の「文脈」区分で既に可視化済みのため、Safety には重複計上していない。B11 の棄権判定・dissent 等の他の安全機構の痕跡は、対応する live イベントが現状無いため次段候補（§6）。
+
+### 4. 応答速度への影響、確認結果
+
+- **影響はほぼゼロと見積もる**（実測は本環境では不可、コードベースからの静的評価）:
+  - Model: `response_generation_finished` に `settings.openai_model` と in-memory 判定の `model_tier` を**フィールド追加するだけ**（O(1)、既存の fire-and-forget emit）。
+  - Drive: `memory_search_finished` に**既に算出済みの `is_proactive`（bool）を追加するだけ**。`get_current_drive_state()` 等の新規呼び出しは無い。
+  - Safety: **応答 delta 配信後**に、条件付きで `safety_check` を1回 fire-and-forget で emit するのみ（`emit_live_event` は内部で `asyncio.create_task`/キュー投入し、呼び出し元をブロックしない）。ガード自体は元から実行されていた処理で、新規計算は無い。
+  - **新しい LLM 呼び出し・DB アクセス・同期待ちは一切追加していない**。よって「応答速度に悪影響を与えない」という最優先制約を満たす。
+
+### 5. テスト結果
+
+| 検証 | 結果 |
+|---|---|
+| `npx eslint .` | 0 件 |
+| `npx next build` | 成功（`/live` 含む全ルート健在） |
+| `python -m compileall`（chat.py / orchestrator/service.py / live_detail_masking.py） | OK |
+| `pytest tests/`（backend 16件、orchestrator テスト含む） | 16 passed（リグレッションなし） |
+| `/live`・葉コンポーネント・`x_privacy_filter.py`・`LiveStageDisplay`（Redesign-1）の不変更 | 差分なし（`git status`／`git diff` で確認） |
+| Model の表示 | コード上、実 `settings.openai_model` を載せ→平易ティア表示で成立。実SSE 目視は未実施 |
+| Drive の表示（S-2 由来のみ） | `is_proactive` ゲートで実装。現状 `_is_proactive_call` 常時 False のため常に該当なし（正直）。proactive ターンのシミュレーション目視は未実施 |
+| Safety の表示（発火時のみ） | ガード発火時のみ emit で実装。実際に名前置換/事実違反が起きるケースの目視は未実施 |
+
+**変更ファイル**: `backend/app/services/chat.py`、`backend/app/services/orchestrator/service.py`、`frontend/src/components/live/live-sidebar-panel.tsx` の3ファイル。
+
+### 6. 気づいた懸念点・次のステップ（Redesign-4: ツール呼び出しの詳細／"一時停止しても情報量が豊富"な詳細パネル）への申し送り
+
+1. **Drive の「どの Drive が働いたか」**は `goal_proposal`（S-2）の配線が前提。現状 S-2 は未配線（`propose_and_act` 呼び出し元ゼロ）で proactive ターン自体が発生しないため、Drive は常に該当なし。S-2 が配線される段で、`goal_proposal` が「発火した Drive（Knowledge Gap/Mastery/Coherence）」を live イベントに載せる形にすれば、Drive 区分が具体名で表示できる。
+2. **Safety の網羅性**: 現状は「呼び名ガード」「事実整合ガード」のみ。B11 の棄権判定（`memory_confidence`。ただし文脈区分で一部可視化済み）・dissent（異論表明）・citation_audit（引用監査、chat.py 側で advisory）等、他の安全機構の痕跡は対応 live イベントが無い。必要なら各所に fire-and-forget emit を足す（同じパターン）。ただし citation_audit は chat.py 側で `message_id` 相関になり、Safety(orchestrator 側 `invocation_id`)と別グループになる点に注意。
+3. **`invocation_id` と `message_id` の相関ギャップ（既存の未解決事項）**: 1 ユーザーターンで、orchestrator 発の event（`invocation_id`＝Memory/Context/Drive/Safety）と chat.py 発の event（`message_id`＝Intent/Model/Tools/Generation）が**別 id** になり、Redesign-2 のターングルーピングでは**2つのグループに分かれて**表示される。これは Live 着手時からの既知の制約（`agent_chat_stream()` の共有ホットパスのシグネチャ変更が必要でスコープ外、chat.py:1020 付近のコメント参照）。Redesign-4 以降で「1ユーザーターン=1グループ」に統合したい場合は、`X-Correlation-ID` を `agent_chat_stream()` が読み、chat.py の emit を真の `invocation_id` で発行する対応が必要（ホットパス変更のため慎重に）。
+4. **Redesign-4（ツール呼び出しの詳細・"一時停止しても情報量が豊富"な詳細パネル）**に向けて: マスキング撤廃（Redesign-1）済みで、ツール呼び出しの詳細（`live-event-detail-panel.tsx`）は実引数がそのまま表示される。ネストした引数（list/dict）が現状 `String(value)` で `[object Object]` になる点は、詳細パネルの改善余地（/live 共有のため /live 影響を確認の上）。また共有 detail-panel のマスキング注記文言の更新も引き続き申し送り。
+5. **実ブラウザ・実SSE 目視は未実施**（本環境の制約）。Model/Drive/Safety の実データ反映は、本番反映後（かつ本番バックエンドに Live ルート反映済みであること）に実機確認を推奨。
