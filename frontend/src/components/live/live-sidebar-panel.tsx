@@ -46,7 +46,6 @@ import {
   type ProcessStepState,
 } from "./process-steps";
 import type { LiveConnectionStatus, LiveEvent } from "./types";
-import { PARSE_ERROR_EVENT } from "./use-live-events";
 import { cn } from "@/lib/utils";
 
 // ─── 接続状態 ────────────────────────────────────────────────────────
@@ -61,50 +60,108 @@ const STATUS_COLOR: Record<LiveConnectionStatus, string> = {
   error: "text-red-400",
 };
 
-// ─── ログの処理名整形(PROCESS_STEPS から導出。/live 用ファイルを触らない
-//      ための局所ヘルパ) ─────────────────────────────────────────────
-const STARTED_LABELS: Record<string, string> = {};
-const FINISHED_LABELS: Record<string, string> = {};
-for (const step of PROCESS_STEPS) {
-  STARTED_LABELS[step.startedEvent] = `${step.label}・開始`;
-  FINISHED_LABELS[step.finishedEvent] = `${step.label}・終了`;
-}
-const TOOL_CALL_LABELS: Record<string, string> = {
-  tool_call_started: "ツール・開始",
-  tool_call_finished: "ツール・終了",
+// ─── ログ(補助)を「1ターン単位・区分ごと・平易な言葉」で組み立てる
+//      (Redesign-2)。既存イベントデータから導出するのみ・新規データ収集なし。
+//      内部実装の専門用語(embedding/rerank/hybrid_score 等)は出さず、
+//      「記憶: 12件ヒット」「文脈: しっかり参照」のような平易な表現へ変換する。
+//      区分の並びは当初提案(Intent→Memory→Context→…→Tools→Generation)に
+//      準拠。Model(モデルのティア)・Drive・Safety は既存イベントに対応する
+//      データが無いため未実装(次段=Redesign-3へ申し送り、報告書参照)。
+
+const _num = (v: unknown) => (typeof v === "number" ? v : null);
+const _str = (v: unknown) => (typeof v === "string" ? v : null);
+
+// 意図の内部コード → 平易な日本語(専門用語をそのまま出さない)。
+const INTENT_LABELS: Record<string, string> = {
+  general_chat: "雑談",
+  event_lookup: "予定の確認",
+  mobility_plan: "移動の計画",
+  schedule_import: "予定の取り込み",
+  calendar_write: "予定の登録",
+  sync_control: "同期の操作",
 };
-const FINISHED_SUMMARIZERS: Record<string, (evt: LiveEvent) => string> = {};
-for (const step of PROCESS_STEPS) {
-  FINISHED_SUMMARIZERS[step.finishedEvent] = step.summarizeResult;
-}
 
-function logLabel(evt: LiveEvent): string {
-  if (evt.event === PARSE_ERROR_EVENT) return "受信エラー";
-  return (
-    STARTED_LABELS[evt.event] ??
-    FINISHED_LABELS[evt.event] ??
-    TOOL_CALL_LABELS[evt.event] ??
-    evt.event
-  );
-}
+// confidence_tier → 「記憶の選別・採用」の様子(内部語を出さず平易に)。
+const TIER_ADOPTION: Record<string, string> = {
+  confident: "しっかり参照",
+  hedged: "控えめに参照",
+  abstain: "参照なし(該当なし扱い)",
+};
 
-function toolCallSummary(evt: LiveEvent): string {
-  const toolName = typeof evt.tool_name === "string" ? evt.tool_name : "unknown";
-  if (evt.event === "tool_call_started") return `${toolName} を実行中...`;
-  const ok = evt.ok === true;
-  const elapsed = typeof evt.elapsed_ms === "number" ? ` ・ ${evt.elapsed_ms}ms` : "";
-  return `${toolName}(${ok ? "成功" : "失敗"})${elapsed}`;
-}
+type CategoryRow = { key: string; label: string; value: string; detailEvent?: LiveEvent };
 
-function logResult(evt: LiveEvent): string {
-  if (evt.event === PARSE_ERROR_EVENT) return "配信データの解析に失敗しました";
-  if (evt.event in STARTED_LABELS) return "実行中...";
-  const summarize = FINISHED_SUMMARIZERS[evt.event];
-  if (summarize) return summarize(evt);
-  if (evt.event === "tool_call_started" || evt.event === "tool_call_finished") {
-    return toolCallSummary(evt);
+// 1ターン(同一 invocation_id)のイベント群から、区分ごとの平易な行を導出する。
+function deriveTurnRows(events: LiveEvent[]): CategoryRow[] {
+  const rows: CategoryRow[] = [];
+  const has = (name: string) => events.some((e) => e.event === name);
+  const find = (name: string) => events.find((e) => e.event === name);
+
+  // Intent(意図)
+  const intentEvt = find("intent_classification_finished");
+  if (intentEvt) {
+    const raw = _str(intentEvt.intent);
+    const plain = raw ? (INTENT_LABELS[raw] ?? raw) : "判定済み";
+    const src = intentEvt.source === "llm" ? "じっくり判定" : "即時判定";
+    rows.push({ key: "intent", label: "意図", value: `${plain}(${src})` });
+  } else if (has("intent_classification_started")) {
+    rows.push({ key: "intent", label: "意図", value: "判定中…" });
   }
-  return "—";
+
+  // Memory(記憶) ＋ Context(文脈: 選別・採用)
+  const memEvt = find("memory_search_finished");
+  if (memEvt) {
+    const count = _num(memEvt.result_count) ?? 0;
+    rows.push({ key: "memory", label: "記憶", value: `${count}件ヒット`, detailEvent: memEvt });
+    const tier = _str(memEvt.confidence_tier);
+    const adoption = tier ? (TIER_ADOPTION[tier] ?? tier) : null;
+    if (adoption) {
+      const decomposed = memEvt.was_decomposed === true ? "・複数の観点で検索" : "";
+      rows.push({ key: "context", label: "文脈", value: `${adoption}${decomposed}` });
+    }
+  } else if (has("memory_search_started")) {
+    rows.push({ key: "memory", label: "記憶", value: "検索中…" });
+  }
+
+  // Tools(ツール): 1ターンに0〜複数回
+  const toolsFinished = events.filter((e) => e.event === "tool_call_finished");
+  toolsFinished.forEach((t, i) => {
+    const tool = _str(t.tool_name) ?? "ツール";
+    const ok = t.ok === true;
+    rows.push({ key: `tool-${i}`, label: "ツール", value: `${tool}(${ok ? "成功" : "失敗"})`, detailEvent: t });
+  });
+  if (toolsFinished.length === 0 && has("tool_call_started")) {
+    rows.push({ key: "tool-run", label: "ツール", value: "実行中…" });
+  }
+
+  // Generation(生成)
+  const genEvt = find("response_generation_finished");
+  if (genEvt) {
+    const len = _num(genEvt.response_length);
+    rows.push({ key: "gen", label: "生成", value: len !== null ? `${len}文字` : "完了" });
+  } else if (has("response_generation_started")) {
+    rows.push({ key: "gen", label: "生成", value: "生成中…" });
+  }
+
+  return rows;
+}
+
+type TurnGroup = { invocationId: string; time: number; events: LiveEvent[] };
+
+// イベント配列を invocation_id(=1ターン)でグルーピングし、新しいターン順に返す。
+function groupTurns(events: LiveEvent[]): TurnGroup[] {
+  const map = new Map<string, LiveEvent[]>();
+  for (const e of events) {
+    if (!e.invocation_id) continue; // 受信エラー等・ターンに属さないものは除外
+    const arr = map.get(e.invocation_id);
+    if (arr) arr.push(e);
+    else map.set(e.invocation_id, [e]);
+  }
+  const groups: TurnGroup[] = [];
+  for (const [invocationId, evs] of map) {
+    groups.push({ invocationId, time: Math.min(...evs.map((e) => e.timestamp)), events: evs });
+  }
+  groups.sort((a, b) => b.time - a.time); // 新しいターンを上に
+  return groups.slice(0, 20); // 直近20ターン
 }
 
 // ─── 段階的な大きなテキスト(Redesign-1・主役) ───────────────────────
@@ -297,71 +354,77 @@ function MetricsList({ events }: { events: LiveEvent[] }) {
   );
 }
 
-// ─── ログ(区切り線の薄い縦リスト) ─────────────────────────────────
-function LogList({ events }: { events: LiveEvent[] }) {
-  const rows = [...events].reverse(); // 新しい順
+// ─── ログ(1ターン単位・区分ごとの平易なリスト、Redesign-2) ──────────
+function LiveTurnLog({ events }: { events: LiveEvent[] }) {
+  const groups = groupTurns(events);
   const [expandedKey, setExpandedKey] = useState<string | null>(null);
 
-  if (rows.length === 0) {
+  if (groups.length === 0) {
     return (
       <p className="text-sm text-[#8e8ea0]">
-        まだイベントを受信していません。/chatで会話すると表示されます。
+        まだ会話がありません。/chatでメッセージを送ると、ターンごとに表示されます。
       </p>
     );
   }
 
   return (
-    <ul className="divide-y divide-white/[0.06]">
-      {rows.map((evt, idx) => {
-        const rowKey = `${evt.invocation_id}-${evt.event}-${idx}`;
-        const detailable = detailLookupFor(evt) !== null;
-        const isExpanded = expandedKey === rowKey;
-        const time = new Date(evt.timestamp * 1000).toLocaleTimeString();
+    <div className="space-y-4">
+      {groups.map((group) => {
+        const rows = deriveTurnRows(group.events);
+        if (rows.length === 0) return null;
+        const time = new Date(group.time * 1000).toLocaleTimeString();
         return (
-          <Fragment key={rowKey}>
-            <li>
-              <div
-                className={cn(
-                  "py-2",
-                  detailable && "-mx-1 cursor-pointer rounded-lg px-1 hover:bg-white/[0.03]",
-                )}
-                onClick={detailable ? () => setExpandedKey(isExpanded ? null : rowKey) : undefined}
-                role={detailable ? "button" : undefined}
-                tabIndex={detailable ? 0 : undefined}
-                onKeyDown={
-                  detailable
-                    ? (event) => {
-                        if (event.key === "Enter" || event.key === " ") {
-                          event.preventDefault();
-                          setExpandedKey(isExpanded ? null : rowKey);
+          <div key={group.invocationId} className="border-l-2 border-white/10 pl-3">
+            <p className="mb-1 font-mono text-[11px] text-[#5c5c66]">{time}</p>
+            <ul className="space-y-0.5">
+              {rows.map((row) => {
+                const detailable = !!row.detailEvent && detailLookupFor(row.detailEvent) !== null;
+                const rowKey = `${group.invocationId}-${row.key}`;
+                const isExpanded = expandedKey === rowKey;
+                return (
+                  <Fragment key={rowKey}>
+                    <li>
+                      <div
+                        className={cn(
+                          "flex items-baseline gap-2 py-0.5",
+                          detailable && "-mx-1 cursor-pointer rounded px-1 hover:bg-white/[0.03]",
+                        )}
+                        onClick={detailable ? () => setExpandedKey(isExpanded ? null : rowKey) : undefined}
+                        role={detailable ? "button" : undefined}
+                        tabIndex={detailable ? 0 : undefined}
+                        onKeyDown={
+                          detailable
+                            ? (event) => {
+                                if (event.key === "Enter" || event.key === " ") {
+                                  event.preventDefault();
+                                  setExpandedKey(isExpanded ? null : rowKey);
+                                }
+                              }
+                            : undefined
                         }
-                      }
-                    : undefined
-                }
-              >
-                <div className="flex items-baseline justify-between gap-2">
-                  <span className="text-sm text-[#ececec]">
-                    {logLabel(evt)}
-                    {detailable ? (
-                      <span className="ml-1 text-xs text-[#8e8ea0]">{isExpanded ? "▲" : "▼"}</span>
-                    ) : null}
-                  </span>
-                  <span className="shrink-0 font-mono text-[11px] text-[#8e8ea0]">{time}</span>
-                </div>
-                <p className="mt-0.5 break-words text-xs leading-5 text-[#8e8ea0]">
-                  {logResult(evt)}
-                </p>
-              </div>
-              {isExpanded ? (
-                <div className="pb-2">
-                  <LiveEventDetailPanel event={evt} />
-                </div>
-              ) : null}
-            </li>
-          </Fragment>
+                      >
+                        <span className="w-9 shrink-0 text-xs text-[#8e8ea0]">{row.label}</span>
+                        <span className="min-w-0 flex-1 break-words text-sm text-[#ececec]">
+                          {row.value}
+                          {detailable ? (
+                            <span className="ml-1 text-xs text-[#8e8ea0]">{isExpanded ? "▲" : "▼"}</span>
+                          ) : null}
+                        </span>
+                      </div>
+                      {isExpanded && row.detailEvent ? (
+                        <div className="py-1">
+                          <LiveEventDetailPanel event={row.detailEvent} />
+                        </div>
+                      ) : null}
+                    </li>
+                  </Fragment>
+                );
+              })}
+            </ul>
+          </div>
         );
       })}
-    </ul>
+    </div>
   );
 }
 
@@ -416,8 +479,8 @@ export function LiveSidebarPanel({
         </section>
 
         <section>
-          <SectionHeading>ログ（直近{events.length}件）</SectionHeading>
-          <LogList events={events} />
+          <SectionHeading>ログ（ターンごと）</SectionHeading>
+          <LiveTurnLog events={events} />
         </section>
       </div>
     </aside>

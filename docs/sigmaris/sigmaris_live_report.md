@@ -1277,3 +1277,58 @@ HTTP/1.1 401 Unauthorized
 2. **共有 `live-event-detail-panel.tsx` の注記文言**が、マスキング撤廃後は実態と合わない（「…マスキングして表示します…」）。/live も使う共有ファイルのため本タスクでは触れていない。Redesign 系のどこかで、/live への影響を確認の上、注記を「本人限定のため生データを表示」等へ更新する余地がある。
 3. **`stageLine` の文言はサイドバー内に局所定義**。将来モデルティア・safety validation 等の段階（依頼書「4」）を足す際は、`process-steps.ts`（/live 共有）に手を入れず、まずはこの `stageLine`（サイドバー専用）へ追記する形が /live 非影響で安全。
 4. **Redesign-2（常時ログの密度向上）に向けて**: 現状、補助情報の「ログ」は直近200件（`MAX_EVENTS`）のうち受信分を新しい順に全件表示。密度・スクロール挙動・古いイベントの間引き等は Redesign-2 で扱う想定。段階表示（主役）とログ（補助）の情報の重複感が出る場合は、ログ側を「1ターン単位のグルーピング」等でまとめると、覗いている感覚と詳細ログの両立がしやすい。
+
+---
+
+## Redesign-2: 常時流れるログの密度向上（ターン単位・区分別・平易な言葉、2026-07-21）
+
+Redesign-1 の「段階的な大きなテキスト（主役）」の下にある補助ログを、当初提案（Intent / Memory / Context / Model / Drive / Safety / Tools / Generation の区分が一目で見える）に沿って拡充した。運用者の狙い＝「技術者は細かいログを止めて読む／一般の人は大きい表示だけ追う」が自然に分かれる体験。**対象はサイドバー版のみ**（`/live`・葉コンポーネント・`LiveStageDisplay`（Redesign-1）は不変更）。**新しいデータ収集は追加せず、既存イベントの範囲で導出**。
+
+### 1. 拡充したログ項目の一覧・実装方法
+
+`live-sidebar-panel.tsx` の補助ログを、フラットな時系列行から **「1ターン単位・区分ごと・平易な言葉」** の表示（`deriveTurnRows` / `LiveTurnLog`）へ組み直した。各区分は既存イベントのフィールドから導出:
+
+| 区分（表示ラベル） | 導出元イベント（既存） | 表示例（平易・専門用語なし） |
+|---|---|---|
+| **意図**（Intent） | `intent_classification_finished`（`intent`・`source`） | `予定の確認(即時判定)` ／ `雑談(じっくり判定)` |
+| **記憶**（Memory） | `memory_search_finished`（`result_count`） | `12件ヒット`（クリックで詳細） |
+| **文脈**（Context） | `memory_search_finished`（`confidence_tier`・`was_decomposed`） | `しっかり参照` ／ `控えめに参照` ／ `参照なし(該当なし扱い)`（＋`・複数の観点で検索`） |
+| **ツール**（Tools） | `tool_call_finished`（`tool_name`・`ok`、0〜複数回） | `create_google_calendar_events(成功)`（クリックで詳細） |
+| **生成**（Generation） | `response_generation_finished`（`response_length`） | `320文字` |
+
+- **平易化**: 意図の内部コード（`calendar_write` 等）を `INTENT_LABELS` で日本語（`予定の登録`）へ、`confidence_tier`（`confident/hedged/abstain`）を `TIER_ADOPTION` で「しっかり参照／控えめに参照／参照なし」へ変換。**`embedding`・`rerank`・`hybrid_score` 等の内部語は元々イベントに含まれず、表示にも一切出していない**（要件2）。
+- 進行中は `判定中…`／`検索中…`／`実行中…`／`生成中…` を表示（finished 未着でも状態が分かる）。
+
+### 2. `Model`（モデルのティア）の実装状況 → **未実装・次段の課題**
+
+- 既存イベントに、応答生成に使ったモデルのティアを表す情報は**含まれていない**（`intent_classification_finished` の `source` は「意図判定が即時判定/LLM判定のどちらだったか」であり、応答生成のモデルティアではない。`response_generation_finished` は `response_length`・`elapsed_ms` のみ）。
+- 依頼書の指示通り、**無理に実装せず「未実装・次段の課題」として明記**する。実装するにはバックエンド（`orchestrator/service.py`・`chat.py` の live イベント発行）にモデルティアを載せる必要があり、「新しいデータ収集を追加しない」という本タスクの制約を超えるため、Redesign-3 以降で backend 側の対応（イベントへの `model_tier` 等の付与＝マイグレーション不要のイベント拡張）とセットで扱うのが妥当。
+
+### 3. ターン単位のグルーピングの実装内容
+
+- `groupTurns(events)`: イベントを `invocation_id`（＝1ターン）でグルーピングし、各ターンの最小 `timestamp` で**新しいターンを上に**並べ、直近20ターンに制限。`invocation_id` の無いもの（受信エラー等）は除外。
+- 表示: 各ターンを `border-l-2` の縦ラインで区切り、上部にターンの時刻（mono・淡色）、その下に区分行（左=区分ラベル `w-9` 固定幅、右=平易な値）を積む。これにより、Redesign-1 で申し送っていた「段階表示（主役）とログ（補助）の重複感」を、ログを**ターンでまとめて要約**することで解消（1イベント1行の冗長さを排除）。
+- 詳細: 記憶（`memory_search_finished`）・ツール（`tool_call_finished`）の行は、既存の `detailLookupFor`/`LiveEventDetailPanel` をそのまま再利用してクリックで展開（Redesign-1 のマスキング撤廃により、詳細は実データで表示される）。
+
+### 4. テスト結果
+
+| 検証 | 結果 |
+|---|---|
+| `npx eslint .` | 0 件 |
+| `npx next build` | 成功（`/live` 含む全ルート健在） |
+| `pytest tests/`（backend 16件） | 16 passed |
+| `LiveStageDisplay`（Redesign-1）・`/live`・葉コンポーネント・`detail-panel` の不変更 | 差分なし（`git status`／grep で確認） |
+| 実ブラウザ・実SSE 目視 | 未実施（実データ・SSE が必要）。ターン分割・区分導出・平易化の見え方は本番で要確認 |
+
+**変更ファイル**: `frontend/src/components/live/live-sidebar-panel.tsx` の1ファイルのみ。
+
+### 5. 気づいた懸念点・次のステップ（Redesign-3: Drive State・Constitution・安全機構の痕跡）への申し送り
+
+1. **`Model`・`Drive`・`Safety` は既存イベントに対応データが無い**（本タスクで確認）。実装には backend の live イベント発行にフィールドを追加する必要がある（マイグレーション不要のイベント拡張）。Redesign-3 で:
+   - `Model`: 応答生成イベントに使用モデル/ティアを載せる。
+   - `Drive`: `drive_system` の状態（Knowledge Gap/Mastery/Coherence）を、そのターンで参照した痕跡としてイベント化。
+   - `Safety`: 憲法/安全機構（`constitution_guard`・`response_guard`・`citation_audit`・`safety_critical_files`）が働いた痕跡をイベント化。
+   いずれも「実際に発生した処理の実データ」を載せること（演出の禁止・平易化の原則は継続）。
+2. **文脈（Context）の「採用件数」**: 現状 `confidence_tier` からの定性的な採用状況で表現している（「〇件採用」という明示的な数はイベントに無い）。厳密な採用件数を出すには、記憶の選別（rerank/compression 後の採用数）を backend がイベントに載せる必要がある（Redesign-3 候補）。
+3. **実ブラウザ目視が未実施**。ターン分割の粒度（1ターンに複数の同種イベントがある場合の見え方）・区分の並び・平易化の妥当性は、本番反映後に実機確認を推奨。
+4. **共有 `live-event-detail-panel.tsx` の注記文言**（Redesign-1 申し送り）は引き続き未対応（マスキング撤廃後、実態と不一致）。/live 共有ファイルのため、Redesign-3 で /live への影響を確認の上まとめて更新するのが安全。
