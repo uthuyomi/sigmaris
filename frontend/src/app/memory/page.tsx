@@ -1,4 +1,12 @@
 import { AppShell } from "@/components/app-shell";
+import {
+  Badge,
+  ConfidenceBar,
+  EmptyState,
+  ErrorState,
+  PageHero,
+  Section,
+} from "@/components/shared";
 import { fetchAgentJson } from "@/lib/backend/agent-client";
 import { readBackendAuthHeaders } from "@/lib/backend/auth";
 import { readShellSettings } from "@/lib/profile-settings";
@@ -56,12 +64,6 @@ async function reflectNow() {
   revalidatePath("/memory");
 }
 
-function clampConfidence(value: unknown): number {
-  const numeric = Number(value);
-  if (!Number.isFinite(numeric)) return 0;
-  return Math.min(1, Math.max(0, numeric));
-}
-
 function formatValue(value: unknown): string {
   if (value === null || value === undefined || value === "") return "未設定";
   if (typeof value === "string") return value;
@@ -94,75 +96,6 @@ function normalizeGoals(value: unknown): string[] {
   }
   if (typeof value === "string") return [value];
   return [formatValue(value)];
-}
-
-function EmptyState({ children }: { children: React.ReactNode }) {
-  return (
-    <div className="rounded-2xl border border-white/10 bg-white/[0.03] px-4 py-5 text-sm text-[#8e8ea0]">
-      {children}
-    </div>
-  );
-}
-
-function ErrorState({ message }: { message: string }) {
-  return (
-    <div className="rounded-2xl border border-red-400/20 bg-red-500/10 px-4 py-3 text-sm text-red-100">
-      {message}
-    </div>
-  );
-}
-
-function ConfidenceBar({ value }: { value: unknown }) {
-  const confidence = clampConfidence(value);
-  const percent = Math.round(confidence * 100);
-
-  return (
-    <div className="space-y-1.5">
-      <div className="flex items-center justify-between text-xs text-[#8e8ea0]">
-        <span>確信度</span>
-        <span>{confidence.toFixed(2)}</span>
-      </div>
-      <div className="h-2 overflow-hidden rounded-full bg-white/10">
-        <div
-          className="h-full rounded-full bg-[#9b59b6]"
-          style={{ width: `${percent}%` }}
-        />
-      </div>
-    </div>
-  );
-}
-
-function Badge({ children }: { children: React.ReactNode }) {
-  return (
-    <span className="inline-flex items-center rounded-full border border-white/10 bg-white/[0.06] px-2.5 py-1 text-xs font-medium text-[#ececec]">
-      {children}
-    </span>
-  );
-}
-
-function Section({
-  title,
-  description,
-  children,
-  action,
-}: {
-  title: string;
-  description: string;
-  children: React.ReactNode;
-  action?: React.ReactNode;
-}) {
-  return (
-    <section className="rounded-3xl border border-white/10 bg-[#2a2a2a] p-4 shadow-[0_18px_60px_-45px_rgba(0,0,0,0.75)] sm:p-5">
-      <div className="mb-4 flex items-start justify-between gap-4">
-        <div className="min-w-0">
-          <h2 className="text-base font-semibold text-[#ececec] sm:text-lg">{title}</h2>
-          <p className="mt-1 text-sm leading-6 text-[#8e8ea0]">{description}</p>
-        </div>
-        {action ? <div className="shrink-0">{action}</div> : null}
-      </div>
-      {children}
-    </section>
-  );
 }
 
 export default async function MemoryPage() {
@@ -203,25 +136,14 @@ export default async function MemoryPage() {
       badge={locale === "ja" ? "同期中" : "Live"}
       theme={theme}
     >
-      <div className="min-h-full bg-[#212121] px-3 py-4 text-[#ececec] sm:px-5 lg:px-6">
-        <div className="mx-auto flex w-full max-w-5xl flex-col gap-4 pb-4">
-          <section className="rounded-3xl border border-white/10 bg-[#2f2f2f] px-5 py-6 sm:px-6">
-            <div className="flex items-center gap-3">
-              <div className="flex size-12 shrink-0 items-center justify-center rounded-2xl bg-[#9b59b6] text-2xl font-semibold text-white">
-                Σ
-              </div>
-              <div className="min-w-0">
-                <h1 className="text-2xl font-semibold tracking-tight text-[#ececec]">
-                  シグマリスの記憶
-                </h1>
-                <p className="mt-1 text-sm text-[#8e8ea0]">
-                  会話と観測から更新される家庭支援AIの現在地です。
-                </p>
-              </div>
-            </div>
-          </section>
+      <div className="min-h-full bg-background px-3 py-4 text-foreground sm:px-5 lg:px-6">
+        <div className="mx-auto flex w-full max-w-5xl flex-col gap-5 pb-4">
+          <PageHero
+            title="シグマリスの記憶"
+            description="会話と観測から更新される家庭支援AIの現在地です。"
+          />
 
-          <div className="grid gap-4 lg:grid-cols-[1.15fr_0.85fr]">
+          <div className="grid gap-5 lg:grid-cols-[1.15fr_0.85fr]">
             <Section
               title="事実記憶"
               description="プロフィール、健康、生活習慣などの確定的な情報をカテゴリ別に表示します。"
@@ -234,23 +156,23 @@ export default async function MemoryPage() {
                 {Object.entries(groupedFacts).map(([category, items]) => (
                   <div key={category} className="space-y-2">
                     <div className="flex items-center justify-between gap-3">
-                      <h3 className="text-sm font-semibold uppercase tracking-wide text-[#cfcfd7]">
+                      <h3 className="text-sm font-semibold uppercase tracking-wide text-muted-foreground">
                         {category}
                       </h3>
-                      <span className="text-xs text-[#8e8ea0]">{items.length}件</span>
+                      <span className="text-xs text-muted-foreground">{items.length}件</span>
                     </div>
                     <div className="space-y-2">
                       {items.map((item, index) => (
                         <article
                           key={item.id ?? `${category}-${item.key ?? index}`}
-                          className="rounded-2xl border border-white/10 bg-[#212121] p-4"
+                          className="rounded-2xl border border-border bg-background p-4"
                         >
                           <div className="flex flex-wrap items-start justify-between gap-3">
                             <div className="min-w-0">
-                              <h4 className="break-words text-sm font-semibold text-[#ececec]">
+                              <h4 className="break-words text-sm font-semibold text-foreground">
                                 {item.key || "unknown"}
                               </h4>
-                              <p className="mt-2 whitespace-pre-wrap break-words text-sm leading-6 text-[#d8d8de]">
+                              <p className="mt-2 whitespace-pre-wrap break-words text-sm leading-6 text-foreground/85">
                                 {formatValue(item.value)}
                               </p>
                             </div>
@@ -270,13 +192,13 @@ export default async function MemoryPage() {
               </div>
             </Section>
 
-            <div className="space-y-4">
+            <div className="space-y-5">
               <Section
                 title="自己モデル"
                 description="シグマリスが自分自身をどう捉えているかを表示します。"
                 action={
                   <form action={reflectNow}>
-                    <button className="rounded-full bg-[#9b59b6] px-4 py-2 text-sm font-semibold text-white transition hover:bg-[#ad6bc7]">
+                    <button className="rounded-full bg-primary px-4 py-2 text-sm font-semibold text-primary-foreground transition hover:bg-primary/85">
                       今すぐ自己反省
                     </button>
                   </form>
@@ -288,11 +210,11 @@ export default async function MemoryPage() {
                 ) : null}
                 {selfModel ? (
                   <div className="space-y-5">
-                    <blockquote className="rounded-2xl border border-[#9b59b6]/30 bg-[#9b59b6]/10 px-4 py-4 text-base font-medium leading-8 text-[#f1e8f6]">
+                    <blockquote className="rounded-2xl border border-primary/30 bg-primary/10 px-4 py-4 text-base font-medium leading-8 text-foreground">
                       {selfModel.identity_statement || "identity_statement は未設定です。"}
                     </blockquote>
                     <div>
-                      <h3 className="mb-2 text-sm font-semibold text-[#ececec]">
+                      <h3 className="mb-2 text-sm font-semibold text-foreground">
                         current_goals
                       </h3>
                       {goals.length > 0 ? (
@@ -300,7 +222,7 @@ export default async function MemoryPage() {
                           {goals.map((goal, index) => (
                             <li
                               key={`${goal}-${index}`}
-                              className="rounded-2xl border border-white/10 bg-[#212121] px-4 py-3 text-sm leading-6 text-[#d8d8de]"
+                              className="rounded-2xl border border-border bg-background px-4 py-3 text-sm leading-6 text-foreground/85"
                             >
                               {goal}
                             </li>
@@ -310,7 +232,7 @@ export default async function MemoryPage() {
                         <EmptyState>現在の目標は未設定です。</EmptyState>
                       )}
                     </div>
-                    <div className="grid gap-2 text-sm text-[#8e8ea0] sm:grid-cols-2">
+                    <div className="grid gap-2 text-sm text-muted-foreground sm:grid-cols-2">
                       <div className="rounded-2xl bg-white/[0.04] px-4 py-3">
                         version: {selfModel.version ?? "未記録"}
                       </div>
@@ -341,18 +263,18 @@ export default async function MemoryPage() {
                       {narrative.chapter ? <Badge>chapter {narrative.chapter}</Badge> : null}
                     </div>
                     <div>
-                      <h3 className="text-lg font-semibold text-[#ececec]">
+                      <h3 className="text-lg font-semibold text-foreground">
                         {narrative.title || "無題"}
                       </h3>
-                      <p className="mt-2 whitespace-pre-wrap text-sm leading-7 text-[#d8d8de]">
+                      <p className="mt-2 whitespace-pre-wrap text-sm leading-7 text-foreground/85">
                         {narrative.summary || "summary は未設定です。"}
                       </p>
                     </div>
-                    <div className="rounded-2xl border border-white/10 bg-[#212121] px-4 py-4">
-                      <p className="text-xs font-semibold uppercase tracking-wide text-[#8e8ea0]">
+                    <div className="rounded-2xl border border-border bg-background px-4 py-4">
+                      <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
                         self_reflection
                       </p>
-                      <p className="mt-2 whitespace-pre-wrap text-sm leading-7 text-[#ececec]">
+                      <p className="mt-2 whitespace-pre-wrap text-sm leading-7 text-foreground">
                         {narrative.self_reflection || "self_reflection は未設定です。"}
                       </p>
                     </div>
@@ -374,18 +296,18 @@ export default async function MemoryPage() {
               {trends.map((trend, index) => (
                 <article
                   key={`${trend.category ?? "trend"}-${trend.trend_key ?? index}`}
-                  className="rounded-2xl border border-white/10 bg-[#212121] p-4"
+                  className="rounded-2xl border border-border bg-background p-4"
                 >
                   <div className="flex flex-wrap items-center gap-2">
                     <Badge>{trend.category || "uncategorized"}</Badge>
-                    <span className="text-xs text-[#8e8ea0]">
+                    <span className="text-xs text-muted-foreground">
                       {formatDate(trend.detected_at ?? trend.last_updated_at)}
                     </span>
                   </div>
-                  <h3 className="mt-3 break-words text-sm font-semibold text-[#ececec]">
+                  <h3 className="mt-3 break-words text-sm font-semibold text-foreground">
                     {trend.trend_key || "unknown_trend"}
                   </h3>
-                  <p className="mt-2 whitespace-pre-wrap text-sm leading-6 text-[#d8d8de]">
+                  <p className="mt-2 whitespace-pre-wrap text-sm leading-6 text-foreground/85">
                     {trend.trend_description || "説明は未設定です。"}
                   </p>
                   <div className="mt-4">

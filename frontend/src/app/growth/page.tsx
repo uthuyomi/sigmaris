@@ -2,9 +2,17 @@
 // Rate、Drive State、自己改善パイプラインの承認待ち件数、Safety Governance状況)
 // を、一目で把握できるようにするNext.jsページ(docs/sigmaris/phase_vis_report.md、
 // Phase Vis-1〜Vis-2)。
+//
+// デザイン統一 第一段階(docs/sigmaris/frontend_design_unification_report.md):
+// 共通の表示部品(Section/EmptyState/ErrorState/PageHero)を @/components/shared
+// から import する形へ変更し、本文の hex 直書きを既存の CSS 変数トークンへ
+// 置き換えた(見た目はダークのまま維持)。StatCard/DriveLevelBar/StatusBadge は
+// このページ固有(他ページと重複していない)ため、トークン化のみ行いローカルに
+// 残した。
 
 import { AppShell } from "@/components/app-shell";
 import { TrendLineChart } from "@/components/growth/trend-line-chart";
+import { EmptyState, ErrorState, PageHero, Section } from "@/components/shared";
 import { fetchAgentJson } from "@/lib/backend/agent-client";
 import { readBackendAuthHeaders } from "@/lib/backend/auth";
 import {
@@ -25,15 +33,15 @@ import { requireUser } from "@/lib/supabase/auth";
 
 // Phase Vis-1(docs/sigmaris/phase_vis_report.md 5章)が「/timelineとは
 // 別の、新規ページとして実装する」ことを推奨していた判断を、そのまま
-// 採用した(本タスクの判断根拠、報告書に詳述)。/timelineは記憶の内容
-// (event/state/trait)の変遷を見せるのに対し、本ページはシグマリス自身
-// の機能的な健全性・状態を見せる、対象が異なるページである。
+// 採用した。/timelineは記憶の内容(event/state/trait)の変遷を見せるのに対し、
+// 本ページはシグマリス自身の機能的な健全性・状態を見せる、対象が異なる
+// ページである。
 
 function StatusBadge({ status }: { status: StatusDisplay }) {
   const toneClasses: Record<StatusDisplay["tone"], string> = {
     good: "border-emerald-400/25 bg-emerald-500/15 text-emerald-300",
     attention: "border-[#e07856]/30 bg-[#e07856]/15 text-[#e0a088]",
-    neutral: "border-white/10 bg-white/[0.06] text-[#8e8ea0]",
+    neutral: "border-border bg-white/[0.06] text-muted-foreground",
   };
   return (
     <span
@@ -54,9 +62,9 @@ function StatCard({
   href?: string;
 }) {
   const content = (
-    <div className="flex h-full flex-col justify-between gap-2 rounded-2xl border border-white/10 bg-[#212121] p-4">
-      <p className="text-xs font-semibold uppercase tracking-wide text-[#8e8ea0]">{label}</p>
-      <div className="text-lg font-semibold text-[#ececec]">{children}</div>
+    <div className="flex h-full flex-col justify-between gap-2 rounded-2xl border border-border bg-background p-4">
+      <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">{label}</p>
+      <div className="text-lg font-semibold text-foreground">{children}</div>
     </div>
   );
   if (!href) return content;
@@ -67,55 +75,19 @@ function StatCard({
   );
 }
 
-function EmptyState({ children }: { children: React.ReactNode }) {
-  return (
-    <div className="rounded-2xl border border-white/10 bg-white/[0.03] px-4 py-5 text-sm text-[#8e8ea0]">
-      {children}
-    </div>
-  );
-}
-
-function ErrorState({ message }: { message: string }) {
-  return (
-    <div className="rounded-2xl border border-red-400/20 bg-red-500/10 px-4 py-3 text-sm text-red-100">
-      {message}
-    </div>
-  );
-}
-
-function Section({
-  title,
-  description,
-  children,
-}: {
-  title: string;
-  description: string;
-  children: React.ReactNode;
-}) {
-  return (
-    <section className="rounded-3xl border border-white/10 bg-[#2a2a2a] p-4 shadow-[0_18px_60px_-45px_rgba(0,0,0,0.75)] sm:p-5">
-      <div className="mb-4">
-        <h2 className="text-base font-semibold text-[#ececec] sm:text-lg">{title}</h2>
-        <p className="mt-1 text-sm leading-6 text-[#8e8ea0]">{description}</p>
-      </div>
-      {children}
-    </section>
-  );
-}
-
 function DriveLevelBar({ label, level, note }: { label: string; level: number | null; note?: string }) {
   const percent = driveLevelPercent(level);
   return (
     <div className="space-y-1.5">
-      <div className="flex items-center justify-between text-xs text-[#8e8ea0]">
+      <div className="flex items-center justify-between text-xs text-muted-foreground">
         <span>
           {label}
-          {note ? <span className="ml-1.5 text-[10px] text-[#6f6f7a]">{note}</span> : null}
+          {note ? <span className="ml-1.5 text-[10px] text-muted-foreground/70">{note}</span> : null}
         </span>
         <span>{level === null ? "未測定" : level.toFixed(2)}</span>
       </div>
       <div className="h-2 overflow-hidden rounded-full bg-white/10">
-        <div className="h-full rounded-full bg-[#9b59b6]" style={{ width: `${percent}%` }} />
+        <div className="h-full rounded-full bg-primary" style={{ width: `${percent}%` }} />
       </div>
     </div>
   );
@@ -160,21 +132,12 @@ export default async function GrowthPage() {
       badge="Growth Log"
       theme={theme}
     >
-      <div className="min-h-full bg-[#212121] px-3 py-4 text-[#ececec] sm:px-5 lg:px-6">
-        <div className="mx-auto flex w-full max-w-5xl flex-col gap-4 pb-4">
-          <section className="rounded-3xl border border-white/10 bg-[#2f2f2f] px-5 py-6 sm:px-6">
-            <div className="flex items-center gap-3">
-              <div className="flex size-12 shrink-0 items-center justify-center rounded-2xl bg-[#9b59b6] text-2xl font-semibold text-white">
-                Σ
-              </div>
-              <div className="min-w-0">
-                <h1 className="text-2xl font-semibold tracking-tight text-[#ececec]">シグマリスの調子</h1>
-                <p className="mt-1 text-sm text-[#8e8ea0]">
-                  RC-1〜RC-5・Grounding指標・Drive State・自己改善パイプライン・Safety Governanceを、まとめて確認できます。
-                </p>
-              </div>
-            </div>
-          </section>
+      <div className="min-h-full bg-background px-3 py-4 text-foreground sm:px-5 lg:px-6">
+        <div className="mx-auto flex w-full max-w-5xl flex-col gap-5 pb-4">
+          <PageHero
+            title="シグマリスの調子"
+            description="RC-1〜RC-5・Grounding指標・Drive State・自己改善パイプライン・Safety Governanceを、まとめて確認できます。"
+          />
 
           <Section
             title="総合ステータス"
@@ -186,7 +149,7 @@ export default async function GrowthPage() {
               <StatCard label="循環の健全性(RC-5)">
                 <StatusBadge status={rc5Status} />
                 {latestCycleRun ? (
-                  <p className="mt-2 text-xs font-normal text-[#8e8ea0]">
+                  <p className="mt-2 text-xs font-normal text-muted-foreground">
                     RC-1: {formatPercent(latestCycleRun.rc1_eligible_completion_rate)} ・ RC-2:{" "}
                     {formatPercent(latestCycleRun.rc2_score)}
                   </p>
@@ -195,7 +158,7 @@ export default async function GrowthPage() {
               <StatCard label="Safety Governance">
                 <StatusBadge status={safetyStatus} />
                 {latestCycleRun?.safety_governance_unregistered_count ? (
-                  <p className="mt-2 text-xs font-normal text-[#8e8ea0]">
+                  <p className="mt-2 text-xs font-normal text-muted-foreground">
                     未登録候補: {latestCycleRun.safety_governance_unregistered_count}件
                   </p>
                 ) : null}
@@ -204,7 +167,7 @@ export default async function GrowthPage() {
                 {pending ? (
                   <>
                     {pending.total_pending_count}件
-                    <p className="mt-2 text-xs font-normal text-[#8e8ea0]">
+                    <p className="mt-2 text-xs font-normal text-muted-foreground">
                       マイグレーション{pending.migration_review_pending_count}件 ・ コード差分
                       {pending.code_diff_pending_count}件
                     </p>
@@ -223,7 +186,7 @@ export default async function GrowthPage() {
           >
             {driveStateResult.error ? <ErrorState message={driveStateResult.error} /> : null}
             {!driveStateResult.error && driveState ? (
-              <div className="space-y-4 rounded-2xl border border-white/10 bg-[#212121] p-4">
+              <div className="space-y-4 rounded-2xl border border-border bg-background p-4">
                 <DriveLevelBar label="Knowledge Gap" level={driveState.knowledge_gap.level} />
                 <DriveLevelBar
                   label="Mastery"
@@ -248,14 +211,14 @@ export default async function GrowthPage() {
             ) : null}
             {!groundingHealthResult.error && groundingRuns.length > 0 ? (
               <>
-                <div className="mb-3 flex flex-wrap gap-4 text-sm text-[#d8d8de]">
+                <div className="mb-3 flex flex-wrap gap-4 text-sm text-foreground/85">
                   <span>
                     直近のCitation Precision:{" "}
-                    <strong className="text-[#ececec]">{formatPercent(groundingRuns[0]?.citation_precision)}</strong>
+                    <strong className="text-foreground">{formatPercent(groundingRuns[0]?.citation_precision)}</strong>
                   </span>
                   <span>
                     直近のContradiction Rate:{" "}
-                    <strong className="text-[#ececec]">{formatPercent(groundingRuns[0]?.contradiction_rate)}</strong>
+                    <strong className="text-foreground">{formatPercent(groundingRuns[0]?.contradiction_rate)}</strong>
                   </span>
                 </div>
                 <TrendLineChart

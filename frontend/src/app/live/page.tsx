@@ -19,6 +19,7 @@
 // あると考える。
 
 import { LiveDashboard } from "@/components/live/live-dashboard";
+import { PageHero } from "@/components/shared";
 import { requireUser } from "@/lib/supabase/auth";
 
 // Sigmaris Live-7(デモモード): ?demo=1 で、実際のSSE接続の代わりに、
@@ -41,21 +42,12 @@ export default async function LivePage({ searchParams }: LivePageProps) {
   const demoMode = params?.demo === "1" || params?.demo === "true";
 
   return (
-    <main className="min-h-screen bg-[#212121] px-3 py-4 text-[#ececec] sm:px-5 lg:px-6">
-      <div className="mx-auto flex w-full max-w-5xl flex-col gap-4 pb-4">
-        <section className="rounded-3xl border border-white/10 bg-[#2f2f2f] px-5 py-6 sm:px-6">
-          <div className="flex items-center gap-3">
-            <div className="flex size-12 shrink-0 items-center justify-center rounded-2xl bg-[#9b59b6] text-2xl font-semibold text-white">
-              Σ
-            </div>
-            <div className="min-w-0">
-              <h1 className="text-2xl font-semibold tracking-tight text-[#ececec]">Sigmaris Live</h1>
-              <p className="mt-1 text-sm text-[#8e8ea0]">
-                シグマリスの内部処理を、リアルタイムに可視化します。現時点では意図分類(classify_chat_intent)のみが対象です。
-              </p>
-            </div>
-          </div>
-        </section>
+    <main className="min-h-screen bg-background px-3 py-4 text-foreground sm:px-5 lg:px-6">
+      <div className="mx-auto flex w-full max-w-5xl flex-col gap-5 pb-4">
+        <PageHero
+          title="Sigmaris Live"
+          description="シグマリスの内部処理を、リアルタイムに可視化します。現時点では意図分類(classify_chat_intent)のみが対象です。"
+        />
 
         <LiveDashboard demoMode={demoMode} />
       </div>

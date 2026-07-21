@@ -1,0 +1,139 @@
+# フロントエンド デザイン統一 第一段階（トークン整理 ＋ 共有UIコンポーネント抽出）実施報告
+
+**実施日**: 2026-07-21
+**関連**: `docs/sigmaris/frontend_inventory_2026.md`（棚卸し 5.1・5.2）
+**ブランチ**: `design-unify-tokens-shared-ui`（`main` `1d87a23` から作成）
+**採用方針（運用者の選択）**: **「Cパターン：安全な範囲のみ先行」**。
+> 実装前に、依頼書の「本文で `bg-background` 等のCSS変数トークンを使う（要件1）」と「light/darkを正しく切り替える（要件2）」を同時に満たすには `globals.css` の `:root` に light 値を投入する必要があるが、**`/chat` 自身のコンポーネント（`markdown-text.tsx`・`tool-fallback.tsx`・`ui/*`）が同じトークン（`bg-muted`・`bg-popover`・`bg-background`）を使用している**ため、`:root` を light 化すると light テーマ時に `/chat` のコード表示・ツールチップ・ダイアログが明色化し、**`/chat` のダークデザインが崩れる（要件4に抵触）**ことをコードで確認した。この競合は棚卸しでは見えていなかったため運用者に確認し、**「Cパターン：安全な範囲のみ先行」**の指示を得た。本タスクはこれに従い、**土台の整理（トークン化＋共有部品抽出）までに留め、light/darkの本文切替の"有効化"は第二段階へ申し送る**。
+
+---
+
+## 1. デザイン方向性の明文化（Linear / Claude.ai / Vercel の共通原則）
+
+今後の統一作業の参照基準として、3つの参照先に共通する原則を簡潔にまとめる。
+
+| 原則 | 内容 | 本コードベースへの含意 |
+|---|---|---|
+| **余白を大胆に** | 要素を詰め込まず、周囲に十分な空白を取る。密度より呼吸感 | カード内パディング・セクション間の間隔を広めに取る。「カードがびっしり並ぶ事務的な印象」を避ける |
+| **装飾を削る** | 影・枠線・グラデーション等の視覚ノイズを最小化。境界は淡く | 濃い枠線や強い影を避け、淡い境界（`border-border` = 白10%）で区切る |
+| **情報を絞る** | 1画面/1セクションに詰め込む情報量を抑え、階層を明確化 | セクション見出し＋説明文で意図を明示し、詳細は折りたたむ（既存の `Collapsible` 活用方針を踏襲） |
+| **静かな配色** | 彩度を抑えたニュートラル基調＋最小限のアクセント1色 | ニュートラル（背景/カード/前景/ミュート）＋アクセント（`--primary` = `#9b59b6`）1色という既存トークン構成はこの原則に合致 |
+| **タイポで階層を作る** | 色や罫線ではなく、文字サイズ・ウェイト・字間で情報階層を表現 | 見出し `font-semibold`／本文 `text-muted-foreground`、字間 `tracking-tight/wide` の使い分けを共有部品に集約 |
+
+本第一段階では、この方針に沿って**共有部品のパディング・行間をやや広げる微調整**のみ加えた（大きな構造変更はしていない。例: セクション `p-4 sm:p-5` → `p-5 sm:p-6`、セクション間 `gap-4` → `gap-5`、ヒーロー `px-5 py-6` → `px-6 py-7`）。
+
+---
+
+## 2. トークン化した箇所の一覧
+
+hex 直書き → 既存 CSS 変数トークンへの対応（`globals.css` で定義済みのものを使用。新規トークンは作っていない）。
+
+| 旧 hex | 新トークン | 用途 | 備考 |
+|---|---|---|---|
+| `#212121` | `bg-background` / `text-*` は `text-foreground` | ページ本文コンテナ・アイテムカード背景 | `--background` と同値（現状ダーク） |
+| `#2f2f2f` | `bg-card` | ヒーローカード背景 | `--card` と同値 |
+| `#2a2a2a` | `bg-card` | セクションカード背景 | **厳密同値のトークンが無いため `#2f2f2f`(`bg-card`) へ寄せた微小な色差**（依頼書が許容する範囲） |
+| `#ececec` | `text-foreground` | 主要テキスト | `--foreground` と同値 |
+| `#8e8ea0` | `text-muted-foreground` | 補助テキスト・ラベル | `--muted-foreground` と同値 |
+| `#d8d8de` | `text-foreground/85` | 本文値テキスト | 近似（僅かな明度差） |
+| `#cfcfd7` | `text-foreground/85` / `text-muted-foreground` | 小見出し | 近似 |
+| `#9b59b6` | `bg-primary` / `text-primary-foreground` / `border-primary` / `bg-primary/10` 等 | 進捗バー・アクセント・自己反省ボタン・自己モデル引用枠 | `--primary` と同値 |
+| `#ad6bc7` | `bg-primary/85`（hover） | ボタンhover | 近似 |
+| `#f1e8f6` | `text-foreground` | 自己モデル引用テキスト | 近似 |
+| `#6f6f7a` | `text-muted-foreground/70` | Drive注記 | 近似 |
+| `border-white/10` | `border-border` | 全枠線 | `--border` = 白10% と同値 |
+
+**据え置いた hex（意図的・第二段階で検討）**:
+- `#e07856`（＋`#e0a088`）… 「注意」を表すセマンティックなオレンジ（growth の StatusBadge、timeline のTTL超過インジケーター）。既存トークンに対応が無く、`--destructive`(赤)へ寄せると意味が変わるため据え置き。
+- Recharts の JS プロパティ内の色（`fill`/`stroke`/`contentStyle` の `#9b59b6`・`#8e8ea0`・`#2a2a2a`・`#ececec` 等、`event-volume-chart.tsx`・`trend-line-chart.tsx`）… Tailwind クラスではなく SVG/インラインスタイル値で、CSS変数化には computed style 読み取りが必要なため「安全な範囲」外として据え置き。
+- `bg-white/[0.03]`・`bg-white/[0.06]`・`bg-white/10`・`bg-white/[0.04]`（EmptyState/Badge/進捗トラック等の白アルファ）… 既存の globals.css 補正（`.dark [class*="bg-white/"]`）で吸収される薄い重ね色で、そのまま維持。
+- `frontend/src/components/live/*`（LiveDashboard 内部）の hex … 表示部品の抽出対象外。第二段階で扱う。
+
+**対象ファイル**: `frontend/src/app/{memory,timeline,growth,live}/page.tsx`、`frontend/src/components/timeline/state-history-disclosure.tsx`。
+
+---
+
+## 3. light/dark 両テーマの確認結果
+
+**重要（正直な記載）**: 本タスクは「Cパターン：安全な範囲のみ先行」を採用したため、**light/dark の本文切替を"有効化"する変更（`:root` への light 値投入等）は行っていない**。したがって現時点の挙動は**変更前と同じ**である:
+
+- chrome（`AppShell` のヘッダー・ナビ）: light/dark で切り替わる（従来通り）。
+- 本文（`/memory`・`/timeline`・`/growth`・`/live`）: `bg-background`/`bg-card` 等のトークンは**現状 `:root` と `.dark` が同値（ダーク）**のため、テーマに関わらずダーク表示（従来の hex 直書きと同じ結果）。
+
+**つまり本段階の意義は「見た目を変えずに、テーマ切替を将来効かせられる土台へ置き換えた」こと**である。第二段階で `:root` に light パレットを投入し、`/chat` を保護すれば、これらの本文は**変更不要で**自動的に light/dark 両対応になる（トークン参照済みのため）。
+
+**ブラウザでの目視確認は未実施**。実 Supabase 認証・本番相当バックエンドが必要で、依頼書の注意事項（サーバーアクセス・APIキー追加取得は試みない）に従った。代わりに以下の静的検証で「見た目が大きく崩れていない」ことを担保した:
+- トークンは現状ダーク値と同値／近似のため、レンダリング結果は現行とほぼ同一（§2の微小色差・余白微調整を除く）。
+- `next build` の静的生成・型検査を通過（§5）。
+- `/chat`・`globals.css`・`app-shell.tsx`・`sigmaris-sidebar.tsx` は**一切変更していない**（`git status` で確認）ため、`/chat` の外観への影響は原理的に無い。
+
+---
+
+## 4. 抽出した共有コンポーネントの一覧・配置場所
+
+**配置**: 新設 `frontend/src/components/shared/`（`dashboard-ui.tsx` ＋ バレル `index.ts`）。
+
+| コンポーネント | 役割 | 旧・重複していた場所 |
+|---|---|---|
+| `PageHero` | Σアバター＋タイトルのページ先頭ヒーローカード | `/memory`・`/timeline`・`/growth`・`/live` に各々インライン（4重複） |
+| `Section` | 見出し＋説明＋任意アクションのセクションカード | `/memory`・`/timeline`・`/growth` にインライン（3重複） |
+| `Badge` | 丸角バッジ | `/memory`・`/timeline` にインライン（2重複） |
+| `ConfidenceBar` | 0〜1を進捗バー表示（内部で clamp） | `/memory`・`/timeline` にインライン（2重複） |
+| `EmptyState` | 空状態表示 | `/memory`・`/timeline`・`/growth` にインライン（3重複） |
+| `ErrorState` | エラー表示（セマンティック赤は据え置き） | `/memory`・`/timeline`・`/growth` にインライン（3重複） |
+
+- 各ページから重複インライン定義を**削除し、共有コンポーネントを import** する形へ書き換えた。差分は **−305 / +128 行（正味 約−177行）** で、重複解消による純減。
+- **ページ固有で重複していなかった部品**（growth の `StatCard`・`DriveLevelBar`・`StatusBadge`、timeline の `EventDecayIndicator`）は共有化せず各ページに残し、色のトークン化のみ行った（不要な共有化を避ける判断）。
+- `ConfidenceBar` は従来 `/memory` がローカル `clampConfidence`、`/timeline` が `lib/timeline/transform` の `clampConfidence` を使う二重実装だったが、共有版に clamp を内包して一本化した（挙動は同一）。
+
+---
+
+## 5. テスト結果
+
+| 検証 | 結果 |
+|---|---|
+| `npx eslint .`（frontend） | **0 件**（警告・エラーなし） |
+| `npx next build`（frontend, クリーンビルド） | **成功**。`✓ Compiled successfully` ／ 型検査通過。ルート一覧に `/chat`・`/memory`・`/timeline`・`/growth`・`/live`・`/settings`・`/admin/memory`・`/legal/*` 等が全て残存 |
+| `pytest tests/`（backend, 既存16件） | **16 passed**（リグレッションなし。本タスクはフロントのみのため影響なしを確認） |
+| light/dark 目視（ブラウザ） | **未実施**（§3。サーバー/実データが必要なため。第二段階で要確認） |
+
+> フロントエンドには自動テストランナーが存在しないため、上記のビルド成功・Lintクリーンを検証の中心に据えた（既存の運用と同じ）。
+
+---
+
+## 6. 気づいた懸念点・次のステップ（ナビ一本化・役割整理）への申し送り
+
+### 6.1 第二段階（light/dark の"有効化"）で必ず対処すべきこと
+1. **`:root` に light パレットを投入する**（`.dark` は現行ダークを維持）。棚卸しの通り AppShell/settings が既に使う light 値（`#f7f7f8`・白・`stone-*`）を流用すると、出荷済みの見た目と整合が取りやすい。
+2. **`/chat` の保護が必須**。`/chat` の `markdown-text.tsx`・`tool-fallback.tsx`・`ui/*` は `bg-muted`/`bg-popover`/`bg-background` トークンを使うため、`:root` を light 化すると light テーマ時に `/chat` 内のコードブロック・テーブル・ツールチップ・ダイアログが明色化して崩れる。`/chat` のサブツリーを常にダークトークン文脈に固定する措置（例: chat コンテナに `dark` スコープを与える、または `.chat-thread-surface` にダークトークンを再定義する）を、`/chat` の外観を変えない形で入れること。
+3. **`body`/`html` のダーク固定の見直し**。`globals.css` の `html/body { background:#212121; color:#ececec; color-scheme:dark }` はテーマ非依存でダーク固定。light を効かせるにはここをトークン参照＋`color-scheme` のテーマ連動へ変更する必要がある（影響範囲が広いため、必ずブラウザで全ページ確認すること）。
+4. **ブラウザでの light/dark 目視確認**（`/memory`・`/timeline`・`/growth`・`/live` ＋ `/chat` が light テーマで崩れないこと）。本段階では実施できていない。
+
+### 6.2 残りのトークン化（第二段階以降）
+- Recharts の JS プロパティ色（§2）。CSS変数を computed style 経由で読むヘルパを用意すれば、チャットと同じアクセントで light/dark 追従できる。
+- `frontend/src/components/live/*`（LiveDashboard 内部）の hex。/live 本文の大半はここにあるため、要件1（/live 本文のトークン化）を完全に満たすには本コンポーネント群の移行が必要。
+- セマンティックな「注意」オレンジ `#e07856` … `--warning` 系トークンを1つ新設するかどうかを検討（現状は新規トークン抑制のため据え置き）。
+
+### 6.3 ナビ一本化・役割整理（棚卸し §5.3–5.4 の続き）への申し送り
+- 共有 `PageHero`/`Section` が揃ったので、次段でナビを一本化する際、`/live` を `AppShell` に載せる／`/admin/memory` を `/timeline` のタブへ統合する等の再構成が、**各ページの表示部品を触らずに**進めやすくなった。
+- `#2a2a2a`→`bg-card` へ寄せたことで、セクション背景とヒーロー背景が同一（`#2f2f2f`）になった。もし階層の差を付けたい場合、第二段階で `--surface` 系トークンを1つ足すか、`bg-card` に淡い枠/影で差を付けるのが「装飾控えめ」方針と両立する。
+
+---
+
+## 7. 変更ファイル一覧
+
+| ファイル | 変更 |
+|---|---|
+| `frontend/src/components/shared/dashboard-ui.tsx` | **新規**。共有UI部品6種（トークンベース） |
+| `frontend/src/components/shared/index.ts` | **新規**。バレルエクスポート |
+| `frontend/src/app/memory/page.tsx` | 共有部品import＋hexトークン化 |
+| `frontend/src/app/timeline/page.tsx` | 同上（`EventDecayIndicator` はローカル維持・トークン化） |
+| `frontend/src/app/growth/page.tsx` | 同上（`StatCard`/`DriveLevelBar`/`StatusBadge` はローカル維持・トークン化） |
+| `frontend/src/app/live/page.tsx` | ヒーローを `PageHero` へ、コンテナをトークン化 |
+| `frontend/src/components/timeline/state-history-disclosure.tsx` | hexトークン化 |
+
+**変更していない（意図的）**: `frontend/src/app/globals.css`、`frontend/src/app/chat/**`、`frontend/src/components/chat-workspace.tsx`、`frontend/src/components/sigmaris-sidebar.tsx`、`frontend/src/components/app-shell.tsx`。
+
+---
+
+*本報告は実施内容の記録である。light/dark の本文切替"有効化"は、`/chat` 保護とブラウザ目視を伴う第二段階として明示的に申し送った。*
