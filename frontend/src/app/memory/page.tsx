@@ -233,10 +233,10 @@ export default async function MemoryPage() {
                       )}
                     </div>
                     <div className="grid gap-2 text-sm text-muted-foreground sm:grid-cols-2">
-                      <div className="rounded-2xl bg-white/[0.04] px-4 py-3">
+                      <div className="rounded-2xl bg-muted/50 px-4 py-3">
                         version: {selfModel.version ?? "未記録"}
                       </div>
-                      <div className="rounded-2xl bg-white/[0.04] px-4 py-3">
+                      <div className="rounded-2xl bg-muted/50 px-4 py-3">
                         last_reflected_at: {formatDate(selfModel.last_reflected_at)}
                       </div>
                     </div>

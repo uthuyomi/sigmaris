@@ -6,10 +6,12 @@
 // 【設計方針（判断根拠）】
 // - 色は hex 直書きをやめ、globals.css で既に定義済みの CSS 変数トークン
 //   （bg-card・bg-background・text-foreground・text-muted-foreground・
-//   bg-primary・border-border 等）を使う。現状 :root と .dark が同値
-//   （ダーク）のため、この置き換えによる見た目の変化はごく僅かで、ダークの
-//   現行外観は維持される。将来 :root に light 値を入れる第二段階で、この
-//   共有部品は自動的に light/dark 両対応になる（本タスクの土台整理の狙い）。
+//   bg-primary・border-border 等）を使う。第二段階（light/dark 本格対応）で
+//   :root に light パレット、.dark にダークパレットを定義したため、これらの
+//   トークンを使う本部品は light/dark 両テーマに自動追従する。
+// - サーフェス（バッジ背景・進捗トラック・空状態・エラー文字色）は、light で
+//   も視認できるよう bg-muted / bg-muted/50 やテーマ対応の文字色を用いる
+//   （白アルファ bg-white/x は light 背景上でほぼ不可視になるため不採用）。
 // - Linear/Claude.ai/Vercel を参照した「余白を大胆に・装飾控えめ」の方針に
 //   沿い、パディング・行間をやや広げる微調整のみ加えた（大きな構造変更は
 //   しない）。
@@ -82,7 +84,7 @@ export function Badge({
   return (
     <span
       className={cn(
-        "inline-flex items-center rounded-full border border-border bg-white/[0.06] px-2.5 py-1 text-xs font-medium text-foreground",
+        "inline-flex items-center rounded-full border border-border bg-muted px-2.5 py-1 text-xs font-medium text-foreground",
         className,
       )}
     >
@@ -114,7 +116,7 @@ export function ConfidenceBar({
         <span>{label}</span>
         <span>{confidence.toFixed(2)}</span>
       </div>
-      <div className="h-2 overflow-hidden rounded-full bg-white/10">
+      <div className="h-2 overflow-hidden rounded-full bg-muted">
         <div className="h-full rounded-full bg-primary" style={{ width: `${percent}%` }} />
       </div>
     </div>
@@ -124,7 +126,7 @@ export function ConfidenceBar({
 // ─── 空状態 ───────────────────────────────────────────────────────────
 export function EmptyState({ children }: { children: ReactNode }) {
   return (
-    <div className="rounded-2xl border border-border bg-white/[0.03] px-4 py-5 text-sm text-muted-foreground">
+    <div className="rounded-2xl border border-border bg-muted/50 px-4 py-5 text-sm text-muted-foreground">
       {children}
     </div>
   );
@@ -133,7 +135,7 @@ export function EmptyState({ children }: { children: ReactNode }) {
 // ─── エラー状態（セマンティックな赤は据え置き） ──────────────────────
 export function ErrorState({ message }: { message: string }) {
   return (
-    <div className="rounded-2xl border border-red-400/20 bg-red-500/10 px-4 py-3 text-sm text-red-100">
+    <div className="rounded-2xl border border-red-400/25 bg-red-500/10 px-4 py-3 text-sm text-red-700 dark:text-red-100">
       {message}
     </div>
   );

@@ -52,7 +52,7 @@ export default function RootLayout({
         geist.variable,
       )}
     >
-      <body className="flex min-h-full flex-col bg-[#212121] text-[#ececec]">
+      <body className="flex min-h-full flex-col bg-background text-foreground">
         <TooltipProvider>{children}</TooltipProvider>
       </body>
     </html>

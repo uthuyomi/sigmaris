@@ -39,9 +39,9 @@ import { requireUser } from "@/lib/supabase/auth";
 
 function StatusBadge({ status }: { status: StatusDisplay }) {
   const toneClasses: Record<StatusDisplay["tone"], string> = {
-    good: "border-emerald-400/25 bg-emerald-500/15 text-emerald-300",
-    attention: "border-[#e07856]/30 bg-[#e07856]/15 text-[#e0a088]",
-    neutral: "border-border bg-white/[0.06] text-muted-foreground",
+    good: "border-emerald-500/30 bg-emerald-500/15 text-emerald-700 dark:text-emerald-300",
+    attention: "border-[#e07856]/40 bg-[#e07856]/15 text-[#b45a3c] dark:text-[#e0a088]",
+    neutral: "border-border bg-muted text-muted-foreground",
   };
   return (
     <span
@@ -86,7 +86,7 @@ function DriveLevelBar({ label, level, note }: { label: string; level: number | 
         </span>
         <span>{level === null ? "未測定" : level.toFixed(2)}</span>
       </div>
-      <div className="h-2 overflow-hidden rounded-full bg-white/10">
+      <div className="h-2 overflow-hidden rounded-full bg-muted">
         <div className="h-full rounded-full bg-primary" style={{ width: `${percent}%` }} />
       </div>
     </div>

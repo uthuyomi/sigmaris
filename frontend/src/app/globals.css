@@ -57,17 +57,18 @@ html {
   max-width: 100%;
   overflow-x: clip;
   scroll-behavior: smooth;
-  background: #212121;
+  /* テーマ連動: :root(light)/.dark(dark) の --background を参照。以前は
+     #212121 固定でダークのみだった(デザイン統一 第二段階)。 */
+  background: var(--background);
 }
 
 body {
   min-height: 100%;
   max-width: 100%;
   overflow-x: clip;
-  background: #212121;
-  color: #ececec;
   font-family: var(--font-sans), ui-sans-serif, system-ui, sans-serif;
-  color-scheme: dark;
+  /* 背景/文字色は @layer base の bg-background/text-foreground(トークン)に
+     委ね、テーマに追従させる。color-scheme は :root/.dark へ移動した。 */
 }
 
 button {
@@ -78,24 +79,33 @@ button {
   background: rgba(155, 89, 182, 0.36);
 }
 
+/* :root = light パレット(デザイン統一 第二段階)。値は既に出荷済みで
+   動作実績のある AppShell の light-first 配色(bg-[#f7f7f8]・bg-white・
+   stone-950/500・border-stone-900/10)をそのまま採用し、新規パレットを
+   ゼロから作らない方針(依頼書「既存資産を最大限活用」)。アクセントの
+   --primary(#9b59b6)は両テーマ共通のブランド色。/chat は AppShell に
+   theme="dark" を渡し、かつ ChatWorkspace ルートに .dark を付与するため、
+   この light 値の影響を受けず常にダークを保つ(chat/page.tsx・
+   chat-workspace.tsx のコメント参照)。 */
 :root {
-  --background: #212121;
-  --foreground: #ececec;
-  --card: #2f2f2f;
-  --card-foreground: #ececec;
-  --popover: #2f2f2f;
-  --popover-foreground: #ececec;
+  color-scheme: light;
+  --background: #f7f7f8;
+  --foreground: #1c1917;
+  --card: #ffffff;
+  --card-foreground: #1c1917;
+  --popover: #ffffff;
+  --popover-foreground: #1c1917;
   --primary: #9b59b6;
   --primary-foreground: #ffffff;
-  --secondary: #2f2f2f;
-  --secondary-foreground: #ececec;
-  --muted: #2f2f2f;
-  --muted-foreground: #8e8ea0;
-  --accent: #2f2f2f;
-  --accent-foreground: #ececec;
+  --secondary: #f5f5f4;
+  --secondary-foreground: #1c1917;
+  --muted: #f5f5f4;
+  --muted-foreground: #78716c;
+  --accent: #f5f5f4;
+  --accent-foreground: #1c1917;
   --destructive: oklch(0.577 0.245 27.325);
-  --border: rgb(255 255 255 / 10%);
-  --input: #2f2f2f;
+  --border: rgb(28 25 23 / 10%);
+  --input: #ffffff;
   --ring: #9b59b6;
   --chart-1: oklch(0.87 0 0);
   --chart-2: oklch(0.556 0 0);
@@ -103,17 +113,19 @@ button {
   --chart-4: oklch(0.371 0 0);
   --chart-5: oklch(0.269 0 0);
   --radius: 0.625rem;
-  --sidebar: #171717;
-  --sidebar-foreground: #ececec;
+  --sidebar: #f7f7f8;
+  --sidebar-foreground: #1c1917;
   --sidebar-primary: #9b59b6;
   --sidebar-primary-foreground: #ffffff;
-  --sidebar-accent: #2f2f2f;
-  --sidebar-accent-foreground: #ececec;
-  --sidebar-border: rgb(255 255 255 / 10%);
+  --sidebar-accent: #f5f5f4;
+  --sidebar-accent-foreground: #1c1917;
+  --sidebar-border: rgb(28 25 23 / 10%);
   --sidebar-ring: #9b59b6;
 }
 
+/* .dark = 既存のダークパレット(維持)。html に .dark が付いた時のみ適用。 */
 .dark {
+  color-scheme: dark;
   --background: #212121;
   --foreground: #ececec;
   --card: #2f2f2f;
@@ -169,15 +181,17 @@ button {
     background: transparent;
   }
 
+  /* テーマ非依存の中間グレー(light/dark 双方で視認できる)。以前は
+     白18%固定で、light テーマでは見えなくなるため中立色へ変更した。 */
   ::-webkit-scrollbar-thumb {
-    background: rgb(255 255 255 / 18%);
+    background: rgb(120 120 130 / 40%);
     border: 2px solid transparent;
     border-radius: 999px;
     background-clip: padding-box;
   }
 
   ::-webkit-scrollbar-thumb:hover {
-    background: rgb(255 255 255 / 28%);
+    background: rgb(120 120 130 / 55%);
     background-clip: padding-box;
   }
 }

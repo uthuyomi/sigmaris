@@ -60,8 +60,16 @@ export function ChatWorkspace({
     };
   }, [sidebarOpen]);
 
+  // /chat 保護(デザイン統一 第二段階): ルート要素に .dark を明示付与し、この
+  // サブツリー全体を常にダークトークン文脈へ固定する(依頼書が推奨した方式)。
+  // これにより、light テーマ時や画面遷移直後の一瞬でも、チャット本文・
+  // サイドバー・コードブロック等のトークン利用要素がダークのまま描画される
+  // (SSR/初回描画から有効)。<body> 直下へ出るポータル(ツールチップ)は
+  // このサブツリー外に出るため、chat/page.tsx で AppShell へ theme="dark" を
+  // 渡し <html>.dark を維持することで別途カバーしている。見た目は現行のダーク
+  // のまま不変。
   return (
-    <section className="relative flex h-full min-h-0 touch-pan-y overflow-hidden overscroll-x-none bg-[#212121] text-[#ececec]">
+    <section className="dark relative flex h-full min-h-0 touch-pan-y overflow-hidden overscroll-x-none bg-[#212121] text-[#ececec]">
       <div
         className={cn(
           "hidden min-h-0 shrink-0 overflow-hidden bg-[#171717] transition-[width] duration-200 ease-out md:block",

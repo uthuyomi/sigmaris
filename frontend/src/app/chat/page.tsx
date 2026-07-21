@@ -29,7 +29,10 @@ export default async function ChatPage({ searchParams }: ChatPageProps) {
     readShellSettings(user.id),
     listChatThreads(user.id),
   ]);
-  const { locale, theme } = settings;
+  // デザイン統一 第二段階の /chat 保護(判断根拠は下の AppShell theme 指定の
+  // コメント参照)。ユーザーのテーマ設定(settings.theme)は /chat では
+  // 意図的に使わず、常にダークで固定する。
+  const { locale } = settings;
   const dict = getDictionary(locale);
 
   if (!threads.length) {
@@ -52,13 +55,22 @@ export default async function ChatPage({ searchParams }: ChatPageProps) {
 
   const initialMessages = (await listChatMessages(user.id, selectedThread.id)) as UIMessage[];
 
+  // /chat 保護(デザイン統一 第二段階): テーマ機構は <html> の .dark クラスで
+  // 制御され、AppShell が theme に応じて .dark を付け外しする。AppShell へ
+  // theme="dark" を渡すことで、ユーザーが light テーマでも /chat 表示中は常に
+  // html.dark=true が維持される。これにより、ChatWorkspace 内のトークン利用
+  // 要素(markdown-text/tool-fallback/ui/*)に加え、Radix ポータルで <body>
+  // 直下へ描画される Copy ボタンのツールチップ等(ChatWorkspace の .dark
+  // サブツリーの外に出る要素)も、<html> 配下として .dark 文脈に入り、確実に
+  // ダークで表示される。ページ側の変更はこの theme 指定1点のみに留めた
+  // (依頼書「/chat ファイル変更は最小限」)。
   return (
     <AppShell
       locale={locale}
       title={dict.shell.chatTitle}
       description={dict.shell.chatDescription}
       badge={dict.shell.chatBadge}
-      theme={theme}
+      theme="dark"
       fitViewport
     >
       <ChatWorkspace

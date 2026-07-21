@@ -60,7 +60,7 @@ function EventDecayIndicator({ createdAt }: { createdAt?: string | null }) {
   return (
     <div className="mt-3 space-y-1.5">
       <p className="text-xs text-muted-foreground">{label}</p>
-      <div className="h-1.5 overflow-hidden rounded-full bg-white/10">
+      <div className="h-1.5 overflow-hidden rounded-full bg-muted">
         <div
           className={remaining > 0 ? "h-full rounded-full bg-primary" : "h-full rounded-full bg-[#e07856]"}
           style={{ width: `${percent}%` }}
