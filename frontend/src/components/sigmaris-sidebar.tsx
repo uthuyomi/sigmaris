@@ -2,7 +2,9 @@
 
 import { cn } from "@/lib/utils";
 import {
+  ActivityIcon,
   BrainCircuitIcon,
+  HistoryIcon,
   MoreHorizontalIcon,
   PencilIcon,
   Settings2Icon,
@@ -217,11 +219,31 @@ export function SigmarisSidebar({
       </div>
 
       <div className="shrink-0 border-t border-white/10 p-2 pb-[calc(0.5rem+env(safe-area-inset-bottom))]">
+        {/* デザイン統一 第三段階(ナビ一本化): /chat から /timeline・/growth へも
+            行けるよう、既存の記憶・設定リンクに追加した。AppShell の5項目タブを
+            そのまま持ち込むのではなく、SigmarisSidebar 既存のダークな SidebarLink
+            様式・順序(AppShell の navItems と同じ chat→memory→timeline→growth→
+            settings 順)に自然に並べる形にした。アイコンは AppShell の navIconByPath
+            と揃える(timeline=History, growth=Activity)。 */}
         <SidebarLink
           href="/memory"
           label="記憶"
           active={pathname === "/memory" || pathname.startsWith("/memory/")}
           icon={<BrainCircuitIcon className="size-4" />}
+          onNavigate={onNavigate}
+        />
+        <SidebarLink
+          href="/timeline"
+          label="タイムライン"
+          active={pathname === "/timeline" || pathname.startsWith("/timeline/")}
+          icon={<HistoryIcon className="size-4" />}
+          onNavigate={onNavigate}
+        />
+        <SidebarLink
+          href="/growth"
+          label="成長ログ"
+          active={pathname === "/growth" || pathname.startsWith("/growth/")}
+          icon={<ActivityIcon className="size-4" />}
           onNavigate={onNavigate}
         />
         <SidebarLink
