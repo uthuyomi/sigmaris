@@ -1,7 +1,6 @@
 // 役割: シートや画像から予定候補のプレビューを作るNext.js API Route。
 
 import { NextResponse } from "next/server";
-import { requireProPlan } from "@/lib/billing-gate";
 import { readBackendAuthHeaders } from "@/lib/backend/auth";
 import { createClient } from "@/lib/supabase/server";
 import { fetchBackendJson } from "@/lib/backend/client";
@@ -19,9 +18,6 @@ export async function POST(req: Request) {
     if (!user) {
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     }
-
-    const proRequired = await requireProPlan(user.id);
-    if (proRequired) return proRequired;
 
     const authHeaders = await readBackendAuthHeaders();
     const formData = await req.formData();

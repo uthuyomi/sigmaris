@@ -2,7 +2,6 @@
 
 import { NextResponse } from "next/server";
 import { z } from "zod";
-import { requireProPlan } from "@/lib/billing-gate";
 import { readBackendAuthHeaders } from "@/lib/backend/auth";
 import { createGoogleCalendarEvents, hasGoogleCalendarWriteConfig } from "@/lib/google/calendar";
 import { buildGoogleMapsDirectionsUrl } from "@/lib/google/maps-url";
@@ -83,9 +82,6 @@ export async function POST(request: Request) {
     if (!user) {
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     }
-
-    const proRequired = await requireProPlan(user.id);
-    if (proRequired) return proRequired;
 
     const input = requestSchema.parse(await request.json());
     const event = await getEventRowByIdForUser(user.id, input.eventId);

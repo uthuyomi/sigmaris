@@ -7,7 +7,6 @@ from typing import Any
 
 from app.schemas.google_tools import GoogleCalendarCreateEvent, GoogleProviderTokens
 from app.services.audit_log import AuditContext
-from app.services.billing import has_pro_plan
 from app.services.chat_tool_definitions import FUNCTION_TOOL_MAP, FUNCTION_TOOLS
 from app.services.app_data import (
     create_event,
@@ -66,15 +65,6 @@ def google_auth_error_result(error: BaseException) -> dict[str, Any]:
     }
 
 
-PRO_ONLY_TOOLS = {
-    "list_google_calendar_events",
-    "create_google_calendar_events",
-    "read_google_sheet",
-    "plan_google_route",
-    "save_travel_plan_for_event",
-}
-
-
 def _registration_success_message(
     *,
     app_count: int,
@@ -107,13 +97,6 @@ async def execute_tool(
     arguments: dict[str, Any],
     audit_info: dict[str, str | None] | None = None,
 ) -> dict[str, Any]:
-    if name in PRO_ONLY_TOOLS and not await has_pro_plan(jwt):
-        return {
-            "ok": False,
-            "status": "PRO_REQUIRED",
-            "reason": "この機能はシグマリス Pro が必要です。",
-        }
-
     if name == "list_google_calendar_events":
         if not _has_google_tokens(google_tokens):
             return {"ok": False, "reason": "Google provider token is not available."}

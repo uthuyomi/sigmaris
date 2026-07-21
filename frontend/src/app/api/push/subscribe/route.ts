@@ -1,6 +1,5 @@
 import { NextResponse } from "next/server";
 import { z } from "zod";
-import { requireProPlan } from "@/lib/billing-gate";
 import { createClient } from "@/lib/supabase/server";
 
 const subscriptionSchema = z.object({
@@ -20,9 +19,6 @@ export async function POST(request: Request) {
   if (!user) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
-
-  const proRequired = await requireProPlan(user.id);
-  if (proRequired) return proRequired;
 
   const parsed = subscriptionSchema.parse(await request.json());
   const { error } = await supabase.from("push_subscriptions").upsert(

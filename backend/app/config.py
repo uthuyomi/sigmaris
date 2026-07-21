@@ -21,7 +21,6 @@ class Settings(BaseSettings):
     next_public_supabase_url: str | None = None
     next_public_supabase_publishable_key: str | None = None
     supabase_service_role_key: str | None = None
-    pro_plan_override_emails: str | None = None
     agent_secrets: str | None = None
     schedule_agent_base_url: str = "http://127.0.0.1:8000"
     schedule_agent_id: str = "sigmaris-orchestrator"
