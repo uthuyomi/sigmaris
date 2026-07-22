@@ -67,6 +67,11 @@ class Settings(BaseSettings):
     # 想定した、移行期の安全策(依頼書「最初の数回の投稿は、実際の投稿前
     # にログに記録し確認できるようにする」への対応)。
     x_categorized_post_live: bool = False
+    # X_POST_SELF_TIMING_SPEC: 投稿内容に応じて AI が未来の投稿時刻を決め、
+    # 予約→その時刻に配信する仕組みの制御値。
+    x_post_dispatch_interval_min: int = 10   # 配信ディスパッチャの実行間隔(分)
+    x_post_schedule_horizon_h: int = 24      # 予約できる最長の地平線(時間先)
+    x_post_min_interval_min: int = 90        # 予約同士の最小間隔(分)
     sigmaris_launch_date: str | None = None
     github_token: str | None = None  # research_agent.py's GitHub trending-repo search (rate-limit headers only)
     # Phase F-3 (docs/sigmaris/phase_f_report.md): 承認後のPR作成専用の、

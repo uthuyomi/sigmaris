@@ -4,6 +4,7 @@ import logging
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
+from apscheduler.triggers.interval import IntervalTrigger
 
 from app.config import settings
 from app.services.heartbeat import heartbeat_tick
@@ -432,40 +433,131 @@ async def _self_awareness_update() -> None:
 # よくない」と判定すれば(深夜早朝・直近の連続接触等)、4回のうち何回でも
 # 空振りになりうる。
 async def _categorized_x_post_check() -> None:
-    from app.services.x_post_generator import generate_categorized_post, record_post  # noqa: PLC0415
-    from app.services.x_publisher import get_publisher  # noqa: PLC0415
+    """X_POST_SELF_TIMING_SPEC フェーズA(決定): 「考える機会」(1日4回の
+    cron)で材料からカテゴリ・本文を生成し、内容にふさわしい未来の投稿時刻を
+    AI に決めさせて予約テーブルへ pending で積む。ここでは即投稿しない——
+    実際の配信は _x_post_dispatch_check()(高頻度 interval)が予約時刻に行う。"""
+    from datetime import datetime, timezone  # noqa: PLC0415
+
+    from app.services.scheduled_x_post_store import (  # noqa: PLC0415
+        count_today_scheduled_or_posted,
+        get_pending_scheduled_ats,
+        insert_scheduled_post,
+    )
+    from app.services.x_post_category_selector import MAX_DAILY_CATEGORY_POSTS  # noqa: PLC0415
+    from app.services.x_post_generator import generate_categorized_post  # noqa: PLC0415
+    from app.services.x_post_self_timing import decide_scheduled_at  # noqa: PLC0415
+
     try:
+        # 1日上限(予約込み): その日の pending+posted 合計で判定する。
+        today_count = await count_today_scheduled_or_posted()
+        if today_count >= MAX_DAILY_CATEGORY_POSTS:
+            logger.info(
+                "Categorized X post decide: daily cap reached (%d/%d), skipping",
+                today_count, MAX_DAILY_CATEGORY_POSTS,
+            )
+            return
+
         gp = await generate_categorized_post()
         if gp is None:
-            logger.info("Categorized X post check: no post generated this cycle")
+            logger.info("Categorized X post decide: no post generated this cycle")
             return
 
-        if not settings.x_categorized_post_live:
-            # 移行期の安全策(依頼書3章): 生成・Executive Gate判定・全
-            # フィルタは実際に通した本物の結果だが、x_publisher.post_
-            # tweet()は呼ばず、実際に投稿するつもりだった内容をログに
-            # 記録するだけに留める(shadow mode、config.py参照)。
+        now = datetime.now(timezone.utc)
+        existing = await get_pending_scheduled_ats()
+        decision = await decide_scheduled_at(
+            category=gp.post_type, text=gp.text, now=now, existing_scheduled_ats=existing,
+        )
+        if decision is None:
             logger.info(
-                "[shadow mode] Categorized X post would be posted: category=%s score=%.1f text=%s",
-                gp.post_type, gp.score, gp.text,
+                "Categorized X post decide: timing rejected by guards (category=%s)",
+                gp.post_type,
             )
             return
 
-        publisher = get_publisher()
-        tweet_id = await publisher.post_tweet(gp.text)
-        if tweet_id:
-            # tweet_id(Phase H-2): 返信検知が「どの投稿への返信か」を
-            # 突き合わせるために必要なため、記録する(x_post_generator.py
-            # ::record_post()のdocstring参照)。
-            await record_post(gp.text, gp.post_type, score=gp.score, tweet_id=tweet_id)
-            logger.info(
-                "Categorized X post: posted category=%s len=%d score=%.1f tweet_id=%s",
-                gp.post_type, len(gp.text), gp.score, tweet_id,
-            )
-        else:
-            logger.warning("Categorized X post: publisher returned None for category=%s", gp.post_type)
+        row = await insert_scheduled_post(
+            text=gp.text, category=gp.post_type, score=gp.score,
+            scheduled_at=decision.scheduled_at,
+        )
+        logger.info(
+            "Categorized X post scheduled: category=%s scheduled_at=%s reason=%s id=%s text=%s",
+            gp.post_type, decision.scheduled_at.isoformat(), decision.reason,
+            (row or {}).get("id"), gp.text,
+        )
     except Exception:
-        logger.exception("Categorized X post check raised unexpectedly")
+        logger.exception("Categorized X post decide raised unexpectedly")
+
+
+async def _x_post_dispatch_check() -> None:
+    """X_POST_SELF_TIMING_SPEC フェーズC(配信ディスパッチャ): 予約時刻に達した
+    (scheduled_at<=now)pending 投稿を、配信直前に opsec フィルタ(層1/層2)と
+    Executive Gate を再適用の上で実際に出す。shadow ではログのみ、live では
+    post_tweet→record_post。弾かれたら skipped。高頻度 interval で回る。"""
+    from datetime import datetime, timezone  # noqa: PLC0415
+
+    from app.services.executive_gate import evaluate_executive_gate  # noqa: PLC0415
+    from app.services.scheduled_x_post_store import (  # noqa: PLC0415
+        get_due_pending,
+        mark_posted,
+        mark_skipped,
+    )
+    from app.services.x_post_generator import record_post  # noqa: PLC0415
+    from app.services.x_privacy_filter import filter_private_facts, filter_private_info  # noqa: PLC0415
+    from app.services.x_publisher import get_publisher  # noqa: PLC0415
+
+    try:
+        now = datetime.now(timezone.utc)
+        due = await get_due_pending(now=now)
+        if not due:
+            return
+
+        jwt = await get_sigmaris_jwt()
+        publisher = get_publisher()
+
+        for post in due:
+            post_id = str(post.get("id"))
+            text = str(post.get("text") or "")
+            category = str(post.get("category") or "")
+            score = float(post.get("score") or 0.0)
+
+            # 配信直前の再フィルタ(決定時から状況が変わっている場合の安全)。
+            privacy_ok, detected = filter_private_info(text)
+            if not privacy_ok:
+                await mark_skipped(post_id, reason=f"privacy: {', '.join(detected)}")
+                logger.info("X dispatch: skipped id=%s privacy=%s", post_id, detected)
+                continue
+            facts_ok, blocked = await filter_private_facts(text, jwt)
+            if not facts_ok:
+                await mark_skipped(post_id, reason=f"private_facts: {', '.join(blocked)}")
+                logger.info("X dispatch: skipped id=%s private_facts=%s", post_id, blocked)
+                continue
+
+            gate = await evaluate_executive_gate(jwt)
+            if not gate.may_speak:
+                await mark_skipped(post_id, reason=f"executive_gate: {gate.blocked_by}")
+                logger.info("X dispatch: skipped id=%s gate=%s", post_id, gate.blocked_by)
+                continue
+
+            if not settings.x_categorized_post_live:
+                logger.info(
+                    "[shadow mode] would post now (scheduled_at=%s, category=%s, text=%s)",
+                    post.get("scheduled_at"), category, text,
+                )
+                await mark_posted(post_id)
+                continue
+
+            tweet_id = await publisher.post_tweet(text)
+            if tweet_id:
+                await record_post(text, category, score=score, tweet_id=tweet_id)
+                await mark_posted(post_id, tweet_id=tweet_id)
+                logger.info(
+                    "X dispatch: posted id=%s category=%s tweet_id=%s", post_id, category, tweet_id,
+                )
+            else:
+                await mark_skipped(post_id, reason="publisher_returned_none")
+                logger.warning("X dispatch: publisher returned None id=%s", post_id)
+    except Exception:
+        logger.exception("X post dispatch raised unexpectedly")
 
 
 # ── Phase H-2「返信の検知、及び、フィルタリング」(docs/sigmaris/
@@ -568,10 +660,22 @@ def startup_scheduler() -> None:
     # Executive Gateとselect_post_category()が動的に判定する
     # (_categorized_x_post_check()のdocstring参照、固定スケジュールでは
     # ない)。
+    # X_POST_SELF_TIMING_SPEC: この4回の cron は「考える機会」(決定フェーズ)
+    # に流用する——材料からカテゴリ・本文を生成し、AI が内容にふさわしい未来
+    # 時刻を決めて予約テーブルへ pending で積む(即投稿はしない)。
     _scheduler.add_job(_categorized_x_post_check, CronTrigger(hour=9,  minute=30, timezone=tz), id="categorized_x_post_check_1", replace_existing=True)
     _scheduler.add_job(_categorized_x_post_check, CronTrigger(hour=13, minute=30, timezone=tz), id="categorized_x_post_check_2", replace_existing=True)
     _scheduler.add_job(_categorized_x_post_check, CronTrigger(hour=17, minute=30, timezone=tz), id="categorized_x_post_check_3", replace_existing=True)
     _scheduler.add_job(_categorized_x_post_check, CronTrigger(hour=21, minute=30, timezone=tz), id="categorized_x_post_check_4", replace_existing=True)
+
+    # X_POST_SELF_TIMING_SPEC フェーズC(配信ディスパッチャ): 高頻度 interval で
+    # 回り、予約時刻(scheduled_at<=now)に達した pending 投稿を、opsec/Gate 再
+    # 適用の上で実際に配信する(shadow ではログのみ)。実送信経路はここに一本化。
+    _scheduler.add_job(
+        _x_post_dispatch_check,
+        IntervalTrigger(minutes=settings.x_post_dispatch_interval_min, timezone=tz),
+        id="x_post_dispatch_check", replace_existing=True,
+    )
 
     # Phase H-2「返信の検知、及び、フィルタリング」(docs/sigmaris/
     # phase_h_report.md)。categorized_x_post_check(9:30/13:30/17:30/
