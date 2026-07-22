@@ -236,7 +236,7 @@ async def classify_chat_intent(
             "Use calendar_write for adding, deleting, replacing, writing, or syncing calendar events.",
             "Use calendar_write for Japanese phrases such as 入れて, 入れておいて, 予定入れて, 登録して, 追加して, 確定で, or 作って when they refer to a schedule/event.",
             "Use calendar_write when the latest user message is a short confirmation such as お願い, OK, はい, それで, 1でお願い, or 確定 and the recent conversation proposed adding/registering an event.",
-            "Use event_lookup for identifying which app event/day the user refers to.",
+            "Use event_lookup for identifying which calendar event/day the user refers to.",
             "Use sync_control for integration or sync mode settings.",
             "Use general_chat only if no specialized intent is dominant.",
             # Phase G-1(docs/sigmaris/phase_g_report.md): 検索要否も同じ
@@ -330,22 +330,20 @@ def build_specialized_router_instruction(
         ],
         "event_lookup": [
             "This request likely refers to an existing event.",
-            "Calendar and app-event reads are non-destructive, so perform them without asking for confirmation.",
+            "Google Calendar (list_google_calendar_events) is the single source of truth for the user's schedule.",
+            "Calendar reads are non-destructive, so perform them without asking for confirmation.",
             "If the user asks to add, register, confirm, save, or put an event into the calendar after a lookup, use the calendar write tools instead of saying write tools are unavailable.",
-            "If the user gives a relative date such as today, tomorrow, or the day after tomorrow, use list_app_events for that whole day before asking the user to restate dates or start times.",
-            "Use search_app_events for keyword matching, but if search misses on a known day, inspect list_app_events results for that day.",
-            "If app events return no plausible match, fall back to list_google_calendar_events before saying the event was not found.",
-            "When falling back to Google Calendar, search the likely day or a narrow adjacent-day window and try practical query variants from the title, location, and address fragments.",
-            "If Google Calendar returns GOOGLE_AUTH_EXPIRED, say reconnection is needed, but still use app events and known user-provided details before asking for the missing field.",
+            "If the user gives a relative date such as today, tomorrow, or the day after tomorrow, use list_google_calendar_events for that whole day before asking the user to restate dates or start times.",
+            "Search the likely day or a narrow adjacent-day window and try practical query variants from the title, location, and address fragments before saying the event was not found.",
+            "If Google Calendar returns GOOGLE_AUTH_EXPIRED, say reconnection is needed, but still use known user-provided details before asking for the missing field.",
         ],
         "mobility_plan": [
             "This request is primarily about travel planning.",
             "Use read_home_context if the user says home or does not specify the travel mode.",
-            "Calendar and app-event reads are non-destructive, so perform them without asking for confirmation.",
-            "Use list_app_events when the date is known or relative, then inspect the day's events for the destination or site name.",
-            "Use search_app_events when the destination or event name is referenced indirectly.",
-            "If app event lookup returns no plausible match, fall back to list_google_calendar_events before asking the user to repeat the schedule details.",
-            "Ask for the start time only after app events and available Google Calendar reads both fail to provide it.",
+            "Google Calendar (list_google_calendar_events) is the single source of truth for the user's schedule.",
+            "Calendar reads are non-destructive, so perform them without asking for confirmation.",
+            "Use list_google_calendar_events when the date is known or relative, then inspect the day's events for the destination or site name.",
+            "Ask for the start time only after available Google Calendar reads fail to provide it.",
             "Public-transit auto planning is unavailable in this app. Do not attempt bus or train route lookup.",
             "Use plan_google_route only for car, walk, or bicycle if it helps provide a useful comparison without asking another question.",
             "When the user explicitly wants to add the route into the schedule, save it with save_travel_plan_for_event after confirmation.",
@@ -357,8 +355,7 @@ def build_specialized_router_instruction(
         ],
         "calendar_write": [
             "This request is primarily about writing or replacing calendar events.",
-            "For ordinary phrases like 'add to calendar', 'register in calendar', or 'save this schedule', use create_google_calendar_events so the event is saved to both Google Calendar and the app calendar database.",
-            "Use create_app_events with skipGoogleSync=true only when the user explicitly says app-calendar-only, local-only, or not to write to Google Calendar.",
+            "Google Calendar is the single source of truth. For ordinary phrases like 'add to calendar', 'register in calendar', or 'save this schedule', use create_google_calendar_events.",
             "Confirm destructive actions before deletion or replacement.",
         ],
         "sync_control": [
@@ -370,28 +367,26 @@ def build_specialized_router_instruction(
 
 
 def tool_names_for_intent(intent: ChatIntent) -> list[str]:
+    # Google Calendar 一本化(GOOGLE_CALENDAR_ONLY_SPEC): 各 intent の返却
+    # リストから、アプリ内カレンダー系ツール(search_app_events /
+    # list_app_events / create_app_events)を除外し、Google 系だけを AI に
+    # 渡す。app系のツール定義・実装・DBテーブルは温存しており(可逆)、この
+    # リストへ戻すだけで従来動作に復帰できる。
     if intent == "general_chat":
         return [
             "read_home_context",
-            "search_app_events",
-            "list_app_events",
+            "list_google_calendar_events",
             "create_google_calendar_events",
-            "create_app_events",
         ]
     if intent == "event_lookup":
         return [
-            "search_app_events",
-            "list_app_events",
             "list_google_calendar_events",
             "create_google_calendar_events",
-            "create_app_events",
             "read_home_context",
         ]
     if intent == "mobility_plan":
         return [
             "read_home_context",
-            "search_app_events",
-            "list_app_events",
             "list_google_calendar_events",
             "plan_google_route",
             "save_travel_plan_for_event",
@@ -400,22 +395,18 @@ def tool_names_for_intent(intent: ChatIntent) -> list[str]:
         return [
             "read_google_sheet",
             "create_google_calendar_events",
-            "create_app_events",
-            "search_app_events",
+            "list_google_calendar_events",
             "read_home_context",
         ]
     if intent == "calendar_write":
         return [
             "read_home_context",
-            "search_app_events",
-            "list_app_events",
             "list_google_calendar_events",
             "create_google_calendar_events",
-            "create_app_events",
             "delete_google_calendar_events",
             "delete_google_calendar_events_in_range",
             "read_google_sheet",
             "plan_google_route",
             "save_travel_plan_for_event",
         ]
-    return ["read_home_context", "search_app_events", "list_app_events", "list_google_calendar_events"]
+    return ["read_home_context", "list_google_calendar_events"]
