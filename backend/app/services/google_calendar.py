@@ -96,6 +96,51 @@ def create_google_calendar_events(
     return created
 
 
+def update_google_calendar_events(
+    *,
+    tokens: GoogleProviderTokens,
+    event_id: str,
+    summary: str | None = None,
+    start: str | None = None,
+    end: str | None = None,
+    location: str | None = None,
+    description: str | None = None,
+    calendar_id: str | None = None,
+):
+    # 部分更新(events().patch())。指定されたフィールドだけ body に含めるので、
+    # None のフィールドは変更されない。start/end は create と同じ Asia/Tokyo の
+    # dateTime 形で送る。
+    calendar = create_calendar_client(tokens)
+    resolved_calendar_id = calendar_id or settings.google_calendar_id or "primary"
+
+    body: dict = {}
+    if summary is not None:
+        body["summary"] = summary
+    if description is not None:
+        body["description"] = description
+    if location is not None:
+        body["location"] = location
+    if start is not None:
+        body["start"] = {"dateTime": start, "timeZone": "Asia/Tokyo"}
+    if end is not None:
+        body["end"] = {"dateTime": end, "timeZone": "Asia/Tokyo"}
+
+    result = (
+        calendar.events()
+        .patch(calendarId=resolved_calendar_id, eventId=event_id, body=body)
+        .execute()
+    )
+    return {
+        "id": result.get("id"),
+        "htmlLink": result.get("htmlLink"),
+        "summary": result.get("summary"),
+        "location": result.get("location"),
+        "description": result.get("description"),
+        "start": result.get("start", {}).get("dateTime") or result.get("start", {}).get("date"),
+        "end": result.get("end", {}).get("dateTime") or result.get("end", {}).get("date"),
+    }
+
+
 def delete_google_calendar_events(
     *,
     tokens: GoogleProviderTokens,

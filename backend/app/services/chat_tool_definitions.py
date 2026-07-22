@@ -52,6 +52,25 @@ FUNCTION_TOOLS: list[dict[str, Any]] = [
     },
     {
         "type": "function",
+        "name": "update_google_calendar_events",
+        "description": "Edit an existing Google Calendar event after explicit confirmation. Provide eventId and only the fields to change (summary, start, end, location, description). Use this for requests like changing an event's time, place, or title.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "calendarId": {"type": "string"},
+                "eventId": {"type": "string"},
+                "summary": {"type": "string"},
+                "start": {"type": "string"},
+                "end": {"type": "string"},
+                "location": {"type": "string"},
+                "description": {"type": "string"},
+            },
+            "required": ["eventId"],
+            "additionalProperties": False,
+        },
+    },
+    {
+        "type": "function",
         "name": "create_app_events",
         "description": "Create events in the app calendar database after confirmation. By default, also sync them to Google Calendar when Google authorization is available; set skipGoogleSync only when the user explicitly requests app-calendar-only storage.",
         "parameters": {

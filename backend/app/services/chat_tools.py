@@ -24,6 +24,7 @@ from app.services.google_calendar import (
     delete_google_calendar_events,
     delete_google_calendar_events_in_range,
     list_google_calendar_events,
+    update_google_calendar_events,
 )
 from app.services.google_maps import RouteLookupError, get_simple_route_plan
 from app.services.google_maps_url import build_google_maps_directions_url
@@ -244,6 +245,21 @@ async def execute_tool(
             "createdGoogleEvents": created_google_events,
             "googleSyncSkipped": bool(arguments.get("skipGoogleSync")) or not _has_google_tokens(google_tokens),
         }
+
+    if name == "update_google_calendar_events":
+        if not _has_google_tokens(google_tokens):
+            return {"ok": False, "reason": "Google provider token is not available."}
+        updated = update_google_calendar_events(
+            tokens=google_tokens,
+            calendar_id=arguments.get("calendarId"),
+            event_id=arguments["eventId"],
+            summary=arguments.get("summary"),
+            start=arguments.get("start"),
+            end=arguments.get("end"),
+            location=arguments.get("location"),
+            description=arguments.get("description"),
+        )
+        return {"ok": True, "updated": updated}
 
     if name == "delete_google_calendar_events":
         if not _has_google_tokens(google_tokens):

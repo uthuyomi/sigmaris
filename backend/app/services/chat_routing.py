@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 from typing import Any, Literal
 
+from app.services.intent_router import route_intent_semantic
 from app.services.local_llm import TaskType, get_llm_router
 from app.services.search_trigger import detect_search_need, merge_llm_search_judgment
 
@@ -27,64 +28,6 @@ VALID_INTENTS: set[str] = {
     "sync_control",
 }
 
-CALENDAR_WRITE_KEYWORDS = (
-    "add to calendar",
-    "add this to my calendar",
-    "register in calendar",
-    "save this schedule",
-    "create event",
-    "予定入れて",
-    "予定を入れて",
-    "予定入れ",
-    "入れておいて",
-    "入れといて",
-    "入れて",
-    "入れたい",
-    "入れれ",
-    "登録して",
-    "追加して",
-    "作って",
-    "確定で",
-    "確定",
-    "カレンダーに",
-    "書き直",
-)
-
-CALENDAR_WRITE_CONFIRMATION_KEYWORDS = (
-    "お願い",
-    "おねがい",
-    "頼む",
-    "たのむ",
-    "よろしく",
-    "ok",
-    "okay",
-    "yes",
-    "はい",
-    "うん",
-    "それで",
-    "その内容",
-    "それ",
-    "1で",
-    "１で",
-    "確定",
-)
-
-PENDING_CALENDAR_WRITE_CONTEXT_KEYWORDS = (
-    "カレンダーに入れていい",
-    "入れていい",
-    "登録していい",
-    "追加していい",
-    "確定でいい",
-    "予定",
-    "タイトル",
-    "日時",
-    "場所",
-    "calendar",
-    "register",
-    "add",
-)
-
-
 def latest_user_text(messages: list[dict[str, Any]]) -> str:
     for message in reversed(messages):
         if message.get("role") != "user":
@@ -106,15 +49,22 @@ def has_attachment(messages: list[dict[str, Any]]) -> bool:
     return False
 
 
-def heuristic_intent(
+def deterministic_intent(
     *,
     latest_text: str,
-    context_text: str = "",
     has_file_attachment: bool,
     has_image_context: bool,
 ) -> tuple[ChatIntent | None, str | None]:
+    """曖昧さゼロの決定的シグナルのみで intent を即断する(旧 heuristic_intent の
+    ファジーなキーワード判定は INTENT_ROUTER_REDESIGN で完全撤去し、意味判定は
+    セマンティックルータ→LLM フォールバックに一本化した)。
+
+    ここで扱うのは「キーワード誤爆」の原因にならない明示信号だけ:
+    - [shiftpilotai処理: ...] テンプレートタグ(フロントが付与する操作指定)
+    - 添付ファイル / 画像コンテキスト → schedule_import
+    該当しなければ (None, None) を返し、呼び出し元がセマンティックルータへ回す。
+    """
     lowered = latest_text.lower()
-    lowered_context = context_text.lower()
 
     if "[shiftpilotai処理: calendar_write]" in lowered:
         return "calendar_write", "template-operation-tag"
@@ -130,50 +80,6 @@ def heuristic_intent(
     if has_file_attachment or has_image_context:
         return "schedule_import", "attachment-present"
 
-    if "spreadsheet" in lowered or "sheet" in lowered or "スプレッドシート" in latest_text or "勤務表" in latest_text:
-        return "schedule_import", "sheet-keyword"
-
-    if any(keyword in lowered or keyword in latest_text for keyword in CALENDAR_WRITE_KEYWORDS):
-        return "calendar_write", "calendar-write-keyword"
-
-    if (
-        any(keyword in lowered or keyword in latest_text for keyword in CALENDAR_WRITE_CONFIRMATION_KEYWORDS)
-        and any(
-            keyword in lowered_context or keyword in context_text
-            for keyword in PENDING_CALENDAR_WRITE_CONTEXT_KEYWORDS
-        )
-    ):
-        return "calendar_write", "calendar-write-confirmation-context"
-
-    if (
-        "バス" in latest_text
-        or "電車" in latest_text
-        or "地下鉄" in latest_text
-        or "徒歩" in latest_text
-        or "自転車" in latest_text
-        or "車" in latest_text
-        or "移動" in latest_text
-        or "何時に出" in latest_text
-        or "どう行" in latest_text
-        or "route" in lowered
-    ):
-        return "mobility_plan", "mobility-keyword"
-
-    if (
-        "google calendar" in lowered
-        or "カレンダーに" in latest_text
-        or "登録して" in latest_text
-        or "追加して" in latest_text
-        or "削除して" in latest_text
-        or "消して" in latest_text
-        or "入れ替えて" in latest_text
-        or "同期" in latest_text
-    ):
-        return "calendar_write", "calendar-keyword"
-
-    if "予定" in latest_text or "何日" in latest_text or "どの日" in latest_text or "いつ" in latest_text:
-        return "event_lookup", "event-keyword"
-
     return None, None
 
 
@@ -185,14 +91,6 @@ async def classify_chat_intent(
     latest_text = latest_user_text(messages)
     has_file_attachment = has_attachment(messages)
     has_image_context = bool(attachment_facts)
-    context_text = "\n".join(
-        " ".join(
-            str(part.get("text", "")).strip()
-            for part in message.get("parts", [])
-            if part.get("type") == "text" and str(part.get("text", "")).strip()
-        )
-        for message in messages[-8:]
-    )
 
     # Phase G-1(docs/sigmaris/phase_g_report.md): 「検索が必要か」のルール
     # ベース判定は、LLMを一切呼ばずに常に行える(I/Oなし、O(1)級の文字列
@@ -200,20 +98,37 @@ async def classify_chat_intent(
     # スキップするターンでも、この判定だけは必ず得られる。
     search_signal = detect_search_need(latest_text=latest_text)
 
-    guessed_intent, guessed_reason = heuristic_intent(
+    # (1) 決定的プレチェック: テンプレートタグ・添付/画像のみ。曖昧さゼロ。
+    guessed_intent, guessed_reason = deterministic_intent(
         latest_text=latest_text,
-        context_text=context_text,
         has_file_attachment=has_file_attachment,
         has_image_context=has_image_context,
     )
     if guessed_intent:
         return {
             "intent": guessed_intent,
-            "reason": guessed_reason or "heuristic",
-            "source": "heuristic",
+            "reason": guessed_reason or "deterministic",
+            "source": "deterministic",
             "search": search_signal,
         }
 
+    # (2) セマンティックルータ(主役): 代表発話との埋め込み最近傍で意味判定。
+    # スコアが閾値以上なら intent 確定し、LLM 呼び出しをスキップする。
+    # search_signal は現状どおりルールベースの detect_search_need を使う
+    # (Phase G-1 の設計を踏襲。LLM を呼ばないターンでも検索要否は出せる)。
+    try:
+        routed_intent, routed_score = await route_intent_semantic(latest_text)
+    except Exception:
+        routed_intent, routed_score = None, 0.0
+    if routed_intent in VALID_INTENTS:
+        return {
+            "intent": routed_intent,
+            "reason": f"semantic-router score={routed_score:.3f}",
+            "source": "semantic",
+            "search": search_signal,
+        }
+
+    # (3) LLM フォールバック: ルータが確信を持てなかったターンのみ。
     transcript_lines: list[str] = []
     for message in messages[-6:]:
         role = str(message.get("role", "user"))
@@ -233,9 +148,7 @@ async def classify_chat_intent(
             "Valid intents: general_chat, event_lookup, mobility_plan, schedule_import, calendar_write, sync_control.",
             "Use mobility_plan for route, departure, public-transit questions, walking, driving, bicycle, or home-to-destination guidance. Public-transit auto planning is unavailable; answer with that limitation and offer car, walking, or bicycle route planning.",
             "Use schedule_import for images, spreadsheets, work schedules, shift tables, or extracting events from files.",
-            "Use calendar_write for adding, deleting, replacing, writing, or syncing calendar events.",
-            "Use calendar_write for Japanese phrases such as 入れて, 入れておいて, 予定入れて, 登録して, 追加して, 確定で, or 作って when they refer to a schedule/event.",
-            "Use calendar_write when the latest user message is a short confirmation such as お願い, OK, はい, それで, 1でお願い, or 確定 and the recent conversation proposed adding/registering an event.",
+            "Use calendar_write for adding, deleting, editing, replacing, writing, or syncing calendar events, including questions like 'can you delete this?' or 'can you change the time?' that imply a write/edit action.",
             "Use event_lookup for identifying which calendar event/day the user refers to.",
             "Use sync_control for integration or sync mode settings.",
             "Use general_chat only if no specialized intent is dominant.",
@@ -372,16 +285,25 @@ def tool_names_for_intent(intent: ChatIntent) -> list[str]:
     # list_app_events / create_app_events)を除外し、Google 系だけを AI に
     # 渡す。app系のツール定義・実装・DBテーブルは温存しており(可逆)、この
     # リストへ戻すだけで従来動作に復帰できる。
+    # 誤爆の保険(INTENT_ROUTER_REDESIGN, defense in depth): カレンダーの
+    # 読み書き中核ツール(list/create/update/delete_google_calendar_events)は、
+    # 意味判定が稀に外しても操作不能事故にならないよう、general_chat と
+    # event_lookup にも含める。専門ツール(経路計画・シート取込)は intent 出し
+    # 分けのまま。
     if intent == "general_chat":
         return [
             "read_home_context",
             "list_google_calendar_events",
             "create_google_calendar_events",
+            "update_google_calendar_events",
+            "delete_google_calendar_events",
         ]
     if intent == "event_lookup":
         return [
             "list_google_calendar_events",
             "create_google_calendar_events",
+            "update_google_calendar_events",
+            "delete_google_calendar_events",
             "read_home_context",
         ]
     if intent == "mobility_plan":
@@ -403,6 +325,7 @@ def tool_names_for_intent(intent: ChatIntent) -> list[str]:
             "read_home_context",
             "list_google_calendar_events",
             "create_google_calendar_events",
+            "update_google_calendar_events",
             "delete_google_calendar_events",
             "delete_google_calendar_events_in_range",
             "read_google_sheet",

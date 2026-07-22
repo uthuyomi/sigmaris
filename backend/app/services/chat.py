@@ -69,6 +69,7 @@ CONFIRMATION_MARKER_RE = re.compile(
 CONFIRMATION_REQUIRED_TOOLS = {
     "create_google_calendar_events",
     "create_app_events",
+    "update_google_calendar_events",
     "delete_google_calendar_events",
     "delete_google_calendar_events_in_range",
     "save_travel_plan_for_event",
@@ -314,6 +315,9 @@ def _confirmation_copy(tool_name: str, arguments: dict[str, Any]) -> tuple[str, 
         count = len(events) if isinstance(events, list) else 1
         title = "予定を登録しますか？" if count <= 1 else f"{count}件の予定を登録しますか？"
         description = "内容を確認して、問題なければカレンダーへ登録します。"
+    elif tool_name == "update_google_calendar_events":
+        title = "予定を変更しますか？"
+        description = "指定した予定の内容を書き換えます。問題なければ実行します。"
     elif tool_name == "delete_google_calendar_events_in_range":
         title = "予定をまとめて削除しますか？"
         description = "指定した期間の予定を削除します。取り消しにくい操作なので確認してから実行します。"
@@ -369,6 +373,10 @@ def _summarize_tool_result(tool_name: str, result: dict[str, Any]) -> str:
     if tool_name in {"delete_google_calendar_events", "delete_google_calendar_events_in_range"}:
         deleted_count = result.get("deletedCount") or result.get("count") or 0
         return f"削除を実行したよ。\n\n削除件数: {deleted_count}"
+    if tool_name == "update_google_calendar_events":
+        updated = result.get("updated") or {}
+        summary = updated.get("summary")
+        return f"予定を変更したよ。{f'（{summary}）' if summary else ''}"
     return user_facing or "実行したよ。"
 
 
