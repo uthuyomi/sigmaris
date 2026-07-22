@@ -25,7 +25,7 @@ FUNCTION_TOOLS: list[dict[str, Any]] = [
     {
         "type": "function",
         "name": "create_google_calendar_events",
-        "description": "Create events in Google Calendar after confirmation and mirror them into the app calendar database.",
+        "description": "Create events in Google Calendar after confirmation and mirror them into the app calendar database. For a timed event set start and end (ISO datetime). For an all-day event set allDay=true and date (YYYY-MM-DD) instead of start/end.",
         "parameters": {
             "type": "object",
             "properties": {
@@ -38,10 +38,12 @@ FUNCTION_TOOLS: list[dict[str, Any]] = [
                             "title": {"type": "string"},
                             "start": {"type": "string"},
                             "end": {"type": "string"},
+                            "allDay": {"type": "boolean"},
+                            "date": {"type": "string", "description": "YYYY-MM-DD for all-day events"},
                             "description": {"type": "string"},
                             "location": {"type": "string"},
                         },
-                        "required": ["title", "start", "end"],
+                        "required": ["title"],
                         "additionalProperties": False,
                     },
                 },

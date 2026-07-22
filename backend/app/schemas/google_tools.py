@@ -20,9 +20,14 @@ class GoogleCalendarListRequest(BaseModel):
 
 
 class GoogleCalendarCreateEvent(BaseModel):
+    # IMPORT_EXTRACTION_REDESIGN: 終日(all_day/date)対応を後方互換で追加。
+    # 時刻ありイベントは従来どおり start/end に dateTime を入れる。終日は
+    # all_day=True + date("YYYY-MM-DD") を指定し、start/end は任意(None 可)。
     title: str = Field(min_length=1, max_length=120)
-    start: str = Field(max_length=64)
-    end: str = Field(max_length=64)
+    start: str | None = Field(default=None, max_length=64)
+    end: str | None = Field(default=None, max_length=64)
+    all_day: bool = Field(default=False, alias="allDay")
+    date: str | None = Field(default=None, max_length=32)
     description: str | None = Field(default=None, max_length=2000)
     location: str | None = Field(default=None, max_length=500)
 

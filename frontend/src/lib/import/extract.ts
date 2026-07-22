@@ -4,14 +4,18 @@ import { zodTextFormat } from "openai/helpers/zod";
 import { getOpenAIClient } from "@/lib/openai/client";
 import { importPreviewSchema, type ImportPreview } from "@/lib/import/schema";
 
+// 注: このモジュールは現在どこからも呼ばれていない(実際の抽出はバックエンド
+// import_extract.py が担当)。スキーマ整合のため zod スキーマ(終日/場所/
+// evidence 対応済み)は共有しつつ、プロンプト文言も汎用化して drift を防ぐ。
 const promptBase = [
-  "あなたは勤務表や予定表の画像・表データを、予定候補へ構造化する抽出エンジンです。",
-  "読み取れた内容だけを使い、推測しすぎないでください。",
+  "あなたは画像・表データから予定(イベント)を構造化して抽出する抽出エンジンです。",
+  "勤務表に限らず、チラシ・告知・スクショ・メモなど、日時を含むあらゆる予定を対象にします。",
+  "読み取れた内容だけを使い、画像/表に無いものは作らないでください(根拠のない候補は出さない)。",
   "出力は schedule_import_preview スキーマに厳密に従ってください。",
-  "summary には抽出できた件数や注意点を短く書いてください。",
-  "candidates には date を YYYY-MM-DD、startTime と endTime を HH:mm で入れてください。",
-  "日付や時間が曖昧な項目は candidates に含めず、summary で不足情報を説明してください。",
-  "タイトルが明確でなければ title は 勤務 を使ってください。",
+  "summary には抽出できた件数や注意点を短く書いてください。予定が読み取れなければ candidates は空にします。",
+  "candidates の date は YYYY-MM-DD。時刻ありは startTime(HH:mm)を、終日は allDay=true を設定し時刻は null にします。",
+  "各候補には読み取り根拠(evidence)を元テキストの引用で付けてください。曖昧なら confidence を下げます。",
+  "内容に応じたタイトルを付け、読み取れない場合のみ汎用名にしてください。",
 ].join("\n");
 
 const ensureParsedOutput = (

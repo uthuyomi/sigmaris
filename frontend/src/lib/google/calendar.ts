@@ -6,8 +6,12 @@ import { readGoogleProviderTokens } from "@/lib/google/provider-tokens";
 
 export type CalendarWriteEvent = {
   title: string;
-  start: string;
-  end: string;
+  // 時刻ありイベントは start/end に ISO datetime。終日イベントは allDay=true
+  // + date("YYYY-MM-DD")を指定し、start/end は省略可(IMPORT_EXTRACTION_REDESIGN)。
+  start?: string;
+  end?: string;
+  allDay?: boolean;
+  date?: string;
   description?: string;
   location?: string;
 };
@@ -77,20 +81,21 @@ export const createGoogleCalendarEvents = async (
   const created = [];
 
   for (const event of events) {
+    // 終日は {date}、時刻ありは従来の {dateTime,timeZone} を出し分ける。
+    const startField = event.allDay
+      ? { date: event.date ?? event.start }
+      : { dateTime: event.start, timeZone: "Asia/Tokyo" };
+    const endField = event.allDay
+      ? { date: event.date ?? event.end ?? event.start }
+      : { dateTime: event.end, timeZone: "Asia/Tokyo" };
     const result = await calendar.events.insert({
       calendarId,
       requestBody: {
         summary: event.title,
         description: event.description,
         location: event.location,
-        start: {
-          dateTime: event.start,
-          timeZone: "Asia/Tokyo",
-        },
-        end: {
-          dateTime: event.end,
-          timeZone: "Asia/Tokyo",
-        },
+        start: startField,
+        end: endField,
       },
     });
 
@@ -98,8 +103,8 @@ export const createGoogleCalendarEvents = async (
       id: result.data.id,
       htmlLink: result.data.htmlLink,
       summary: result.data.summary,
-      start: result.data.start?.dateTime,
-      end: result.data.end?.dateTime,
+      start: result.data.start?.dateTime ?? result.data.start?.date,
+      end: result.data.end?.dateTime ?? result.data.end?.date,
     });
   }
 

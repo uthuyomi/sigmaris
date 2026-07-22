@@ -1,7 +1,7 @@
 // 役割: プレビュー済み予定候補をアプリDBと外部カレンダーへ保存するNext.js API Route。
 import { NextResponse } from "next/server";
 import { z } from "zod";
-import { createEventsForUser, updateEventExternalLinkForUser } from "@/lib/event-data/writes";
+import { createEventsForUser } from "@/lib/event-data/writes";
 import { createGoogleCalendarEvents } from "@/lib/google/calendar";
 import { importCandidateSchema } from "@/lib/import/schema";
 import { createClient } from "@/lib/supabase/server";
@@ -14,72 +14,64 @@ const requestSchema = z.object({
 
 const toIsoDateTime = (date: string, time: string) => `${date}T${time}:00+09:00`;
 
-type ImportedSourceType = "sheet" | "image";
-type CreatedGoogleEvents = Awaited<ReturnType<typeof createGoogleCalendarEvents>>;
-
-const getOrCreateGoogleConnectionId = async (userId: string) => {
-  const supabase = await createClient();
-  const calendarId = process.env.GOOGLE_CALENDAR_ID ?? "primary";
-  const { data: existingConnection, error: existingError } = await supabase
-    .from("calendar_connections")
-    .select("id")
-    .eq("user_id", userId)
-    .eq("provider", "google")
-    .eq("provider_calendar_id", calendarId)
-    .maybeSingle();
-
-  if (existingError) {
-    throw new Error(existingError.message);
+// 候補 → Google 書き込みイベント。終日(allDay)は date を、時刻ありは
+// start/end(ISO)を出し分ける。終了時刻なしは開始と同じにフォールバック。
+const toCalendarWriteEvent = (candidate: z.infer<typeof importCandidateSchema>) => {
+  if (candidate.allDay) {
+    return {
+      title: candidate.title,
+      allDay: true as const,
+      date: candidate.date,
+      description: candidate.description ?? undefined,
+      location: candidate.location ?? undefined,
+    };
   }
-
-  if (existingConnection?.id) {
-    return existingConnection.id as string;
-  }
-
-  const { data: insertedConnection, error: insertError } = await supabase
-    .from("calendar_connections")
-    .insert({
-      user_id: userId,
-      provider: "google",
-      provider_calendar_id: calendarId,
-      display_name: "Google Calendar",
-      is_primary: true,
-    })
-    .select("id")
-    .single();
-
-  if (insertError) {
-    throw new Error(insertError.message);
-  }
-
-  return insertedConnection.id as string;
+  const start = toIsoDateTime(candidate.date, candidate.startTime as string);
+  const end = candidate.endTime
+    ? toIsoDateTime(candidate.date, candidate.endTime)
+    : start;
+  return {
+    title: candidate.title,
+    start,
+    end,
+    description: candidate.description ?? undefined,
+    location: candidate.location ?? undefined,
+  };
 };
 
+type ImportedSourceType = "sheet" | "image";
+
+// app-calendar ターゲット(明示指定時のみ)用。Google 一本化により既定の
+// 取り込み経路(google-calendar)からは呼ばれないが、可逆性のため残置。
 const saveCandidatesToAppCalendar = async (
   userId: string,
   candidates: z.infer<typeof importCandidateSchema>[],
   options?: {
     sourceType?: ImportedSourceType;
-    createdGoogleEvents?: CreatedGoogleEvents;
-    calendarConnectionId?: string | null;
   },
 ) => {
   const sourceType = options?.sourceType ?? "sheet";
   return createEventsForUser(
     userId,
-    candidates.map((candidate, index) => {
-      const googleEvent = options?.createdGoogleEvents?.[index];
+    candidates.map((candidate) => {
+      // 終日/終了時刻なしに対応: 終日や時刻なしは日付の 00:00 を、終了時刻
+      // なしは開始と同じ時刻を既定にする(app-calendar ターゲット用の保険)。
+      const startsAt = candidate.allDay
+        ? toIsoDateTime(candidate.date, "00:00")
+        : toIsoDateTime(candidate.date, candidate.startTime as string);
+      const endsAt = candidate.allDay
+        ? startsAt
+        : toIsoDateTime(candidate.date, candidate.endTime ?? (candidate.startTime as string));
       return {
         title: candidate.title,
         description: candidate.description,
-        startsAt: toIsoDateTime(candidate.date, candidate.startTime),
-        endsAt: toIsoDateTime(candidate.date, candidate.endTime),
+        startsAt,
+        endsAt,
         sourceType,
-        externalEventId: googleEvent?.id ?? null,
-        calendarConnectionId: options?.calendarConnectionId ?? null,
+        externalEventId: null,
+        calendarConnectionId: null,
         metadata: {
           importedFrom: sourceType,
-          googleHtmlLink: googleEvent?.htmlLink ?? null,
         },
       };
     }),
@@ -112,41 +104,13 @@ export async function POST(req: Request) {
   }
 
   try {
-    const calendarConnectionId = await getOrCreateGoogleConnectionId(user.id);
-    const createdAppEvents = await saveCandidatesToAppCalendar(user.id, parsed.candidates, {
-      sourceType: parsed.sourceType,
-      calendarConnectionId,
-    });
-    const googleCreateTargets = parsed.candidates
-      .map((candidate, index) => ({ candidate, appEvent: createdAppEvents[index] }))
-      .filter(
-        (
-          target,
-        ): target is typeof target & { appEvent: NonNullable<(typeof createdAppEvents)[number]> } =>
-          Boolean(target.appEvent && !target.appEvent.external_event_id),
-      );
+    // Google 一本化(IMPORT_EXTRACTION_REDESIGN の整合メモで選択): 取り込みの
+    // 既定登録先は Google カレンダーのみ。以前は saveCandidatesToAppCalendar
+    // で app(events テーブル)にも二重書きしていたが、AI チャット側の Google
+    // 一本化と揃えて外した。可逆性のため saveCandidatesToAppCalendar 関数と
+    // app-calendar ターゲット分岐は残置しており、ここで再度呼べば復帰できる。
     const created = await createGoogleCalendarEvents(
-      googleCreateTargets.map(({ candidate }) => ({
-        title: candidate.title,
-        start: toIsoDateTime(candidate.date, candidate.startTime),
-        end: toIsoDateTime(candidate.date, candidate.endTime),
-        description: candidate.description ?? undefined,
-      })),
-    );
-    await Promise.all(
-      googleCreateTargets.map(({ appEvent }, index) => {
-        const googleEvent = created[index];
-        return updateEventExternalLinkForUser({
-          eventId: appEvent.id,
-          externalEventId: googleEvent?.id ?? null,
-          calendarConnectionId,
-          metadata: {
-            importedFrom: parsed.sourceType ?? "sheet",
-            googleHtmlLink: googleEvent?.htmlLink ?? null,
-            syncStatus: googleEvent?.id ? "synced" : "pending",
-          },
-        });
-      }),
+      parsed.candidates.map((candidate) => toCalendarWriteEvent(candidate)),
     );
 
     return NextResponse.json({
@@ -154,9 +118,6 @@ export async function POST(req: Request) {
       target: parsed.target,
       createdCount: created.length,
       created,
-      appCreatedCount: createdAppEvents.length,
-      skippedExistingGoogleCount: parsed.candidates.length - googleCreateTargets.length,
-      createdAppEvents,
     });
   } catch (error) {
     return NextResponse.json(

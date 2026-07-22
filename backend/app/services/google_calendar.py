@@ -63,6 +63,18 @@ def create_google_calendar_events(
     created = []
 
     for event in events:
+        # 終日(all_day)は {"date": "YYYY-MM-DD"}、時刻ありは従来の
+        # {"dateTime":..., "timeZone":"Asia/Tokyo"} を出し分ける(後方互換:
+        # all_day=False かつ start/end 指定なら従来どおり)。終日で end 未指定
+        # なら開始日と同日にする(Google の終日 end は排他的だが、単日予定と
+        # して同日を送れば1日予定になる)。
+        if event.all_day:
+            day = event.date or event.start
+            start_field = {"date": day}
+            end_field = {"date": event.date or event.end or day}
+        else:
+            start_field = {"dateTime": event.start, "timeZone": "Asia/Tokyo"}
+            end_field = {"dateTime": event.end, "timeZone": "Asia/Tokyo"}
         result = (
             calendar.events()
             .insert(
@@ -71,14 +83,8 @@ def create_google_calendar_events(
                     "summary": event.title,
                     "description": event.description,
                     "location": event.location,
-                    "start": {
-                        "dateTime": event.start,
-                        "timeZone": "Asia/Tokyo",
-                    },
-                    "end": {
-                        "dateTime": event.end,
-                        "timeZone": "Asia/Tokyo",
-                    },
+                    "start": start_field,
+                    "end": end_field,
                 },
             )
             .execute()
@@ -88,8 +94,8 @@ def create_google_calendar_events(
                 "id": result.get("id"),
                 "htmlLink": result.get("htmlLink"),
                 "summary": result.get("summary"),
-                "start": result.get("start", {}).get("dateTime"),
-                "end": result.get("end", {}).get("dateTime"),
+                "start": result.get("start", {}).get("dateTime") or result.get("start", {}).get("date"),
+                "end": result.get("end", {}).get("dateTime") or result.get("end", {}).get("date"),
             }
         )
 

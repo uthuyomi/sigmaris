@@ -133,10 +133,12 @@ async def execute_tool(
                     "title": event.title,
                     "description": event.description,
                     "location_text": event.location,
-                    "starts_at": event.start,
-                    "ends_at": event.end,
+                    # 終日イベントは start/end が None のため date で補い、app
+                    # ミラーの starts_at/ends_at が欠けないようにする。
+                    "starts_at": event.start or event.date,
+                    "ends_at": event.end or event.date,
                     "source_type": "chat",
-                    "metadata": {"provider": "google", "syncStatus": "pending"},
+                    "metadata": {"provider": "google", "syncStatus": "pending", "allDay": event.all_day},
                 }
                 for event in events
             ],

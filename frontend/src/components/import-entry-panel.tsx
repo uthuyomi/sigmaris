@@ -19,12 +19,40 @@ type PreviewResponse = {
   };
 };
 
+// A-3: この確信度未満の候補は既定でチェックを外し、警告表示する。
+const CONFIDENCE_THRESHOLD = 0.5;
+
+const formatWhen = (candidate: ImportCandidate) => {
+  if (candidate.allDay) return `${candidate.date}（終日）`;
+  if (candidate.startTime && candidate.endTime) {
+    return `${candidate.date} ${candidate.startTime} - ${candidate.endTime}`;
+  }
+  if (candidate.startTime) return `${candidate.date} ${candidate.startTime} -`;
+  return candidate.date;
+};
+
 export function ImportEntryPanel() {
   const [sheetUrl, setSheetUrl] = useState("");
   const [imageFile, setImageFile] = useState<File | null>(null);
   const [loading, setLoading] = useState<null | "sheet" | "image" | "commit">(null);
   const [preview, setPreview] = useState<PreviewResponse | null>(null);
   const [status, setStatus] = useState<string | null>(null);
+  // A-3: 各候補の選択状態(commit 対象)。低確信は既定オフ。
+  const [selected, setSelected] = useState<boolean[]>([]);
+
+  const applyPreview = (data: PreviewResponse) => {
+    setPreview(data);
+    // 確信度が閾値未満/未設定の候補は既定でチェックを外す。
+    setSelected(
+      data.extracted.candidates.map(
+        (c) => (c.confidence ?? 0) >= CONFIDENCE_THRESHOLD,
+      ),
+    );
+  };
+
+  const toggleSelected = (index: number) => {
+    setSelected((prev) => prev.map((v, i) => (i === index ? !v : v)));
+  };
 
   const analyzeWithSheet = async () => {
     setLoading("sheet");
@@ -41,7 +69,7 @@ export function ImportEntryPanel() {
       const data = await res.json();
       if (!res.ok) throw new Error(data.error ?? "シート解析に失敗");
 
-      setPreview(data);
+      applyPreview(data);
     } catch (error) {
       setStatus(error instanceof Error ? error.message : "シート解析に失敗");
     } finally {
@@ -65,7 +93,7 @@ export function ImportEntryPanel() {
       const data = await res.json();
       if (!res.ok) throw new Error(data.error ?? "画像解析に失敗");
 
-      setPreview(data);
+      applyPreview(data);
     } catch (error) {
       setStatus(error instanceof Error ? error.message : "画像解析に失敗");
     } finally {
@@ -75,6 +103,12 @@ export function ImportEntryPanel() {
 
   const commitToGoogleCalendar = async () => {
     if (!preview?.extracted.candidates.length) return;
+
+    const chosen = preview.extracted.candidates.filter((_, i) => selected[i]);
+    if (!chosen.length) {
+      setStatus("登録する予定にチェックを入れてください。");
+      return;
+    }
 
     setLoading("commit");
     setStatus(null);
@@ -87,7 +121,7 @@ export function ImportEntryPanel() {
         },
         body: JSON.stringify({
           target: "google-calendar",
-          candidates: preview.extracted.candidates,
+          candidates: chosen,
           sourceType: preview.sourceType,
         }),
       });
@@ -179,34 +213,78 @@ export function ImportEntryPanel() {
           <p className="mt-2 text-sm font-semibold text-stone-900">{preview.sourceLabel}</p>
           <p className="mt-3 text-sm leading-7 text-stone-600">{preview.extracted.summary}</p>
 
-          <div className="mt-4 space-y-3">
-            {preview.extracted.candidates.map((candidate, index) => (
-              <div
-                key={`${candidate.title}-${candidate.date}-${index}`}
-                className="rounded-[24px] border border-stone-900/10 bg-stone-50 px-4 py-4"
-              >
-                <p className="text-sm font-semibold text-stone-900">{candidate.title}</p>
-                <p className="mt-1 text-sm text-stone-600">
-                  {candidate.date} {candidate.startTime} - {candidate.endTime}
-                </p>
-                {candidate.description ? (
-                  <p className="mt-2 text-sm leading-7 text-stone-600">
-                    {candidate.description}
-                  </p>
-                ) : null}
-              </div>
-            ))}
-          </div>
+          {preview.extracted.candidates.length === 0 ? (
+            <p className="mt-4 rounded-[24px] border border-stone-900/10 bg-stone-50 px-4 py-4 text-sm text-stone-600">
+              予定を検出できませんでした。日時が読み取れる画像やシートを試してください。
+            </p>
+          ) : (
+            <div className="mt-4 space-y-3">
+              {preview.extracted.candidates.map((candidate, index) => {
+                const conf = candidate.confidence ?? null;
+                const lowConfidence = (conf ?? 0) < CONFIDENCE_THRESHOLD;
+                return (
+                  <label
+                    key={`${candidate.title}-${candidate.date}-${index}`}
+                    className={`flex gap-3 rounded-[24px] border px-4 py-4 ${
+                      lowConfidence
+                        ? "border-amber-400/60 bg-amber-50"
+                        : "border-stone-900/10 bg-stone-50"
+                    }`}
+                  >
+                    <input
+                      type="checkbox"
+                      checked={selected[index] ?? false}
+                      onChange={() => toggleSelected(index)}
+                      className="mt-1 size-4 shrink-0"
+                    />
+                    <div className="min-w-0 flex-1">
+                      <div className="flex items-center justify-between gap-2">
+                        <p className="text-sm font-semibold text-stone-900">{candidate.title}</p>
+                        {conf !== null ? (
+                          <span
+                            className={`shrink-0 rounded-full px-2 py-0.5 text-xs ${
+                              lowConfidence ? "bg-amber-200 text-amber-900" : "bg-stone-200 text-stone-700"
+                            }`}
+                          >
+                            確信度 {Math.round(conf * 100)}%
+                          </span>
+                        ) : null}
+                      </div>
+                      <p className="mt-1 text-sm text-stone-600">{formatWhen(candidate)}</p>
+                      {candidate.location ? (
+                        <p className="mt-1 text-sm text-stone-600">📍 {candidate.location}</p>
+                      ) : null}
+                      {candidate.description ? (
+                        <p className="mt-2 text-sm leading-7 text-stone-600">{candidate.description}</p>
+                      ) : null}
+                      {candidate.evidence ? (
+                        <p className="mt-2 text-xs leading-6 text-stone-500">
+                          読み取り根拠: 「{candidate.evidence}」
+                        </p>
+                      ) : null}
+                      {lowConfidence ? (
+                        <p className="mt-1 text-xs text-amber-700">
+                          確信度が低いので既定でオフ。内容を確認してからチェックしてね。
+                        </p>
+                      ) : null}
+                    </div>
+                  </label>
+                );
+              })}
+            </div>
+          )}
 
-          <button
-            type="button"
-            disabled={!preview.extracted.candidates.length || loading !== null}
-            onClick={commitToGoogleCalendar}
-            className="mt-4 inline-flex w-full items-center justify-center gap-2 rounded-full bg-[#e76f51] px-4 py-3 text-sm font-semibold text-white transition hover:bg-[#d95f42] disabled:opacity-50"
-          >
-            <CalendarPlusIcon className="size-4" />
-            {loading === "commit" ? "保存中" : "Googleへ保存"}
-          </button>
+          {preview.extracted.candidates.length > 0 ? (
+            <button
+              type="button"
+              disabled={loading !== null}
+              onClick={commitToGoogleCalendar}
+              className="mt-4 inline-flex w-full items-center justify-center gap-2 rounded-full bg-[#e76f51] px-4 py-3 text-sm font-semibold text-white transition hover:bg-[#d95f42] disabled:opacity-50"
+            >
+              <CalendarPlusIcon className="size-4" />
+              {loading === "commit" ? "保存中" : `Googleへ保存（${selected.filter(Boolean).length}件）`}
+            </button>
+          ) : null}
         </section>
       ) : null}
 
