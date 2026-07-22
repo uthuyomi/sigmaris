@@ -64,6 +64,57 @@ _BALANCE_SKEW_THRESHOLD = 2.0
 _BALANCE_MIN_TOTAL = 2
 
 
+# ─── 機微 confirm_candidate の除外(X_POST_OPSEC_FILTER_SPEC 層1・本丸) ──
+# 公開Xの A_spontaneous_remark(開発者へ公開で問いかける投稿)の素材から、
+# 自宅インフラ/環境/機器系の"記憶確認"候補を除外する。除外しても捨てず、
+# active_inquiry(アプリ内)が独立に get_confirmation_candidates() を読んで
+# 同じ候補を非公開で聞くため、追加の配線は不要(=公開から外すだけ)。
+#
+# 記憶の category は9種固定(memory_extractor._VALID_CATEGORIES)で、インフラ
+# 系は environment(居住環境・場所)/devices(使用デバイス・所有機器)に入る。
+# そこへ、他カテゴリに紛れたインフラ/opsec 語を key/value で拾う保険を足す
+# (定数リストで後から調整可能)。方針: 記憶確認を公開から外すのが目的であり、
+# ここで actionable かどうかは問わない(actionable の出口検査は層2)。
+_SENSITIVE_CONFIRM_CATEGORIES: frozenset[str] = frozenset({"environment", "devices"})
+
+_SENSITIVE_CONFIRM_TERMS: tuple[str, ...] = (
+    "server", "サーバ", "ubuntu", "linux", "gpu", "gtx", "rtx", "vram",
+    "router", "ルータ", "ルーター", "sim", "モバイルルータ", "モバイルルーター",
+    "回線", "tailscale", "vpn", "ddns", "ポート", "ip", "ホスト", "ssh",
+    "デプロイ", "deploy", "ネットワーク", "自宅サーバ", "外部公開",
+)
+
+
+def _is_sensitive_confirm_candidate(candidate: dict[str, Any]) -> bool:
+    category = str(candidate.get("category") or "").strip().lower()
+    if category in _SENSITIVE_CONFIRM_CATEGORIES:
+        return True
+    haystack = " ".join(
+        str(candidate.get(field) or "") for field in ("category", "key", "value")
+    ).lower()
+    return any(term in haystack for term in _SENSITIVE_CONFIRM_TERMS)
+
+
+def _public_safe_confirm_candidates(candidates: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """公開A素材に載せてよい(=機微でない)confirm_candidate だけを返す。
+    除外された候補は active_inquiry がアプリ内で拾うため、ここでは捨てて
+    構わない(公開経路から外すのが目的)。"""
+    safe: list[dict[str, Any]] = []
+    dropped = 0
+    for c in candidates:
+        if _is_sensitive_confirm_candidate(c):
+            dropped += 1
+        else:
+            safe.append(c)
+    if dropped:
+        logger.info(
+            "x_post_category_selector: excluded %d sensitive confirm candidate(s) "
+            "from public A material (routed to in-app active_inquiry)",
+            dropped,
+        )
+    return safe
+
+
 def _today_start_iso() -> str:
     return (
         datetime.now(timezone.utc)
@@ -297,10 +348,17 @@ async def select_post_category(*, jwt: str) -> tuple[str | None, str, CategoryCo
     identity_statement = (self_model or {}).get("identity_statement") or ""
     design_topic = _pick_design_philosophy_topic(recent_texts)
 
+    # X_POST_OPSEC_FILTER_SPEC 層1(本丸): 自宅インフラ/環境/機器系の記憶
+    # 確認候補は公開Aの素材から除外する(active_inquiry がアプリ内で拾う)。
+    # 非機微の候補が1件も残らなければ A は eligible に入れない(=他カテゴリへ
+    # フォールバックする既存挙動を尊重)。
+    public_safe_confirm_candidates = _public_safe_confirm_candidates(confirm_candidates)
+
     eligible: dict[str, CategoryContext] = {}
-    if confirm_candidates:
+    if public_safe_confirm_candidates:
         eligible["A_spontaneous_remark"] = CategoryContext(
-            category="A_spontaneous_remark", material={"confirm_candidates": confirm_candidates}
+            category="A_spontaneous_remark",
+            material={"confirm_candidates": public_safe_confirm_candidates},
         )
     if observed_patterns or identity_statement:
         eligible["B_growth_moment"] = CategoryContext(
