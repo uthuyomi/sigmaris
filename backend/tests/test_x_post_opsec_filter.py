@@ -1,9 +1,11 @@
 from __future__ import annotations
 
-# X_POST_OPSEC_FILTER_SPEC の回帰テスト。
-# 公開X投稿から自宅インフラ/機微記憶が漏れないことを、2層で担保する。
-# ネットワーク非依存(DB/LLM に触れない): 層1は confirm_candidates の振り分け
-# ヘルパーを直接検証、層2は filter_private_info(正規表現のみ)を直接検証する。
+# X_POST_OPSEC_FILTER_SPEC / X_OPSEC_LAYER1_REFINE_SPEC の回帰テスト。
+# 公開X投稿から自宅インフラの"具体的な秘密"が漏れないことを2層で担保する。
+# 線引き(X_OPSEC_LAYER1_REFINE): 機材・存在レベル(GPU型番/OS/自宅サーバー運用)
+# は公開OK、actionable な具体秘密(IP/認証/ポート/回線設定/連絡先)のみ非公開。
+# 層1・層2は同一の actionable 基準(filter_private_info)に揃っている。
+# ネットワーク非依存(DB/LLM に触れない・正規表現のみで決定的)。
 
 from app.services.x_post_category_selector import (
     _is_sensitive_confirm_candidate,
@@ -12,52 +14,68 @@ from app.services.x_post_category_selector import (
 from app.services.x_privacy_filter import filter_private_info
 
 
-# ─── 層1(本丸): 機微 confirm_candidate を公開A素材から除外 ────────────
-def test_infra_candidate_is_sensitive_by_category():
-    # 実サンプル相当: 自宅サーバー構成(environment/devices カテゴリ)。
-    assert _is_sensitive_confirm_candidate(
-        {"category": "environment", "key": "home_server", "value": "自宅Ubuntu Server + GTX1660", "confirm_reason": "low_confidence"}
+# ─── 層1(本丸): actionable な具体秘密を含む候補だけ公開Aから除外 ──────
+def test_machine_level_candidate_is_public_safe():
+    # 機材・存在レベルの確認は公開に通す(除外しない)。
+    assert not _is_sensitive_confirm_candidate(
+        {"category": "devices", "key": "home_server", "value": "自宅サーバーでGTX1660を動かしてるらしい", "confirm_reason": "low_confidence"}
     )
-    assert _is_sensitive_confirm_candidate(
-        {"category": "devices", "key": "router", "value": "SIM対応ルータ", "confirm_reason": "low_confidence"}
+    assert not _is_sensitive_confirm_candidate(
+        {"category": "environment", "key": "os", "value": "OSはUbuntu、AIサーバーとして運用してる", "confirm_reason": "low_confidence"}
     )
-
-
-def test_infra_candidate_is_sensitive_by_term_in_other_category():
-    # category が汎用(goals)でも、value にインフラ/opsec 語があれば機微扱い。
-    assert _is_sensitive_confirm_candidate(
-        {"category": "goals", "key": "plan", "value": "自宅サーバを外部公開したい", "confirm_reason": "low_confidence"}
+    assert not _is_sensitive_confirm_candidate(
+        {"category": "devices", "key": "gpu", "value": "GTX1660 6GB", "confirm_reason": "long_unupdated"}
     )
 
 
-def test_non_infra_candidate_is_not_sensitive():
+def test_concrete_secret_candidate_is_sensitive():
+    # IP / 認証情報 / ポート開放 / 連絡先 を含む候補は除外(active_inquiry へ)。
+    assert _is_sensitive_confirm_candidate(
+        {"category": "environment", "key": "expose", "value": "外部公開のためポート12345を開ける", "confirm_reason": "low_confidence"}
+    )
+    assert _is_sensitive_confirm_candidate(
+        {"category": "devices", "key": "ip", "value": "IPは 192.168.0.11", "confirm_reason": "low_confidence"}
+    )
+    assert _is_sensitive_confirm_candidate(
+        {"category": "devices", "key": "auth", "value": "api_key=abcd1234efgh を使ってる", "confirm_reason": "low_confidence"}
+    )
+    assert _is_sensitive_confirm_candidate(
+        {"category": "profile", "key": "email", "value": "連絡先は foo@example.com", "confirm_reason": "low_confidence"}
+    )
+
+
+def test_broad_infra_terms_alone_do_not_exclude():
+    # 広いインフラ語(server/gpu/gtx/ubuntu 等)だけでは除外しない(線引きの要)。
+    assert not _is_sensitive_confirm_candidate(
+        {"category": "goals", "key": "plan", "value": "自宅サーバをもっと活用したい", "confirm_reason": "low_confidence"}
+    )
+
+
+def test_non_infra_candidate_is_public_safe():
     assert not _is_sensitive_confirm_candidate(
         {"category": "preferences", "key": "favorite_food", "value": "ラーメン", "confirm_reason": "low_confidence"}
     )
-    assert not _is_sensitive_confirm_candidate(
-        {"category": "health", "key": "sleep", "value": "早寝早起き", "confirm_reason": "flagged_stale"}
-    )
 
 
-def test_public_safe_excludes_infra_keeps_others():
+def test_public_safe_keeps_machine_level_excludes_secrets():
     candidates = [
-        {"category": "environment", "key": "home_server", "value": "自宅Ubuntu Server + GTX1660"},
-        {"category": "devices", "key": "router", "value": "SIM対応ルータ"},
-        {"category": "preferences", "key": "hobby", "value": "写真"},
+        {"category": "devices", "key": "home_server", "value": "自宅サーバーでGTX1660を動かしてる"},   # 公開OK
+        {"category": "environment", "key": "os", "value": "OSはUbuntu Server"},                      # 公開OK
+        {"category": "environment", "key": "expose", "value": "SIM対応ルータで外部公開、ポート開放してる"},  # 除外(回帰: 当初漏洩例)
+        {"category": "devices", "key": "ip", "value": "IPは 192.168.0.11"},                         # 除外
     ]
     safe = _public_safe_confirm_candidates(candidates)
-    # 公開Aに載るのは非機微の1件のみ。インフラ2件は外れる(active_inquiry へ)。
-    assert len(safe) == 1
-    assert safe[0]["key"] == "hobby"
+    keys = {c["key"] for c in safe}
+    assert keys == {"home_server", "os"}
 
 
-def test_public_safe_all_infra_yields_empty():
-    # 全候補が機微なら公開A素材は空 → 呼び出し側は A を eligible にしない。
+def test_public_safe_all_machine_level_kept():
+    # 機材レベルばかりなら全部残る(=公開材料が消えて「投稿なし」にならない)。
     candidates = [
-        {"category": "environment", "key": "home_server", "value": "自宅Ubuntu Server"},
+        {"category": "environment", "key": "home_server", "value": "自宅でAIサーバー運用してる"},
         {"category": "devices", "key": "gpu", "value": "GTX1660 6GB"},
     ]
-    assert _public_safe_confirm_candidates(candidates) == []
+    assert len(_public_safe_confirm_candidates(candidates)) == 2
 
 
 # ─── 層2(保険): actionable な opsec のみブロック ─────────────────────

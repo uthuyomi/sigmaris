@@ -64,35 +64,36 @@ _BALANCE_SKEW_THRESHOLD = 2.0
 _BALANCE_MIN_TOTAL = 2
 
 
-# ─── 機微 confirm_candidate の除外(X_POST_OPSEC_FILTER_SPEC 層1・本丸) ──
+# ─── 機微 confirm_candidate の除外(層1・本丸) ────────────────────────
 # 公開Xの A_spontaneous_remark(開発者へ公開で問いかける投稿)の素材から、
-# 自宅インフラ/環境/機器系の"記憶確認"候補を除外する。除外しても捨てず、
-# active_inquiry(アプリ内)が独立に get_confirmation_candidates() を読んで
-# 同じ候補を非公開で聞くため、追加の配線は不要(=公開から外すだけ)。
+# 野ざらしにするとマズい"具体的な秘密"を含む記憶確認候補を除外する。除外
+# しても捨てず、active_inquiry(アプリ内)が独立に get_confirmation_candidates()
+# を読んで同じ候補を非公開で聞くため、追加の配線は不要(=公開から外すだけ)。
 #
-# 記憶の category は9種固定(memory_extractor._VALID_CATEGORIES)で、インフラ
-# 系は environment(居住環境・場所)/devices(使用デバイス・所有機器)に入る。
-# そこへ、他カテゴリに紛れたインフラ/opsec 語を key/value で拾う保険を足す
-# (定数リストで後から調整可能)。方針: 記憶確認を公開から外すのが目的であり、
-# ここで actionable かどうかは問わない(actionable の出口検査は層2)。
-_SENSITIVE_CONFIRM_CATEGORIES: frozenset[str] = frozenset({"environment", "devices"})
-
-_SENSITIVE_CONFIRM_TERMS: tuple[str, ...] = (
-    "server", "サーバ", "ubuntu", "linux", "gpu", "gtx", "rtx", "vram",
-    "router", "ルータ", "ルーター", "sim", "モバイルルータ", "モバイルルーター",
-    "回線", "tailscale", "vpn", "ddns", "ポート", "ip", "ホスト", "ssh",
-    "デプロイ", "deploy", "ネットワーク", "自宅サーバ", "外部公開",
-)
+# 【線引き(X_OPSEC_LAYER1_REFINE)】旧実装は environment/devices カテゴリ＋広い
+# インフラ語(server/ubuntu/gpu/gtx/router/ip…)で除外していたが、これは広すぎて
+# 機材の存在レベルの確認(「自宅サーバーで GTX1660 を動かしてる、合ってる?」等)
+# まで全部非公開にしてしまい、公開材料が残らなくなった。そこで判定を層2と同じ
+# actionable 基準に揃える: 候補の value/key に対し、配信直前と同じ
+# x_privacy_filter.filter_private_info() を呼び、
+#   - safe=False(IP/認証情報/ポート/回線の具体設定/メール・電話 等を検出)→除外
+#   - safe=True (機材・一般構成・存在レベルの言及のみ)→公開Aに通す
+# 機材語だけでの除外はしない。これで層1(素材の入口)と層2(配信直前のテキスト)
+# が同一基準に揃う。
 
 
 def _is_sensitive_confirm_candidate(candidate: dict[str, Any]) -> bool:
-    category = str(candidate.get("category") or "").strip().lower()
-    if category in _SENSITIVE_CONFIRM_CATEGORIES:
-        return True
-    haystack = " ".join(
-        str(candidate.get(field) or "") for field in ("category", "key", "value")
-    ).lower()
-    return any(term in haystack for term in _SENSITIVE_CONFIRM_TERMS)
+    # 層2と同一の actionable 検出(正規表現のみ・LLM非依存・同期)を候補の
+    # value/key にかける。safe=False(=具体的な秘密を検出)なら公開から外す。
+    from app.services.x_privacy_filter import filter_private_info  # noqa: PLC0415
+
+    text = " ".join(
+        str(candidate.get(field) or "") for field in ("key", "value")
+    ).strip()
+    if not text:
+        return False
+    safe, _detected = filter_private_info(text)
+    return not safe
 
 
 def _public_safe_confirm_candidates(candidates: list[dict[str, Any]]) -> list[dict[str, Any]]:
