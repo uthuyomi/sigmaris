@@ -122,6 +122,31 @@ async def count_today_scheduled_or_posted() -> int:
         return 0
 
 
+async def get_recent_scheduled(*, limit: int = 1) -> list[dict[str, Any]]:
+    """直近に作成された予約を status 問わず created_at.desc で取得する。
+    手動トリガー(X_MANUAL_TRIGGER_SPEC)が「何をいつ予約したか」を返すために
+    使う read-only ヘルパー(service_role)。"""
+    try:
+        base_url, _ = _require_supabase_config()
+        client = await _get_client()
+        r = await client.get(
+            f"{base_url}/rest/v1/{_TABLE}",
+            headers=_svc_headers(),
+            params={
+                "select": "id,text,category,score,scheduled_at,status,created_at",
+                "order": "created_at.desc",
+                "limit": str(limit),
+            },
+        )
+        if r.is_error:
+            return []
+        data = r.json()
+        return data if isinstance(data, list) else []
+    except Exception:
+        logger.exception("scheduled_x_post_store: get_recent_scheduled failed")
+        return []
+
+
 async def get_pending_scheduled_ats() -> list[datetime]:
     """まだ配信していない(pending)予約の scheduled_at 一覧。最小間隔チェック用。"""
     try:

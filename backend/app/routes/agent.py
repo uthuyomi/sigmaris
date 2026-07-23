@@ -748,7 +748,7 @@ async def agent_live_detail(
 
 
 class ProactiveTriggerRequest(BaseModel):
-    action: str = Field(description="research")
+    action: str = Field(description="research | x_post_decision | x_post_dispatch")
 
 
 @router.post("/proactive/trigger")
@@ -758,11 +758,37 @@ async def proactive_trigger(
 ) -> dict[str, Any]:
     _require_jwt(authorization)
 
-    if payload.action != "research":
+    _VALID_ACTIONS = ["research", "x_post_decision", "x_post_dispatch"]
+    if payload.action not in _VALID_ACTIONS:
         raise HTTPException(
             status_code=400,
-            detail={"error": f"Unknown action '{payload.action}'. Valid: ['research']"},
+            detail={"error": f"Unknown action '{payload.action}'. Valid: {_VALID_ACTIONS}"},
         )
+
+    # X_MANUAL_TRIGGER_SPEC: X投稿の「決定」「配信」を、cron/interval を待たず
+    # に、稼働中の uvicorn プロセス内で即実行するための手動トリガー。standalone
+    # 実行(別プロセス)は JWT を desync させるため禁止 — このエンドポイント経由
+    # (プロセス内)でのみ実行する。shadow/live 機構・決定/配信ロジックは不変で、
+    # ここは既存の cron 関数をその場で await するだけ。
+    if payload.action == "x_post_decision":
+        from app.services.proactive.scheduler import _categorized_x_post_check  # noqa: PLC0415
+        from app.services.scheduled_x_post_store import get_recent_scheduled  # noqa: PLC0415
+        try:
+            await _categorized_x_post_check()
+            recent = await get_recent_scheduled(limit=1)
+        except Exception as exc:
+            logger.exception("proactive/trigger x_post_decision failed")
+            raise HTTPException(status_code=500, detail={"error": str(exc)}) from exc
+        return {"ok": True, "action": "x_post_decision", "latest": recent}
+
+    if payload.action == "x_post_dispatch":
+        from app.services.proactive.scheduler import _x_post_dispatch_check  # noqa: PLC0415
+        try:
+            await _x_post_dispatch_check()
+        except Exception as exc:
+            logger.exception("proactive/trigger x_post_dispatch failed")
+            raise HTTPException(status_code=500, detail={"error": str(exc)}) from exc
+        return {"ok": True, "action": "x_post_dispatch"}
 
     from app.services.research_agent import run_research  # noqa: PLC0415
     try:
